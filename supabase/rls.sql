@@ -150,6 +150,58 @@ create policy "sync_logs_delete_own" on sync_logs
     )
   );
 
+-- boost_rotation: access only if store_id belongs to a store owned by auth.uid()
+alter table boost_rotation enable row level security;
+
+create policy "boost_rotation_select_own" on boost_rotation
+  for select using (
+    exists (select 1 from stores where stores.id = boost_rotation.store_id and stores.user_id = auth.uid())
+  );
+
+create policy "boost_rotation_insert_own" on boost_rotation
+  for insert with check (
+    exists (select 1 from stores where stores.id = boost_rotation.store_id and stores.user_id = auth.uid())
+  );
+
+create policy "boost_rotation_update_own" on boost_rotation
+  for update using (
+    exists (select 1 from stores where stores.id = boost_rotation.store_id and stores.user_id = auth.uid())
+  ) with check (
+    exists (select 1 from stores where stores.id = boost_rotation.store_id and stores.user_id = auth.uid())
+  );
+
+create policy "boost_rotation_delete_own" on boost_rotation
+  for delete using (
+    exists (select 1 from stores where stores.id = boost_rotation.store_id and stores.user_id = auth.uid())
+  );
+
+-- boost_slots: access only if store_id belongs to a store owned by auth.uid().
+-- The cron writes these via the service-role key (bypasses RLS); these policies
+-- only govern the frontend's read of the live snapshot.
+alter table boost_slots enable row level security;
+
+create policy "boost_slots_select_own" on boost_slots
+  for select using (
+    exists (select 1 from stores where stores.id = boost_slots.store_id and stores.user_id = auth.uid())
+  );
+
+create policy "boost_slots_insert_own" on boost_slots
+  for insert with check (
+    exists (select 1 from stores where stores.id = boost_slots.store_id and stores.user_id = auth.uid())
+  );
+
+create policy "boost_slots_update_own" on boost_slots
+  for update using (
+    exists (select 1 from stores where stores.id = boost_slots.store_id and stores.user_id = auth.uid())
+  ) with check (
+    exists (select 1 from stores where stores.id = boost_slots.store_id and stores.user_id = auth.uid())
+  );
+
+create policy "boost_slots_delete_own" on boost_slots
+  for delete using (
+    exists (select 1 from stores where stores.id = boost_slots.store_id and stores.user_id = auth.uid())
+  );
+
 -- order_items: access only if order_id belongs to an order owned by auth.uid()
 create policy "order_items_select_own" on order_items
   for select using (

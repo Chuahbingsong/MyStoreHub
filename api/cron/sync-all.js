@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '../_lib/supabaseAdmin.js';
 import { syncStoreOrders, syncStoreProducts } from '../_lib/shopeeSync.js';
 import { autoPackStore } from '../_lib/autoPack.js';
+import { autoBoostStore } from '../_lib/autoBoost.js';
 
 // Cap the runtime. Vercel Hobby allows up to 60s.
 export const config = { maxDuration: 60 };
@@ -122,7 +123,21 @@ export default async function handler(req, res) {
       }
     }
 
-    return { storeId: store.id, touched, orders, products, packed, errors };
+    // Auto-boost, opt-in per store, runs last and shares this same deadline —
+    // never a fresh window. Owns the store's 5 Shopee boost slots when enabled;
+    // skips defensively if another booster is holding them (see autoBoostStore).
+    let boosted = 0;
+    if (store.auto_boost_enabled && Date.now() < deadline) {
+      try {
+        const boostResult = await autoBoostStore(store, { deadline });
+        boosted = boostResult.boosted;
+      } catch (err) {
+        console.error('[cron/sync-all] auto-boost failed for store', store.id, err);
+        errors.push({ storeId: store.id, type: 'auto_boost', error: err.message });
+      }
+    }
+
+    return { storeId: store.id, touched, orders, products, packed, boosted, errors };
   }
 
   const settled = await Promise.allSettled(stores.map(syncOneStore));
@@ -131,6 +146,7 @@ export default async function handler(req, res) {
   let totalOrders = 0;
   let totalProducts = 0;
   let totalPacked = 0;
+  let totalBoosted = 0;
   const errors = [];
 
   for (let i = 0; i < settled.length; i += 1) {
@@ -145,17 +161,18 @@ export default async function handler(req, res) {
       continue;
     }
 
-    const { touched, orders, products, packed, errors: storeErrors } = outcome.value;
+    const { touched, orders, products, packed, boosted, errors: storeErrors } = outcome.value;
     totalOrders += orders;
     totalProducts += products;
     totalPacked += packed;
+    totalBoosted += boosted;
     errors.push(...storeErrors);
     if (touched) storesSynced += 1;
   }
 
   const elapsedMs = Date.now() - startedAt;
   console.log(
-    `[cron/sync-all] done in ${elapsedMs}ms — stores: ${storesSynced}/${stores.length}, orders: ${totalOrders}, products: ${totalProducts}, auto-packed: ${totalPacked}, errors: ${errors.length}`
+    `[cron/sync-all] done in ${elapsedMs}ms — stores: ${storesSynced}/${stores.length}, orders: ${totalOrders}, products: ${totalProducts}, auto-packed: ${totalPacked}, auto-boosted: ${totalBoosted}, errors: ${errors.length}`
   );
 
   return res.status(200).json({
@@ -165,6 +182,7 @@ export default async function handler(req, res) {
     total_orders: totalOrders,
     total_products: totalProducts,
     total_packed: totalPacked,
+    total_boosted: totalBoosted,
     elapsed_ms: elapsedMs,
     errors,
   });

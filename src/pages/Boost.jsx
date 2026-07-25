@@ -1,65 +1,34 @@
-import { useState } from 'react'
-import { Pencil, Search } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { toast } from 'sonner'
+import { AlertTriangle, Loader2, Package, Plus, Search, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
-const PRODUCTS = [
-  { id: 1, name: 'LED Lightsaber RGB', price: 45, stock: 23 },
-  { id: 2, name: 'Foam Drone Mini', price: 60, stock: 15 },
-  { id: 3, name: 'Transformers Optimus', price: 89, stock: 8 },
-  { id: 4, name: 'Fidget Spinner Pro', price: 35, stock: 42 },
-  { id: 5, name: 'Transformers Bumblebee', price: 95, stock: 5 },
-  { id: 6, name: 'LED Lightsaber Blue', price: 45, stock: 18 },
-  { id: 7, name: 'Fidget Cube', price: 35, stock: 30 },
-  { id: 8, name: 'Foam Drone XL', price: 80, stock: 7 },
-]
+const MAX_SLOTS = 5
 
-function makeSlots(productIndexes, minutesValues) {
-  return productIndexes.map((productIdx, i) => ({
-    product: PRODUCTS[productIdx],
-    minutesLeft: minutesValues[i],
-  }))
+// Minutes until an item's boost slot frees up, from the absolute reboostable_at
+// the cron stamped (observed_at + cool_down_second). Clamped at 0.
+function minutesLeft(reboostableAt, nowMs) {
+  if (!reboostableAt) return 0
+  const ms = new Date(reboostableAt).getTime() - nowMs
+  return ms <= 0 ? 0 : Math.ceil(ms / 60000)
 }
 
-const INITIAL_STORES = [
-  {
-    id: 1,
-    name: '玩具 - Cat Play Toys',
-    on: true,
-    slots: makeSlots([0, 1, 2, 3, 4], [61, 61, 125, 61, 61]),
-  },
-  {
-    id: 2,
-    name: '玩具 - Meow Fun Toys',
-    on: true,
-    slots: makeSlots([5, 6, 7, 0, 1], [125, 61, 61, 61, 61]),
-  },
-  {
-    id: 3,
-    name: '电池水 - Kardon Shop',
-    on: true,
-    slots: makeSlots([2, 3, 4, 5, 6], [61, 61, 61, 61, 61]),
-  },
-  {
-    id: 4,
-    name: '电池水 - Big Hammer',
-    on: false,
-    slots: makeSlots([7, 0, 1, 2, 3], [0, 0, 0, 0, 0]),
-  },
-]
-
-function ToggleSwitch({ on, onClick }) {
+function ToggleSwitch({ on, disabled, onClick }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={on}
+      disabled={disabled}
       onClick={onClick}
       className={cn(
-        'relative h-6 w-11 shrink-0 rounded-full transition-colors',
+        'relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50',
         on ? 'bg-green-500' : 'bg-gray-300'
       )}
     >
@@ -73,24 +42,80 @@ function ToggleSwitch({ on, onClick }) {
   )
 }
 
-function StoreCard({ store, onToggle, onEdit }) {
+function Thumb({ imageUrl, className }) {
+  if (imageUrl) {
+    return <img src={imageUrl} alt="" className={cn('shrink-0 rounded-lg object-cover', className)} />
+  }
   return (
-    <div className="rounded-xl bg-white border border-[#ECECEC] shadow-sm p-4">
+    <div className={cn('flex shrink-0 items-center justify-center rounded-lg bg-[#EE4D2D]/10', className)}>
+      <Package className="h-5 w-5 text-gray-400" />
+    </div>
+  )
+}
+
+function StoreCard({ store, slots, rotation, onToggle, toggling, onEdit }) {
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  // Re-render every 30s so the "Xm left" countdowns stay honest without a refetch.
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 30_000)
+    return () => clearInterval(id)
+  }, [])
+
+  const activeSlots = slots.filter((s) => (s.cool_down_second ?? 0) > 0)
+  const externalCount = slots.filter((s) => s.externally_controlled).length
+  const emptyCount = Math.max(0, MAX_SLOTS - activeSlots.length)
+
+  return (
+    <div className="rounded-xl border border-[#ECECEC] bg-white p-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span>🏪</span>
-          <span className="text-sm font-medium text-[#1F2937]">{store.name}</span>
+          <span className="text-sm font-medium text-[#1F2937]">{store.shop_name || 'Unnamed store'}</span>
         </div>
-        <ToggleSwitch on={store.on} onClick={() => onToggle(store.id)} />
+        <div className="flex items-center gap-2">
+          {toggling && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
+          <ToggleSwitch on={store.auto_boost_enabled} disabled={toggling} onClick={() => onToggle(store)} />
+        </div>
       </div>
 
-      <p className="mb-2 text-xs text-gray-500">{store.slots.length} products boosting</p>
+      {externalCount > 0 && (
+        <div className="mb-3 flex items-start gap-2 rounded-lg border border-yellow-300 bg-yellow-50 p-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600" />
+          <p className="text-xs text-yellow-800">
+            {externalCount} slot{externalCount > 1 ? 's are' : ' is'} controlled by another booster. Turn
+            BigSeller&apos;s boost off for this store so MyStore Hub can take over.
+          </p>
+        </div>
+      )}
 
-      <div className="flex gap-2 overflow-x-auto">
-        {store.slots.map((slot, i) => (
-          <div key={i} className="flex shrink-0 flex-col items-center gap-1">
-            <div className="h-14 w-14 shrink-0 rounded-lg bg-[#EE4D2D]/20" />
-            <span className="text-center text-[10px] text-[#EE4D2D]">{slot.minutesLeft}m left</span>
+      <p className="mb-2 text-xs text-gray-500">
+        {activeSlots.length}/{MAX_SLOTS} slots boosting · {rotation.length} in rotation
+      </p>
+
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {activeSlots.map((slot) => {
+          const mins = minutesLeft(slot.reboostable_at, nowMs)
+          return (
+            <div key={slot.id} className="flex w-14 shrink-0 flex-col items-center gap-1">
+              <Thumb imageUrl={slot.products?.image_url} className="h-14 w-14" />
+              <span
+                className={cn(
+                  'text-center text-[10px]',
+                  slot.externally_controlled ? 'text-yellow-600' : 'text-[#EE4D2D]'
+                )}
+              >
+                {mins > 0 ? `${mins}m left` : 'ready'}
+              </span>
+            </div>
+          )
+        })}
+        {Array.from({ length: emptyCount }).map((_, i) => (
+          <div key={`empty-${i}`} className="flex w-14 shrink-0 flex-col items-center gap-1">
+            <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-dashed border-[#E5E7EB]">
+              <Plus className="h-4 w-4 text-gray-300" />
+            </div>
+            <span className="text-center text-[10px] text-gray-400">empty</span>
           </div>
         ))}
       </div>
@@ -102,7 +127,7 @@ function StoreCard({ store, onToggle, onEdit }) {
           onClick={() => onEdit(store)}
           className="border-[#E5E7EB] text-[#374151] hover:bg-[#F3F4F6]"
         >
-          <Pencil /> Edit Boost
+          Edit Rotation
         </Button>
       </div>
     </div>
@@ -110,37 +135,132 @@ function StoreCard({ store, onToggle, onEdit }) {
 }
 
 export default function Boost() {
-  const [stores, setStores] = useState(INITIAL_STORES)
+  const [stores, setStores] = useState([])
+  const [slotsByStore, setSlotsByStore] = useState({})
+  const [rotationByStore, setRotationByStore] = useState({})
+  const [productsByStore, setProductsByStore] = useState({})
+  const [loading, setLoading] = useState(true)
+  const [togglingId, setTogglingId] = useState(null)
+
   const [editingStoreId, setEditingStoreId] = useState(null)
-  const [replaceIndex, setReplaceIndex] = useState(0)
   const [productSearch, setProductSearch] = useState('')
+  const [mutatingRotation, setMutatingRotation] = useState(false)
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true)
+
+    const [storesRes, slotsRes, rotationRes, productsRes] = await Promise.all([
+      supabase
+        .from('stores')
+        .select('id, shop_name, auto_boost_enabled')
+        .eq('platform', 'shopee')
+        .order('shop_name', { ascending: true }),
+      supabase
+        .from('boost_slots')
+        .select('id, store_id, item_id, cool_down_second, reboostable_at, externally_controlled, products(title, image_url)'),
+      supabase
+        .from('boost_rotation')
+        .select('id, store_id, product_id, position, last_boosted_at, products(id, title, image_url, price)')
+        .order('position', { ascending: true }),
+      supabase
+        .from('products')
+        .select('id, store_id, title, image_url, price, stock, status')
+        .order('title', { ascending: true }),
+    ])
+
+    setStores(storesRes.data ?? [])
+    setSlotsByStore(groupBy(slotsRes.data ?? [], 'store_id'))
+    setRotationByStore(groupBy(rotationRes.data ?? [], 'store_id'))
+    setProductsByStore(groupBy(productsRes.data ?? [], 'store_id'))
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchAll()
+  }, [fetchAll])
+
+  async function handleToggle(store) {
+    const next = !store.auto_boost_enabled
+    setTogglingId(store.id)
+    try {
+      const { error } = await supabase
+        .from('stores')
+        .update({ auto_boost_enabled: next })
+        .eq('id', store.id)
+
+      if (error) {
+        toast.error('Could not update auto-boost')
+        return
+      }
+      setStores((prev) => prev.map((s) => (s.id === store.id ? { ...s, auto_boost_enabled: next } : s)))
+      toast.success(
+        next
+          ? 'Auto-boost on — MyStore Hub now owns this store’s 5 slots'
+          : 'Auto-boost off'
+      )
+    } catch {
+      toast.error('Could not update auto-boost')
+    } finally {
+      setTogglingId(null)
+    }
+  }
 
   const editingStore = stores.find((s) => s.id === editingStoreId) ?? null
+  const editingRotation = editingStoreId ? rotationByStore[editingStoreId] ?? [] : []
+  const editingProducts = editingStoreId ? productsByStore[editingStoreId] ?? [] : []
+  const rotationProductIds = new Set(editingRotation.map((r) => r.product_id))
 
-  function toggleStore(id) {
-    setStores((prev) => prev.map((s) => (s.id === id ? { ...s, on: !s.on } : s)))
-  }
-
-  function openEdit(store) {
-    setEditingStoreId(store.id)
-    setReplaceIndex(0)
-    setProductSearch('')
-  }
-
-  function pickReplacement(product) {
-    setStores((prev) =>
-      prev.map((s) =>
-        s.id === editingStoreId
-          ? { ...s, slots: s.slots.map((slot, i) => (i === replaceIndex ? { ...slot, product } : slot)) }
-          : s
-      )
-    )
-  }
-
-  const filteredProducts = PRODUCTS.filter((p) => {
+  const filteredProducts = editingProducts.filter((p) => {
+    if (rotationProductIds.has(p.id)) return false
     const q = productSearch.trim().toLowerCase()
-    return !q || p.name.toLowerCase().includes(q)
+    return !q || (p.title ?? '').toLowerCase().includes(q)
   })
+
+  async function addToRotation(product) {
+    if (!editingStoreId) return
+    setMutatingRotation(true)
+    try {
+      const position = editingRotation.length
+      const { data, error } = await supabase
+        .from('boost_rotation')
+        .insert({ store_id: editingStoreId, product_id: product.id, position })
+        .select('id, store_id, product_id, position, last_boosted_at, products(id, title, image_url, price)')
+        .single()
+
+      if (error) {
+        toast.error('Could not add to rotation')
+        return
+      }
+      setRotationByStore((prev) => ({
+        ...prev,
+        [editingStoreId]: [...(prev[editingStoreId] ?? []), data],
+      }))
+    } catch {
+      toast.error('Could not add to rotation')
+    } finally {
+      setMutatingRotation(false)
+    }
+  }
+
+  async function removeFromRotation(row) {
+    setMutatingRotation(true)
+    try {
+      const { error } = await supabase.from('boost_rotation').delete().eq('id', row.id)
+      if (error) {
+        toast.error('Could not remove from rotation')
+        return
+      }
+      setRotationByStore((prev) => ({
+        ...prev,
+        [row.store_id]: (prev[row.store_id] ?? []).filter((r) => r.id !== row.id),
+      }))
+    } catch {
+      toast.error('Could not remove from rotation')
+    } finally {
+      setMutatingRotation(false)
+    }
+  }
 
   return (
     <div className="pb-24">
@@ -151,15 +271,37 @@ export default function Boost() {
 
       <div className="mx-4 my-3 rounded-xl border border-[#EE4D2D]/30 bg-[#EE4D2D]/10 p-3">
         <p className="text-xs text-[#EE4D2D]">
-          ℹ️ Data updates every 10 minutes. Each store boosts 5 products. Boost stops if not logged in
-          for 30 days.
+          ℹ️ Each store boosts 5 products for ~4 hours, then auto re-boosts the next products in your
+          rotation. Turn a store on and MyStore Hub owns its 5 slots — switch off any other booster
+          (e.g. BigSeller) for that store first.
         </p>
       </div>
 
       <div className="flex flex-col gap-4 px-4">
-        {stores.map((store) => (
-          <StoreCard key={store.id} store={store} onToggle={toggleStore} onEdit={openEdit} />
-        ))}
+        {loading ? (
+          Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-40 w-full rounded-xl" />
+          ))
+        ) : stores.length === 0 ? (
+          <p className="mt-8 text-center text-sm text-gray-500">
+            No Shopee stores connected yet.
+          </p>
+        ) : (
+          stores.map((store) => (
+            <StoreCard
+              key={store.id}
+              store={store}
+              slots={slotsByStore[store.id] ?? []}
+              rotation={rotationByStore[store.id] ?? []}
+              toggling={togglingId === store.id}
+              onToggle={handleToggle}
+              onEdit={(s) => {
+                setEditingStoreId(s.id)
+                setProductSearch('')
+              }}
+            />
+          ))
+        )}
       </div>
 
       <Sheet open={!!editingStore} onOpenChange={(open) => !open && setEditingStoreId(null)}>
@@ -168,75 +310,107 @@ export default function Boost() {
           className="!h-screen w-full gap-0 rounded-t-2xl border-[#ECECEC] bg-white p-0"
         >
           <SheetHeader className="border-b border-[#ECECEC] px-4 py-4">
-            <SheetTitle className="text-[#1F2937]">Edit Boost - {editingStore?.name}</SheetTitle>
+            <SheetTitle className="text-[#1F2937]">
+              Rotation — {editingStore?.shop_name || 'Store'}
+            </SheetTitle>
           </SheetHeader>
 
           <div className="flex-1 overflow-y-auto px-4 py-4">
-            <div className="space-y-3">
-              {editingStore?.slots.map((slot, i) => (
-                <div
-                  key={i}
-                  className={cn(
-                    'flex items-center gap-3 rounded-xl bg-white border border-[#ECECEC] shadow-sm p-3',
-                    replaceIndex === i && 'ring-1 ring-[#EE4D2D]'
-                  )}
-                >
-                  <div className="h-12 w-12 shrink-0 rounded-lg bg-[#EE4D2D]/20" />
-                  <div className="flex-1">
-                    <p className="text-sm text-[#1F2937]">{slot.product.name}</p>
-                    <p className="text-xs text-[#6B7280]">RM {slot.product.price.toFixed(2)}</p>
-                    <p className="text-xs text-[#EE4D2D]">{slot.minutesLeft}m left</p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setReplaceIndex(i)}
-                    className="border-[#E5E7EB] text-[#374151] hover:bg-[#F3F4F6]"
+            <h3 className="mb-2 text-sm font-semibold text-[#1F2937]">
+              In rotation ({editingRotation.length})
+            </h3>
+            {editingRotation.length === 0 ? (
+              <p className="mb-2 text-xs text-gray-500">
+                No products yet — add some below. The scheduler cycles the 5 slots through this list,
+                least-recently-boosted first.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {editingRotation.map((row) => (
+                  <div
+                    key={row.id}
+                    className="flex items-center gap-3 rounded-xl border border-[#ECECEC] bg-white p-3 shadow-sm"
                   >
-                    Change
-                  </Button>
-                </div>
-              ))}
-            </div>
+                    <Thumb imageUrl={row.products?.image_url} className="h-12 w-12" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm text-[#1F2937]">{row.products?.title ?? 'Product'}</p>
+                      {row.products?.price != null && (
+                        <p className="text-xs text-[#6B7280]">RM {Number(row.products.price).toFixed(2)}</p>
+                      )}
+                      <p className="text-[11px] text-gray-400">
+                        {row.last_boosted_at
+                          ? `Last boosted ${new Date(row.last_boosted_at).toLocaleString()}`
+                          : 'Never boosted'}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={mutatingRotation}
+                      onClick={() => removeFromRotation(row)}
+                      className="border-[#E5E7EB] text-red-600 hover:bg-red-50"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <Separator className="my-4 bg-[#ECECEC]" />
 
-            <h3 className="mb-2 text-sm font-semibold text-[#1F2937]">Add Product</h3>
-            <p className="mb-2 text-xs text-gray-500">
-              Replacing slot {replaceIndex + 1} — pick a product below
-            </p>
+            <h3 className="mb-2 text-sm font-semibold text-[#1F2937]">Add product</h3>
             <div className="relative">
               <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-gray-500" />
               <Input
                 value={productSearch}
                 onChange={(e) => setProductSearch(e.target.value)}
                 placeholder="Search products"
-                className="h-10 !bg-white rounded-xl border-[#E5E7EB] pl-9 text-[#1F2937] placeholder:text-gray-400"
+                className="h-10 rounded-xl border-[#E5E7EB] pl-9 !bg-white text-[#1F2937] placeholder:text-gray-400"
               />
             </div>
 
             <div className="mt-3">
-              {filteredProducts.map((product) => (
-                <div key={product.id} className="flex items-center gap-3 border-b border-[#ECECEC] p-3">
-                  <div className="h-12 w-12 shrink-0 rounded-lg bg-[#EE4D2D]/20" />
-                  <div className="flex-1">
-                    <p className="text-sm text-[#1F2937]">{product.name}</p>
-                    <p className="text-xs text-[#6B7280]">RM {product.price.toFixed(2)}</p>
-                    <p className="text-xs text-gray-500">Stock: {product.stock}</p>
+              {filteredProducts.length === 0 ? (
+                <p className="py-6 text-center text-xs text-gray-400">
+                  {editingProducts.length === 0
+                    ? 'No synced products for this store yet.'
+                    : 'No products match.'}
+                </p>
+              ) : (
+                filteredProducts.map((product) => (
+                  <div key={product.id} className="flex items-center gap-3 border-b border-[#ECECEC] p-3">
+                    <Thumb imageUrl={product.image_url} className="h-12 w-12" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm text-[#1F2937]">{product.title ?? 'Untitled'}</p>
+                      {product.price != null && (
+                        <p className="text-xs text-[#6B7280]">RM {Number(product.price).toFixed(2)}</p>
+                      )}
+                      <p className="text-xs text-gray-500">Stock: {product.stock ?? 0}</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      disabled={mutatingRotation}
+                      onClick={() => addToRotation(product)}
+                      className="bg-[#EE4D2D] text-white hover:bg-[#EE4D2D]/90"
+                    >
+                      <Plus className="h-4 w-4" /> Add
+                    </Button>
                   </div>
-                  <Button
-                    size="sm"
-                    onClick={() => pickReplacement(product)}
-                    className="bg-[#EE4D2D] text-white hover:bg-[#EE4D2D]/90"
-                  >
-                    Select
-                  </Button>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
         </SheetContent>
       </Sheet>
     </div>
   )
+}
+
+function groupBy(rows, key) {
+  const out = {}
+  for (const row of rows) {
+    ;(out[row[key]] ??= []).push(row)
+  }
+  return out
 }
