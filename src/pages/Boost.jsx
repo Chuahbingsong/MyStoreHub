@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { Switch } from '@/components/ui/switch'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
@@ -17,29 +18,6 @@ function minutesLeft(reboostableAt, nowMs) {
   if (!reboostableAt) return 0
   const ms = new Date(reboostableAt).getTime() - nowMs
   return ms <= 0 ? 0 : Math.ceil(ms / 60000)
-}
-
-function ToggleSwitch({ on, disabled, onClick }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        'relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50',
-        on ? 'bg-green-500' : 'bg-gray-300'
-      )}
-    >
-      <span
-        className={cn(
-          'absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform',
-          on && 'translate-x-5'
-        )}
-      />
-    </button>
-  )
 }
 
 function Thumb({ imageUrl, className }) {
@@ -75,7 +53,11 @@ function StoreCard({ store, slots, rotation, onToggle, toggling, onEdit }) {
         </div>
         <div className="flex items-center gap-2">
           {toggling && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
-          <ToggleSwitch on={store.auto_boost_enabled} disabled={toggling} onClick={() => onToggle(store)} />
+          <Switch
+            checked={!!store.auto_boost_enabled}
+            disabled={toggling}
+            onCheckedChange={() => onToggle(store)}
+          />
         </div>
       </div>
 

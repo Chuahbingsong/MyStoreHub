@@ -6,6 +6,7 @@
 // down. Settings.jsx owns the Supabase read/write and the toggle UI.
 
 import { supabase } from '@/lib/supabase'
+import { getLocale } from '@/lib/preferences'
 
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY
 
@@ -108,6 +109,9 @@ export async function enablePush(userId) {
         p256dh: json.keys?.p256dh,
         auth: json.keys?.auth,
         user_agent: navigator.userAgent,
+        // Captured so the server-side cron can format the notification body in
+        // this device's language — the React i18n layer isn't in scope there.
+        locale: getLocale(),
       },
       { onConflict: 'endpoint' }
     )
