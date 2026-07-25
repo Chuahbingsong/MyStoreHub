@@ -121,6 +121,18 @@ export default {
       autoSyncDescription: '订单页面保持打开时自动刷新，标签页隐藏时暂停。',
       autoSyncAria: '切换自动同步订单',
     },
+    push: {
+      title: '通知',
+      label: '推送通知',
+      description: '有新订单或买家申请取消时提醒此设备——即使应用已关闭。',
+      toggleAria: '切换推送通知',
+      enabledToast: '已在此设备启用推送通知',
+      disabledToast: '已在此设备关闭推送通知',
+      deniedToast: '通知已被拦截。请在浏览器设置中允许后重试。',
+      errorToast: '更新推送通知失败。',
+      unsupported: '此浏览器不支持推送通知。',
+      iosHint: '在 iPhone 上，请先将 MyStore Hub 添加到主屏幕（分享 → 添加到主屏幕），再从图标打开以启用通知。需要 iOS 16.4 或更高版本。',
+    },
     account: {
       title: '账户',
       loggedInAs: '登录账号',
