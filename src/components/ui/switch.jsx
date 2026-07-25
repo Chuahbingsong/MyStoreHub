@@ -37,8 +37,12 @@ export function Switch({
     >
       <span
         className={cn(
-          'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm ring-1 ring-black/5 transition-transform duration-200 ease-in-out',
-          checked ? 'translate-x-[22px]' : 'translate-x-0.5'
+          // Anchored at a fixed 2px inset (left-0.5 / top-0.5); translate-x
+          // carries ONLY the travel. Track 44px − thumb 20px − 2px inset each
+          // side = 20px of travel, so ON lands with a symmetric 2px inset and
+          // never overshoots the rounded edge.
+          'absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm ring-1 ring-black/5 transition-transform duration-200 ease-in-out',
+          checked ? 'translate-x-5' : 'translate-x-0'
         )}
       />
     </button>
