@@ -275,8 +275,12 @@ async function fetchOrderDetails(store, orderSnBatch) {
     shop_id: store.shop_id,
     sign,
     order_sn_list: orderSnBatch.join(','),
+    // buyer_cancel_reason/cancel_by/cancel_reason drive the buyer-cancellation
+    // surface: an IN_CANCEL order needs the buyer's reason shown so the seller
+    // can decide. cancel_by distinguishes a buyer-initiated request (the case
+    // we act on) from a seller cancel.
     response_optional_fields:
-      'buyer_username,recipient_address,item_list,total_amount,order_status,create_time,pay_time,payment_method,shipping_carrier,package_list',
+      'buyer_username,recipient_address,item_list,total_amount,order_status,create_time,pay_time,payment_method,shipping_carrier,package_list,buyer_cancel_reason,cancel_by,cancel_reason',
   });
 
   const url = `${SHOPEE_API_BASE}${path}?${params.toString()}`;
@@ -323,6 +327,12 @@ function mapOrderToRow(storeId, shopeeOrder) {
     currency: 'MYR',
     payment_method: shopeeOrder.payment_method ?? null,
     courier_name: shopeeOrder.shipping_carrier ?? null,
+    // Populated only for orders in/through the cancellation flow; null
+    // otherwise. buyer_cancel_reason is what the seller reads before deciding
+    // approve/reject on an IN_CANCEL order.
+    buyer_cancel_reason: shopeeOrder.buyer_cancel_reason ?? null,
+    cancel_by: shopeeOrder.cancel_by ?? null,
+    cancel_reason: shopeeOrder.cancel_reason ?? null,
     // Free from get_order_detail's package_list (requested via
     // response_optional_fields above) — unlike tracking_number, no extra API
     // call needed. An order can in principle have multiple packages (split
@@ -860,6 +870,39 @@ export async function syncStoreOrders(store, options = {}) {
     await logSyncComplete(logId, 'error', err.message);
     throw err;
   }
+}
+
+/**
+ * Re-fetches ONE order's live detail from Shopee and writes it, returning its
+ * real current status. This is the "verify, don't trust the response"
+ * primitive for state-changing order actions (mirrors autoBoost's
+ * get_boosted_list re-poll): after an action like handle_buyer_cancellation —
+ * whose own response body is undocumented and therefore never trusted — the
+ * caller re-syncs and reads order_status here to decide what actually
+ * happened, rather than parsing the action's response.
+ *
+ * Returns { found, orderStatus, buyerCancelReason, cancelBy, cancelReason }.
+ * found=false means Shopee returned no detail for this order_sn.
+ */
+export async function resyncOrder(store, orderSn) {
+  const freshStore = await ensureFreshToken(store);
+  const orders = await fetchOrderDetails(freshStore, [orderSn]);
+
+  if (orders.length === 0) {
+    return { found: false, orderStatus: null };
+  }
+
+  const productImages = await loadProductImageMap(store.id);
+  await writeOrderBatch(store.id, orders, productImages);
+
+  const o = orders[0];
+  return {
+    found: true,
+    orderStatus: o.order_status ?? null,
+    buyerCancelReason: o.buyer_cancel_reason ?? null,
+    cancelBy: o.cancel_by ?? null,
+    cancelReason: o.cancel_reason ?? null,
+  };
 }
 
 /* --------------------------------- Products -------------------------------- */

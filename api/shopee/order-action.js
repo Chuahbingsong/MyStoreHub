@@ -1,6 +1,27 @@
 import { generateSign, SHOPEE_PARTNER_ID, SHOPEE_API_BASE } from '../_lib/shopee.js';
 import { supabaseAdmin } from '../_lib/supabaseAdmin.js';
 import { ensureFreshToken, shipOrder, ShopeeStepError } from '../_lib/shopeeShip.js';
+import { logSyncStart, logSyncComplete, resyncOrder } from '../_lib/shopeeSync.js';
+
+// Human-readable labels for the messages we surface to the seller after a
+// buyer-cancellation decision — same vocabulary as the Orders page.
+const STATUS_LABELS = {
+  UNPAID: 'Unpaid',
+  INVOICE_PENDING: 'Invoice Pending',
+  READY_TO_SHIP: 'To Pack',
+  PROCESSED: 'Processed',
+  RETRY_SHIP: 'Retry Shipment',
+  SHIPPED: 'Shipped',
+  TO_CONFIRM_RECEIVE: 'To Confirm Receipt',
+  COMPLETED: 'Completed',
+  IN_CANCEL: 'Cancel Requested',
+  CANCELLED: 'Cancelled',
+  TO_RETURN: 'Return Requested',
+};
+
+function humanStatus(status) {
+  return STATUS_LABELS[status] ?? status ?? 'updated';
+}
 
 function nowUnix() {
   return Math.floor(Date.now() / 1000);
@@ -52,6 +73,146 @@ async function cancelOrder(store, orderSn) {
   return data;
 }
 
+// Accept or reject a BUYER's cancellation request (Shopee's
+// handle_buyer_cancellation — the order is currently IN_CANCEL awaiting the
+// seller). operation is 'ACCEPT' or 'REJECT', the only two values Shopee
+// takes. Throws a ShopeeStepError carrying Shopee's full response on any API
+// error — that error is how we detect the "already resolved" race (Shopee
+// rejects the call because the order left IN_CANCEL before we acted). The
+// SUCCESS response body is deliberately NOT interpreted here: the caller
+// verifies the outcome by re-syncing the order's real status instead.
+async function handleBuyerCancellation(store, orderSn, operation) {
+  const path = '/api/v2/order/handle_buyer_cancellation';
+  const url = buildSignedUrl(path, store);
+  const body = { order_sn: orderSn, operation };
+
+  console.log('[order-action] handle_buyer_cancellation', operation, orderSn);
+
+  let response;
+  let bodyText;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    bodyText = await response.text();
+  } catch (err) {
+    throw new ShopeeStepError(
+      'handle_buyer_cancellation',
+      `Network error calling Shopee (handle_buyer_cancellation): ${err.message}`,
+      null
+    );
+  }
+
+  let data;
+  try {
+    data = JSON.parse(bodyText);
+  } catch {
+    data = { _unparsed_body: bodyText };
+  }
+
+  console.log(
+    `[order-action] handle_buyer_cancellation ${operation} ${orderSn}: HTTP ${response.status}`,
+    JSON.stringify(data)
+  );
+
+  if (!response.ok || data.error) {
+    throw new ShopeeStepError(
+      'handle_buyer_cancellation',
+      data.message || `handle_buyer_cancellation ${operation} failed for ${orderSn}`,
+      data
+    );
+  }
+
+  return data;
+}
+
+// Runs the full accept/reject flow for a buyer cancellation: log to sync_logs,
+// call Shopee, then VERIFY by re-syncing the order (never trust the action's
+// response). Resolves the "already auto-approved / buyer withdrew" race
+// gracefully. Writes its own HTTP response and returns nothing.
+async function runBuyerCancellationAction(res, store, orderSn, action) {
+  const operation = action === 'accept_buyer_cancel' ? 'ACCEPT' : 'REJECT';
+  const logId = await logSyncStart(store.id, 'buyer_cancellation');
+
+  try {
+    // Attempt the action. A ShopeeStepError here is NOT treated as fatal yet —
+    // it's frequently the "already resolved" signal, confirmed by the re-sync
+    // below. Any non-Shopee error (a real bug) still propagates.
+    let shopeeError = null;
+    try {
+      await handleBuyerCancellation(store, orderSn, operation);
+    } catch (err) {
+      if (!(err instanceof ShopeeStepError)) throw err;
+      shopeeError = err;
+    }
+
+    // VERIFY, don't trust the response: the order's real status is the single
+    // source of truth for what happened.
+    const resync = await resyncOrder(store, orderSn);
+    const status = resync.orderStatus;
+    const stillPending = resync.found && status === 'IN_CANCEL';
+
+    // Still IN_CANCEL after the call — the request genuinely wasn't applied.
+    if (stillPending) {
+      const message = shopeeError
+        ? `Shopee rejected the ${operation === 'ACCEPT' ? 'approval' : 'rejection'}: ${shopeeError.message}`
+        : 'Shopee still shows this order as awaiting your response — please try again in a moment.';
+      await logSyncComplete(logId, 'error', `${operation} ${orderSn}: still IN_CANCEL — ${message}`);
+      return res.status(502).json({
+        success: false,
+        action,
+        order_sn: orderSn,
+        step: 'handle_buyer_cancellation',
+        error: message,
+        order_status: status,
+        shopee_response: shopeeError?.shopeeResponse ?? null,
+      });
+    }
+
+    // No longer pending. Either our action applied, or it was already resolved
+    // (auto-approved after 2 days / buyer withdrew) before we clicked — both
+    // are success from the seller's side, just with different messaging.
+    const alreadyResolved = Boolean(shopeeError);
+    const label = humanStatus(status);
+    const message = alreadyResolved
+      ? `This cancellation was already resolved — the order is now ${label}.`
+      : operation === 'ACCEPT'
+        ? `Cancellation approved — the order is now ${label}.`
+        : `Cancellation rejected — the order is back to ${label}.`;
+
+    await logSyncComplete(
+      logId,
+      'success',
+      `${operation} ${orderSn} -> ${status ?? 'unknown'}${alreadyResolved ? ' (already resolved before action)' : ''}`
+    );
+
+    return res.status(200).json({
+      success: true,
+      action,
+      order_sn: orderSn,
+      operation,
+      order_status: status,
+      already_resolved: alreadyResolved,
+      message,
+    });
+  } catch (err) {
+    // Unexpected failure (e.g. the re-sync itself threw) — log and surface.
+    const shopeeResponse = err instanceof ShopeeStepError ? err.shopeeResponse : null;
+    console.error(`[order-action] buyer-cancellation ${operation} failed for ${orderSn}:`, err.message);
+    await logSyncComplete(logId, 'error', `${operation} ${orderSn}: ${err.message}`);
+    return res.status(502).json({
+      success: false,
+      action,
+      order_sn: orderSn,
+      step: 'handle_buyer_cancellation',
+      error: err.message,
+      shopee_response: shopeeResponse,
+    });
+  }
+}
+
 async function updateOrderStatus(store, orderSn, patch) {
   const { error } = await supabaseAdmin
     .from('orders')
@@ -98,8 +259,12 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: 'order_sn is required' });
   }
 
-  if (action !== 'ship' && action !== 'cancel') {
-    return res.status(400).json({ success: false, error: 'action must be "ship" or "cancel"' });
+  const VALID_ACTIONS = ['ship', 'cancel', 'accept_buyer_cancel', 'reject_buyer_cancel'];
+  if (!VALID_ACTIONS.includes(action)) {
+    return res.status(400).json({
+      success: false,
+      error: `action must be one of: ${VALID_ACTIONS.join(', ')}`,
+    });
   }
 
   const { data: store, error: storeLookupError } = await supabaseAdmin
@@ -126,6 +291,12 @@ export default async function handler(req, res) {
     const freshStore = await ensureFreshToken(store);
 
     console.log('[order-action] performing', action, 'on order', order_sn, 'store', store.id);
+
+    if (action === 'accept_buyer_cancel' || action === 'reject_buyer_cancel') {
+      // Writes its own response (success, already-resolved, or error) and
+      // logs to sync_logs internally.
+      return await runBuyerCancellationAction(res, freshStore, order_sn, action);
+    }
 
     if (action === 'ship') {
       // allowIncomplete: true — a human is present here (manual Pack button),

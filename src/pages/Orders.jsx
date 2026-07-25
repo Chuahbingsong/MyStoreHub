@@ -93,8 +93,12 @@ const OTHER_TAB = 'other'
 // itself flips the order to READY_TO_SHIP once the buyer pays.
 // 'To Confirm Receipt' (courier has it, buyer hasn't confirmed) buckets into
 // Shipped — from the seller's point of view there's nothing left to do.
-// 'Cancelling' (IN_CANCEL, a cancellation in progress) buckets into
-// Cancelled — same "no further seller action" reasoning.
+// 'Cancel Requested' (IN_CANCEL, a BUYER-initiated cancellation awaiting the
+// seller) gets its OWN tab — NOT Cancelled. It's a live, refund-bearing,
+// time-sensitive decision (Shopee auto-accepts after ~2 days of no response),
+// exactly the same reasoning as 'Return Requested' below. Folding it into
+// Cancelled (implicitly "done, nothing to do") is precisely how these requests
+// went unanswered before.
 // 'Return Requested' (TO_RETURN) gets its own tab, not Cancelled: unlike a
 // cancellation, a return is often time-sensitive and requires the seller to
 // accept/dispute it — folding it into Cancelled (a tab whose implicit
@@ -108,9 +112,9 @@ const STATUS_TO_TAB = {
   Shipped: 'shipped',
   'To Confirm Receipt': 'shipped',
   Completed: 'completed',
+  'Cancel Requested': 'cancelRequests',
   'Return Requested': 'returns',
   Cancelled: 'cancelled',
-  Cancelling: 'cancelled',
 }
 
 // Defensive lookup — always resolves to a real, visible tab, even for a
@@ -128,9 +132,9 @@ const STATUS_BADGE = {
   Shipped: 'bg-green-500/15 text-green-600',
   'To Confirm Receipt': 'bg-green-500/15 text-green-600',
   Completed: 'bg-teal-500/15 text-teal-600',
+  'Cancel Requested': 'bg-amber-500/15 text-amber-700',
   'Return Requested': 'bg-amber-500/15 text-amber-700',
   Cancelled: 'bg-red-500/15 text-red-600',
-  Cancelling: 'bg-red-500/15 text-red-600',
 }
 
 const MARKETPLACE_STATUS = {
@@ -142,9 +146,9 @@ const MARKETPLACE_STATUS = {
     'Retry Shipment': 'Retry Shipment',
     Shipped: 'Shipped',
     'To Confirm Receipt': 'To Confirm Receive',
+    'Cancel Requested': 'Cancellation Requested',
     'Return Requested': 'To Return/Refund',
     Cancelled: 'Cancelled',
-    Cancelling: 'Cancelling',
   },
   // Lazada/TikTok/Shopify aren't connected yet — only the statuses already
   // reachable through their (currently unused) integrations are mapped here.
@@ -164,6 +168,10 @@ const TABS = [
   { key: 'inprocess', label: 'In Process', badgeClass: 'bg-yellow-500 text-gray-900' },
   { key: 'shipped', label: 'Shipped', badgeClass: 'bg-[#2563EB] text-white' },
   { key: 'completed', label: 'Completed' },
+  // Buyer-initiated cancellations awaiting the seller's approve/reject. Red
+  // badge (like New Orders) because it's time-sensitive: Shopee auto-accepts
+  // after ~2 days of no response.
+  { key: 'cancelRequests', label: 'Cancel Requests', badgeClass: 'bg-red-500 text-white' },
   { key: 'returns', label: 'Returns', badgeClass: 'bg-amber-500 text-white' },
   { key: 'cancelled', label: 'Cancelled' },
   // Safety net only — should stay at 0 in normal operation. A non-zero count
@@ -207,7 +215,7 @@ const SHOPEE_STATUS_MAP = {
   TO_CONFIRM_RECEIVE: 'To Confirm Receipt',
   COMPLETED: 'Completed',
   TO_RETURN: 'Return Requested',
-  IN_CANCEL: 'Cancelling',
+  IN_CANCEL: 'Cancel Requested',
   CANCELLED: 'Cancelled',
 }
 
@@ -314,6 +322,12 @@ function mapSupabaseOrder(row, storeNames) {
     autoPackError: row.auto_pack_error || undefined,
     courier: row.courier_name || undefined,
     trackingNumber: row.tracking_number || undefined,
+    // Buyer-cancellation decision context (populated on IN_CANCEL orders).
+    // buyerCancelReason is the free-text/enum reason the seller reads before
+    // approving or rejecting; cancelBy confirms it was buyer-initiated.
+    buyerCancelReason: row.buyer_cancel_reason || undefined,
+    cancelReason: row.cancel_reason || undefined,
+    cancelBy: row.cancel_by || undefined,
     awbPrinted: row.awb_printed === true,
     awbPrintedAt: formatDateLabel(row.awb_printed_at),
   }
@@ -343,7 +357,7 @@ function ItemThumb({ image, alt, tint, className }) {
   )
 }
 
-function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPack, onCancel, actingId } = {}) {
+function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId } = {}) {
   const tab = getOrderTab(order)
   const grow = fullWidth ? 'flex-1' : ''
   const printing = printingId === order.id
@@ -377,6 +391,33 @@ function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPac
       {acting ? <Loader2 className="animate-spin" /> : null} Cancel
     </Button>
   )
+
+  // Approve / Reject a buyer's cancellation request. Deliberately styled
+  // IDENTICALLY — same neutral outline, same weight, no primary/coloured
+  // "recommended" affordance on either — so neither reads as the safe default.
+  // The seller must read the buyer's reason and choose each time.
+  if (tab === 'cancelRequests') {
+    const buyerCancelButton = (decision, labelText) => (
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={acting}
+        onClick={(e) => {
+          e.stopPropagation()
+          onBuyerCancel?.(order, decision)
+        }}
+        className={cn(ACTION_BTN_CLS, grow, 'border-[#E8E6E1] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#1F2937]')}
+      >
+        {acting ? <Loader2 className="animate-spin" /> : null} {labelText}
+      </Button>
+    )
+    return (
+      <>
+        {buyerCancelButton('accept', 'Approve')}
+        {buyerCancelButton('reject', 'Reject')}
+      </>
+    )
+  }
 
   if (tab === 'unpaid') {
     return <>{cancelButton}</>
@@ -430,7 +471,7 @@ function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPac
 }
 
 function OrderTimeline({ status }) {
-  if (status === 'Cancelled' || status === 'Cancelling') {
+  if (status === 'Cancelled') {
     return (
       <div className="flex items-center">
         <div className="flex flex-col items-center gap-1">
@@ -519,11 +560,12 @@ function OrderCard({
   printingId,
   onPack,
   onCancel,
+  onBuyerCancel,
   actingId,
 }) {
   const meta = PLATFORM_META[order.platform]
   const actions = !selectionMode
-    ? renderActions(order, { fullWidth: true, onPrintAWB, printingId, onPack, onCancel, actingId })
+    ? renderActions(order, { fullWidth: true, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId })
     : null
 
   const flagBadges = [
@@ -593,6 +635,18 @@ function OrderCard({
 
         {flagBadges.length > 0 && (
           <div className="mt-2.5 flex flex-wrap gap-1.5">{flagBadges}</div>
+        )}
+
+        {order.status === 'Cancel Requested' && (
+          <div className="mt-2.5 rounded-lg bg-amber-500/10 px-2.5 py-2 text-[11px] leading-snug text-amber-800">
+            <p className="font-semibold">Buyer requested cancellation</p>
+            <p className="mt-0.5">
+              Reason: {order.buyerCancelReason || order.cancelReason || 'Not provided'}
+            </p>
+            <p className="mt-0.5 text-amber-700">
+              Respond within ~2 days or Shopee auto-accepts.
+            </p>
+          </div>
         )}
 
         <div className="mt-3 flex items-center gap-2.5">
@@ -1126,6 +1180,70 @@ export default function Orders() {
     }
   }
 
+  // Approve/reject a buyer's cancellation request. Both are irreversible from
+  // the seller's side, so both confirm first (echoing the buyer's reason so
+  // the decision is made against it). The backend NEVER trusts Shopee's
+  // response — it re-syncs the order and returns the real status — so on any
+  // outcome (approved / rejected / already-resolved) we refetch, which
+  // replaces this row with its true status and retires the buttons rather than
+  // leaving a stale row the seller could click again.
+  async function handleBuyerCancel(order, decision) {
+    if (!order.platform_order_id || !order.store_id) {
+      toast.error('This works with real connected orders only.')
+      return
+    }
+
+    const verb = decision === 'accept' ? 'Approve' : 'Reject'
+    const reason = order.buyerCancelReason || order.cancelReason || 'no reason given'
+    const confirmMsg =
+      decision === 'accept'
+        ? `Approve cancellation of ${order.id}?\n\nBuyer's reason: ${reason}\n\nThe order will be cancelled and the buyer refunded. This cannot be undone.`
+        : `Reject cancellation of ${order.id}?\n\nBuyer's reason: ${reason}\n\nThe order returns to fulfilment and the buyer is expected to receive it. This cannot be undone.`
+
+    if (!window.confirm(confirmMsg)) return
+
+    setActingId(order.id)
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
+      if (!session) {
+        toast.error('You must be logged in.')
+        return
+      }
+
+      const { ok, error, data } = await postOrderAction(
+        session,
+        order,
+        decision === 'accept' ? 'accept_buyer_cancel' : 'reject_buyer_cancel'
+      )
+
+      // Always refetch: whether it succeeded, was already resolved, or failed,
+      // the order's real status may have moved — pulling it fresh clears any
+      // stale row + dead buttons.
+      await fetchOrders()
+
+      if (!ok) {
+        toast.error(error || `Failed to ${verb.toLowerCase()} cancellation.`)
+        return
+      }
+
+      // already_resolved is the common first case (these were buried in the
+      // Cancelled tab and may have auto-accepted). Show it as info, not a
+      // celebratory success, so it reads as "nothing for you to do here".
+      if (data?.already_resolved) {
+        toast.info(data.message || 'This cancellation was already resolved.')
+      } else {
+        toast.success(data?.message || `Cancellation ${decision === 'accept' ? 'approved' : 'rejected'}.`)
+      }
+    } catch {
+      toast.error(`Failed to ${verb.toLowerCase()} cancellation.`)
+    } finally {
+      setActingId(null)
+    }
+  }
+
   async function handleBulkShip() {
     const selected = orders.filter((o) => selectedIds.has(o.id))
     const realOrders = selected.filter(
@@ -1479,6 +1597,7 @@ export default function Orders() {
               printingId={printingId}
               onPack={handlePackOrder}
               onCancel={handleCancelOrder}
+              onBuyerCancel={handleBuyerCancel}
               actingId={actingId}
             />
           ))
@@ -1551,6 +1670,20 @@ export default function Orders() {
                 >
                   {selectedOrder.status}
                 </span>
+
+                {selectedOrder.status === 'Cancel Requested' && (
+                  <div className="mt-4 rounded-xl bg-amber-500/10 px-3 py-3 text-xs leading-snug text-amber-800">
+                    <p className="text-sm font-semibold">Buyer requested cancellation</p>
+                    <p className="mt-1.5">
+                      <span className="text-amber-700">Reason: </span>
+                      {selectedOrder.buyerCancelReason || selectedOrder.cancelReason || 'Not provided'}
+                    </p>
+                    <p className="mt-1.5 text-amber-700">
+                      Respond within ~2 days or Shopee automatically accepts the cancellation and
+                      refunds the buyer. Read the reason, then Approve or Reject below.
+                    </p>
+                  </div>
+                )}
 
                 <section className="mt-5">
                   <h3 className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">Buyer</h3>
@@ -1674,6 +1807,7 @@ export default function Orders() {
                     printingId,
                     onPack: handlePackOrder,
                     onCancel: handleCancelOrder,
+                    onBuyerCancel: handleBuyerCancel,
                     actingId,
                   })}
                 </SheetFooter>
