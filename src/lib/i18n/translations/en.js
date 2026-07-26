@@ -56,6 +56,7 @@ export default {
       // BottomNav's "Boost" label. Being settled in a separate pass before
       // Orders.jsx is converted; revisit these two for consistency then.
       newOrders: 'New Orders',
+      flashDeals: 'Flash Deals',
       boostNow: 'Boost Now',
     },
     // PROVISIONAL — reused between the "To Pack" stat card and the recent-

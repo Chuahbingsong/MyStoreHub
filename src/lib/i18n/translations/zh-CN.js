@@ -58,6 +58,9 @@ export default {
       // PROVISIONAL — see the matching comment in en.js.
       newOrders: '新订单',
       boostNow: '立即推广',
+      // Shopee's own zh-CN term for shop flash sales is 限时秒杀; same
+      // confirm-against-Shopee caveat as `nav.boost` above applies.
+      flashDeals: '限时秒杀',
     },
     // PROVISIONAL — see the matching comment in en.js. Do not treat these as
     // final; revisit for consistency once Orders.jsx's status vocabulary is

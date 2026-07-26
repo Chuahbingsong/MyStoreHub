@@ -2,6 +2,7 @@ import { supabaseAdmin } from '../_lib/supabaseAdmin.js';
 import { syncStoreOrders, syncStoreProducts } from '../_lib/shopeeSync.js';
 import { autoPackStore } from '../_lib/autoPack.js';
 import { autoBoostStore } from '../_lib/autoBoost.js';
+import { syncStoreFlashSales } from '../_lib/flashSaleSync.js';
 import { notifyStore } from '../_lib/pushNotify.js';
 
 // Cap the runtime. Vercel Hobby allows up to 60s.
@@ -156,7 +157,22 @@ export default async function handler(req, res) {
       }
     }
 
-    return { storeId: store.id, touched, orders, products, packed, boosted, notified, errors };
+    // Flash Deals, READ-ONLY. Not opt-in per store — it only ever reads, so
+    // there is nothing to collide with (BigSeller owns slot creation and keeps
+    // it). Runs last and shares this same deadline, never a fresh window, so on
+    // a tight tick it defers sessions rather than pushing the cron past 60s.
+    let flashSessions = 0;
+    if (Date.now() < deadline) {
+      try {
+        const flashResult = await syncStoreFlashSales(store, { deadline });
+        flashSessions = flashResult.sessions ?? 0;
+      } catch (err) {
+        console.error('[cron/sync-all] flash sale sync failed for store', store.id, err);
+        errors.push({ storeId: store.id, type: 'flash_sales', error: err.message });
+      }
+    }
+
+    return { storeId: store.id, touched, orders, products, packed, boosted, notified, flashSessions, errors };
   }
 
   const settled = await Promise.allSettled(stores.map(syncOneStore));
@@ -167,6 +183,7 @@ export default async function handler(req, res) {
   let totalPacked = 0;
   let totalBoosted = 0;
   let totalNotified = 0;
+  let totalFlashSessions = 0;
   const errors = [];
 
   for (let i = 0; i < settled.length; i += 1) {
@@ -181,19 +198,20 @@ export default async function handler(req, res) {
       continue;
     }
 
-    const { touched, orders, products, packed, boosted, notified, errors: storeErrors } = outcome.value;
+    const { touched, orders, products, packed, boosted, notified, flashSessions, errors: storeErrors } = outcome.value;
     totalOrders += orders;
     totalProducts += products;
     totalPacked += packed;
     totalBoosted += boosted;
     totalNotified += notified;
+    totalFlashSessions += flashSessions;
     errors.push(...storeErrors);
     if (touched) storesSynced += 1;
   }
 
   const elapsedMs = Date.now() - startedAt;
   console.log(
-    `[cron/sync-all] done in ${elapsedMs}ms — stores: ${storesSynced}/${stores.length}, orders: ${totalOrders}, products: ${totalProducts}, auto-packed: ${totalPacked}, auto-boosted: ${totalBoosted}, notified: ${totalNotified}, errors: ${errors.length}`
+    `[cron/sync-all] done in ${elapsedMs}ms — stores: ${storesSynced}/${stores.length}, orders: ${totalOrders}, products: ${totalProducts}, auto-packed: ${totalPacked}, auto-boosted: ${totalBoosted}, notified: ${totalNotified}, flash sessions: ${totalFlashSessions}, errors: ${errors.length}`
   );
 
   return res.status(200).json({
@@ -205,6 +223,7 @@ export default async function handler(req, res) {
     total_packed: totalPacked,
     total_boosted: totalBoosted,
     total_notified: totalNotified,
+    total_flash_sessions: totalFlashSessions,
     elapsed_ms: elapsedMs,
     errors,
   });
