@@ -1,6 +1,7 @@
 import { generateSign, SHOPEE_PARTNER_ID, SHOPEE_API_BASE } from './shopee.js';
 import { supabaseAdmin } from './supabaseAdmin.js';
 import { acquireSyncLock, logSyncStart, logSyncComplete, ensureFreshToken } from './shopeeSync.js';
+import { selectAllPaged, warnIfAtCap } from './supabaseSelect.js';
 
 // Flash Deals sync — READ-ONLY monitoring of Shopee shop flash sales.
 //
@@ -258,10 +259,14 @@ async function persistItems(storeId, flashSaleRowId, models, itemInfoById, produ
   // Prune models this session no longer carries. Scoped to the one session, so
   // a partial fetch elsewhere can never delete another session's rows.
   const keep = rows.map((r) => `${r.item_id}:${r.model_id}`);
+  // Scoped to ONE session (max ~239 models observed), so the cap is far off.
+  // Truncation here would under-delete, never over-delete, but warn anyway so
+  // it can't become another invisible cap.
   const { data: existing } = await supabaseAdmin
     .from('flash_sale_items')
     .select('id, item_id, model_id')
     .eq('flash_sale_row_id', flashSaleRowId);
+  warnIfAtCap(`flash_sale_items.prune[${flashSaleRowId}]`, existing);
 
   const stale = (existing ?? []).filter((e) => !keep.includes(`${e.item_id}:${e.model_id}`));
   if (stale.length > 0) {
@@ -313,10 +318,13 @@ export async function syncStoreFlashSales(store, options = {}) {
       console.error(`[flash-sale] [${store.id}] slot cache refresh failed:`, err.message);
     }
 
-    const { data: products, error: productsError } = await supabaseAdmin
-      .from('products')
-      .select('id, platform_product_id')
-      .eq('store_id', store.id);
+    // Paged: truncation would silently null out product_id linkage on flash
+    // sale items for everything past the cap.
+    const { data: products, error: productsError } = await selectAllPaged(
+      `products.flashMap[${store.id}]`,
+      (from, to) =>
+        supabaseAdmin.from('products').select('id, platform_product_id').eq('store_id', store.id).range(from, to)
+    );
     if (productsError) throw new Error(`failed to load products: ${productsError.message}`);
 
     const productIdByItemId = new Map(

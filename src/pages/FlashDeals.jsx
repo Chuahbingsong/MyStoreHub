@@ -4,6 +4,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { supabase } from '@/lib/supabase'
+import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 
 // READ-ONLY view of Shopee flash sale sessions. There is no create/edit path
@@ -200,14 +201,19 @@ export default function FlashDeals() {
   // sheet is opened (see the effect below).
   const fetchAll = useCallback(async () => {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('flash_sales')
-      .select(
-        'id, store_id, flash_sale_id, timeslot_id, status, type, start_time, end_time, ' +
-          'item_count, enabled_item_count_derived, enabled_model_count, click_count, remindme_count, ' +
-          'observed_at, stores(shop_name)'
-      )
-      .order('start_time', { ascending: false })
+    // Paged: ~44 sessions per store under the 7-day retention window, so this
+    // scales with store count and would reach the cap at ~23 stores.
+    const { data, error } = await selectAllPaged('flashDeals.sessions', (from, to) =>
+      supabase
+        .from('flash_sales')
+        .select(
+          'id, store_id, flash_sale_id, timeslot_id, status, type, start_time, end_time, ' +
+            'item_count, enabled_item_count_derived, enabled_model_count, click_count, remindme_count, ' +
+            'observed_at, stores(shop_name)'
+        )
+        .order('start_time', { ascending: false })
+        .range(from, to)
+    )
 
     if (error) {
       console.error('[flash-deals] load failed', error)
@@ -231,13 +237,19 @@ export default function FlashDeals() {
 
     ;(async () => {
       setItemsLoading(true)
-      const { data, error } = await supabase
-        .from('flash_sale_items')
-        .select(
-          'id, item_id, model_id, item_name, model_name, image, status, original_price, ' +
-            'input_promotion_price, purchase_limit, campaign_stock, reject_reason, products(image_url)'
-        )
-        .eq('flash_sale_row_id', openSaleId)
+      // Paged: one session held 239 variant rows in live data — comfortably
+      // under the cap, but this is exactly the shape that grew past it server
+      // side, so it is bounded explicitly rather than by assumption.
+      const { data, error } = await selectAllPaged('flashDeals.items', (from, to) =>
+        supabase
+          .from('flash_sale_items')
+          .select(
+            'id, item_id, model_id, item_name, model_name, image, status, original_price, ' +
+              'input_promotion_price, purchase_limit, campaign_stock, reject_reason, products(image_url)'
+          )
+          .eq('flash_sale_row_id', openSaleId)
+          .range(from, to)
+      )
 
       if (cancelled) return
       if (error) {

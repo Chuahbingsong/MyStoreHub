@@ -209,6 +209,49 @@ export default async function handler(req, res) {
     if (touched) storesSynced += 1;
   }
 
+  // Store-level failures recorded in sync_logs but NOT thrown — e.g. a
+  // flash-sale session whose item fetch failed, which syncStoreFlashSales
+  // catches, logs as status 'error', and returns from normally. Without this
+  // the summary could report errors: 0 while sync_logs held a failure, which is
+  // the same class of blind spot as a 'started' row with no completion.
+  //
+  // Read from sync_logs rather than from return values so this covers EVERY
+  // sync type uniformly — orders, products, auto-pack, auto-boost, flash sales,
+  // and anything added later — with no per-feature wiring.
+  try {
+    // 5s of slack absorbs clock skew between this process and Postgres, so a
+    // row written moments after startedAt can't fall outside the window.
+    const since = new Date(startedAt - 5_000).toISOString();
+    const { data: loggedErrors, error: logQueryError } = await supabaseAdmin
+      .from('sync_logs')
+      .select('store_id, sync_type, message')
+      .eq('status', 'error')
+      .gte('synced_at', since)
+      .limit(200);
+
+    if (logQueryError) {
+      console.error('[cron/sync-all] failed to read sync_logs for error reconciliation', logQueryError);
+    } else {
+      // Don't double-report a failure that already threw and was collected above.
+      const seen = new Set(errors.map((e) => `${e.storeId}:${e.type}`));
+      for (const row of loggedErrors ?? []) {
+        const key = `${row.store_id}:${row.sync_type}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        errors.push({
+          storeId: row.store_id,
+          type: row.sync_type,
+          error: row.message ?? 'failed (no message recorded)',
+          source: 'sync_logs',
+        });
+      }
+    }
+  } catch (err) {
+    // Reconciliation is diagnostics — it must never turn a successful cron run
+    // into a failed HTTP response.
+    console.error('[cron/sync-all] error reconciliation threw', err);
+  }
+
   const elapsedMs = Date.now() - startedAt;
   console.log(
     `[cron/sync-all] done in ${elapsedMs}ms — stores: ${storesSynced}/${stores.length}, orders: ${totalOrders}, products: ${totalProducts}, auto-packed: ${totalPacked}, auto-boosted: ${totalBoosted}, notified: ${totalNotified}, flash sessions: ${totalFlashSessions}, errors: ${errors.length}`
