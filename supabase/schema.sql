@@ -157,3 +157,49 @@ create index if not exists idx_orders_store_id_auto_pack_status on orders (store
 alter table orders add column if not exists tracking_backfill_attempted_at timestamptz;
 
 create index if not exists idx_orders_store_id_tracking_backfill on orders (store_id, tracking_number, tracking_backfill_attempted_at);
+
+-- Auto-boost: per-store opt-in. When true, MyStore Hub OWNS this store's 5
+-- Shopee boost slots and re-boosts a product rotation into them every ~4h via
+-- cron (see api/_lib/autoBoost.js). Default false — turn BigSeller's boost off
+-- for a store BEFORE enabling this, so the two don't fight over the slots.
+alter table stores add column if not exists auto_boost_enabled boolean not null default false;
+
+-- boost_rotation: the ordered pool of products a store cycles its 5 boost
+-- slots through. The scheduler re-boosts the least-recently-boosted eligible
+-- product first (last_boosted_at asc nulls first), so a rotation larger than 5
+-- fairly shares the slots over successive 4h cycles. This is the user-editable
+-- queue behind the Boost page's "Edit Boost" sheet.
+create table if not exists boost_rotation (
+  id uuid primary key default gen_random_uuid(),
+  store_id uuid references stores(id) on delete cascade,
+  product_id uuid references products(id) on delete cascade,
+  position int not null default 0,
+  -- Stamped ONLY after Shopee's get_boosted_list confirms the item is actually
+  -- boosted (verify-by-repoll), never on an unverified boost_item response.
+  last_boosted_at timestamptz,
+  created_at timestamptz default now(),
+  unique (store_id, product_id)
+);
+create index if not exists idx_boost_rotation_store on boost_rotation (store_id, last_boosted_at);
+
+-- boost_slots: a per-cron-cycle SNAPSHOT of what Shopee's get_boosted_list
+-- reports for a store — the source of truth for both the live "Xm left" UI and
+-- the scheduler's "is this slot free?" decision. Rewritten each cycle from the
+-- API (rows for items no longer boosted are deleted). cool_down_second is
+-- Shopee's live countdown; reboostable_at = observed_at + cool_down_second is
+-- the absolute instant the slot frees up, so the UI can count down without
+-- re-polling. product_id links the boosted item_id to our synced catalogue
+-- when we recognise it; externally_controlled marks a slot occupied by an item
+-- that is NOT in our rotation (i.e. another booster put it there).
+create table if not exists boost_slots (
+  id uuid primary key default gen_random_uuid(),
+  store_id uuid references stores(id) on delete cascade,
+  item_id text not null,
+  product_id uuid references products(id) on delete set null,
+  cool_down_second int,
+  reboostable_at timestamptz,
+  externally_controlled boolean not null default false,
+  observed_at timestamptz default now(),
+  unique (store_id, item_id)
+);
+create index if not exists idx_boost_slots_store on boost_slots (store_id);

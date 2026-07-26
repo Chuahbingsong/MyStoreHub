@@ -58,6 +58,9 @@ export default {
       // PROVISIONAL — see the matching comment in en.js.
       newOrders: '新订单',
       boostNow: '立即推广',
+      // Shopee's own zh-CN term for shop flash sales is 限时秒杀; same
+      // confirm-against-Shopee caveat as `nav.boost` above applies.
+      flashDeals: '限时秒杀',
     },
     // PROVISIONAL — see the matching comment in en.js. Do not treat these as
     // final; revisit for consistency once Orders.jsx's status vocabulary is
@@ -120,6 +123,18 @@ export default {
       autoSyncLabel: '自动同步订单（60秒）',
       autoSyncDescription: '订单页面保持打开时自动刷新，标签页隐藏时暂停。',
       autoSyncAria: '切换自动同步订单',
+    },
+    push: {
+      title: '通知',
+      label: '推送通知',
+      description: '有新订单或买家申请取消时提醒此设备——即使应用已关闭。',
+      toggleAria: '切换推送通知',
+      enabledToast: '已在此设备启用推送通知',
+      disabledToast: '已在此设备关闭推送通知',
+      deniedToast: '通知已被拦截。请在浏览器设置中允许后重试。',
+      errorToast: '更新推送通知失败。',
+      unsupported: '此浏览器不支持推送通知。',
+      iosHint: '在 iPhone 上，请先将 MyStore Hub 添加到主屏幕（分享 → 添加到主屏幕），再从图标打开以启用通知。需要 iOS 16.4 或更高版本。',
     },
     account: {
       title: '账户',

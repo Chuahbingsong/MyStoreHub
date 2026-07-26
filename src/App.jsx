@@ -7,6 +7,7 @@ import Orders from '@/pages/Orders'
 import BulkPrint from '@/pages/BulkPrint'
 import Products from '@/pages/Products'
 import Boost from '@/pages/Boost'
+import FlashDeals from '@/pages/FlashDeals'
 import Inventory from '@/pages/Inventory'
 import Analytics from '@/pages/Analytics'
 import Settings from '@/pages/Settings'
@@ -55,6 +56,14 @@ function App() {
           element={
             <AppShell>
               <Boost />
+            </AppShell>
+          }
+        />
+        <Route
+          path="/flash-deals"
+          element={
+            <AppShell>
+              <FlashDeals />
             </AppShell>
           }
         />

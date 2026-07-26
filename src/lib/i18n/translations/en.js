@@ -56,6 +56,7 @@ export default {
       // BottomNav's "Boost" label. Being settled in a separate pass before
       // Orders.jsx is converted; revisit these two for consistency then.
       newOrders: 'New Orders',
+      flashDeals: 'Flash Deals',
       boostNow: 'Boost Now',
     },
     // PROVISIONAL — reused between the "To Pack" stat card and the recent-
@@ -125,6 +126,18 @@ export default {
       autoSyncLabel: 'Auto-sync orders (60s)',
       autoSyncDescription: "Keeps the Orders page fresh while it's open. Pauses when the tab is hidden.",
       autoSyncAria: 'Toggle auto-sync orders',
+    },
+    push: {
+      title: 'Notifications',
+      label: 'Push notifications',
+      description: 'Alerts this device when a new order arrives or a buyer requests to cancel — even when the app is closed.',
+      toggleAria: 'Toggle push notifications',
+      enabledToast: 'Push notifications enabled on this device',
+      disabledToast: 'Push notifications disabled on this device',
+      deniedToast: 'Notifications are blocked. Allow them in your browser settings, then try again.',
+      errorToast: 'Failed to update push notifications.',
+      unsupported: "This browser doesn't support push notifications.",
+      iosHint: 'On iPhone, add MyStore Hub to your Home Screen first (Share → Add to Home Screen), then open it from the icon to enable notifications. Requires iOS 16.4 or later.',
     },
     account: {
       title: 'Account',

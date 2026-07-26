@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { formatDistanceToNow } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
-import { Bell, ChevronRight, Printer, ScanLine, ShoppingBag, Zap } from 'lucide-react'
+import { Bell, ChevronRight, Flame, Printer, ScanLine, ShoppingBag, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -378,24 +378,33 @@ export default function Dashboard() {
 
       <section className="mt-5 px-4">
         <h2 className="mb-2.5 font-semibold text-[#1F2937]">{t('dashboard.quickActions.title')}</h2>
-        <div className="flex gap-3">
-          <button className="flex-1 rounded-2xl border border-[#E8E6E1] bg-white p-4 text-center shadow-card transition-transform active:scale-[0.98]">
+        {/* Four actions no longer fit side-by-side at flex-1 on a phone, so this
+            is a grid — same card styling, just wrapped into even columns. */}
+        <div className="grid grid-cols-4 gap-2">
+          <button className="rounded-2xl border border-[#E8E6E1] bg-white p-3 text-center shadow-card transition-transform active:scale-[0.98]">
             <Printer className="mx-auto mb-1.5 h-5 w-5 text-[#6B7280]" />
-            <span className="text-xs font-medium text-[#6B7280]">{t('dashboard.quickActions.printAwb')}</span>
+            <span className="text-[11px] font-medium text-[#6B7280]">{t('dashboard.quickActions.printAwb')}</span>
           </button>
           <button
             onClick={() => navigate('/orders')}
-            className="flex-1 rounded-2xl border border-[#E8E6E1] bg-white p-4 text-center shadow-card transition-transform active:scale-[0.98]"
+            className="rounded-2xl border border-[#E8E6E1] bg-white p-3 text-center shadow-card transition-transform active:scale-[0.98]"
           >
             <ShoppingBag className="mx-auto mb-1.5 h-5 w-5 text-[#6B7280]" />
-            <span className="text-xs font-medium text-[#6B7280]">{t('dashboard.quickActions.newOrders')}</span>
+            <span className="text-[11px] font-medium text-[#6B7280]">{t('dashboard.quickActions.newOrders')}</span>
           </button>
           <button
             onClick={() => navigate('/boost')}
-            className="flex-1 rounded-2xl border border-[#E8E6E1] bg-white p-4 text-center shadow-card transition-transform active:scale-[0.98]"
+            className="rounded-2xl border border-[#E8E6E1] bg-white p-3 text-center shadow-card transition-transform active:scale-[0.98]"
           >
             <Zap className="mx-auto mb-1.5 h-5 w-5 text-[#6B7280]" />
-            <span className="text-xs font-medium text-[#6B7280]">{t('dashboard.quickActions.boostNow')}</span>
+            <span className="text-[11px] font-medium text-[#6B7280]">{t('dashboard.quickActions.boostNow')}</span>
+          </button>
+          <button
+            onClick={() => navigate('/flash-deals')}
+            className="rounded-2xl border border-[#E8E6E1] bg-white p-3 text-center shadow-card transition-transform active:scale-[0.98]"
+          >
+            <Flame className="mx-auto mb-1.5 h-5 w-5 text-[#6B7280]" />
+            <span className="text-[11px] font-medium text-[#6B7280]">{t('dashboard.quickActions.flashDeals')}</span>
           </button>
         </div>
       </section>

@@ -3,9 +3,17 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Check, Loader2, LogOut, Package, Pencil, RefreshCw, ShoppingBag, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { getAutoSyncOrdersEnabled, setAutoSyncOrdersEnabled } from '@/lib/preferences'
+import {
+  isPushSupported,
+  isIosNeedsInstall,
+  getExistingSubscription,
+  enablePush,
+  disablePush,
+} from '@/lib/push'
 import { useTranslation } from '@/lib/i18n/I18nContext'
 
 const PLATFORMS = [
@@ -50,6 +58,12 @@ export default function Settings() {
   const [savingStoreId, setSavingStoreId] = useState(null)
   const [togglingAutoPackId, setTogglingAutoPackId] = useState(null)
   const [autoSyncEnabled, setAutoSyncEnabledState] = useState(() => getAutoSyncOrdersEnabled())
+  // Push: source of truth is whether THIS browser currently holds a
+  // subscription (read on mount). Default OFF until opted in.
+  const [pushSupported] = useState(() => isPushSupported())
+  const [pushNeedsIosInstall] = useState(() => isIosNeedsInstall())
+  const [pushEnabled, setPushEnabled] = useState(false)
+  const [togglingPush, setTogglingPush] = useState(false)
 
   const fetchStores = useCallback(async (userId) => {
     setLoadingStores(true)
@@ -194,6 +208,51 @@ export default function Settings() {
     const next = !autoSyncEnabled
     setAutoSyncEnabledState(next)
     setAutoSyncOrdersEnabled(next)
+  }
+
+  // Initialise the push toggle from the browser's actual subscription state, so
+  // it survives reloads and reflects reality (e.g. permission revoked in
+  // browser settings) rather than a stored flag.
+  useEffect(() => {
+    if (!pushSupported) return
+    getExistingSubscription()
+      .then((sub) => {
+        setPushEnabled(!!sub)
+      })
+      .catch(() => {})
+  }, [pushSupported])
+
+  async function handleTogglePush() {
+    if (!user?.id) return
+    const next = !pushEnabled
+    setTogglingPush(true)
+    try {
+      if (next) {
+        const { ok, reason } = await enablePush(user.id)
+        if (!ok) {
+          toast.error(
+            reason === 'denied'
+              ? t('settings.push.deniedToast')
+              : reason === 'unsupported'
+                ? t('settings.push.unsupported')
+                : t('settings.push.errorToast')
+          )
+          return
+        }
+        setPushEnabled(true)
+        toast.success(t('settings.push.enabledToast'))
+      } else {
+        const { ok } = await disablePush()
+        if (!ok) {
+          toast.error(t('settings.push.errorToast'))
+          return
+        }
+        setPushEnabled(false)
+        toast.success(t('settings.push.disabledToast'))
+      }
+    } finally {
+      setTogglingPush(false)
+    }
   }
 
   // Auto-pack is per-store and lives in Supabase (not localStorage like the
@@ -405,27 +464,14 @@ export default function Settings() {
                         {t('settings.connectedStores.autoPack.description')}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={!!store.auto_pack_enabled}
+                    <Switch
+                      checked={!!store.auto_pack_enabled}
+                      disabled={togglingAutoPackId === store.id}
+                      onCheckedChange={() => handleToggleAutoPack(store)}
                       aria-label={t('settings.connectedStores.autoPack.toggleAria', {
                         name: store.shop_name || store.shop_id,
                       })}
-                      onClick={() => handleToggleAutoPack(store)}
-                      disabled={togglingAutoPackId === store.id}
-                      className={cn(
-                        'relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50',
-                        store.auto_pack_enabled ? 'bg-[#2563EB]' : 'bg-gray-300'
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform',
-                          store.auto_pack_enabled ? 'translate-x-[22px]' : 'translate-x-0.5'
-                        )}
-                      />
-                    </button>
+                    />
                   </div>
                   <div className="mt-2 flex gap-2">
                     <Button
@@ -529,24 +575,36 @@ export default function Settings() {
             <p className="text-sm font-medium text-[#1F2937]">{t('settings.orders.autoSyncLabel')}</p>
             <p className="mt-0.5 text-xs text-[#6B7280]">{t('settings.orders.autoSyncDescription')}</p>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={autoSyncEnabled}
+          <Switch
+            checked={autoSyncEnabled}
+            onCheckedChange={handleToggleAutoSync}
             aria-label={t('settings.orders.autoSyncAria')}
-            onClick={handleToggleAutoSync}
-            className={cn(
-              'relative h-6 w-11 shrink-0 rounded-full transition-colors',
-              autoSyncEnabled ? 'bg-[#2563EB]' : 'bg-gray-300'
-            )}
-          >
-            <span
-              className={cn(
-                'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform',
-                autoSyncEnabled ? 'translate-x-[22px]' : 'translate-x-0.5'
-              )}
-            />
-          </button>
+          />
+        </div>
+      </section>
+
+      <section className="px-4 py-3">
+        <h2 className="mb-2 font-semibold text-[#1F2937]">{t('settings.push.title')}</h2>
+        <div className="rounded-xl bg-white border border-[#ECECEC] shadow-sm p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-[#1F2937]">{t('settings.push.label')}</p>
+              <p className="mt-0.5 text-xs text-[#6B7280]">{t('settings.push.description')}</p>
+            </div>
+            {pushSupported ? (
+              <Switch
+                checked={pushEnabled}
+                disabled={togglingPush}
+                onCheckedChange={handleTogglePush}
+                aria-label={t('settings.push.toggleAria')}
+              />
+            ) : null}
+          </div>
+          {!pushSupported && (
+            <p className="mt-3 rounded-lg bg-[#F9FAFB] px-3 py-2 text-xs text-[#6B7280]">
+              {pushNeedsIosInstall ? t('settings.push.iosHint') : t('settings.push.unsupported')}
+            </p>
+          )}
         </div>
       </section>
 
