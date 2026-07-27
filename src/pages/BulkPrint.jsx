@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowLeft, Check, ChevronDown, Loader2, Printer } from '
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { supabase } from '@/lib/supabase'
+import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import {
   downloadAwbResponse,
@@ -158,14 +159,20 @@ export default function BulkPrint() {
 
   const fetchData = useCallback(async () => {
     const [ordersRes, storesRes] = await Promise.all([
-      supabase
-        .from('orders')
-        .select('*')
-        .in('order_status', PRINTABLE_STATUSES)
-        .not('platform_order_id', 'is', null)
-        // Tolerates legacy rows where the column is null rather than false.
-        .not('awb_printed', 'is', true)
-        .order('order_created_at', { ascending: false }),
+      // Paged: a large unprinted backlog would otherwise stop at the 1000-row
+      // cap and silently omit AWBs from a print run — the worst place for a
+      // short list, since the operator has no way to tell one is missing.
+      selectAllPaged('bulkPrint.orders', (from, to) =>
+        supabase
+          .from('orders')
+          .select('*')
+          .in('order_status', PRINTABLE_STATUSES)
+          .not('platform_order_id', 'is', null)
+          // Tolerates legacy rows where the column is null rather than false.
+          .not('awb_printed', 'is', true)
+          .order('order_created_at', { ascending: false })
+          .range(from, to)
+      ),
       supabase.from('stores').select('id, shop_id, shop_name, platform'),
     ])
 

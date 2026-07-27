@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ChevronRight, Eye, Package, Bell } from 'lucide-react'
+import { AlertTriangle, ChevronRight, Eye, Package, Bell, RefreshCw, Repeat } from 'lucide-react'
+import { toast } from 'sonner'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { supabase } from '@/lib/supabase'
+import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 
 // READ-ONLY view of Shopee flash sale sessions. There is no create/edit path
 // here by design: BigSeller currently owns slot creation on these shops, and
-// MyStore Hub coexists as an observer.
+// MyStore Hub coexists as an observer. The per-slot Sync button is still part of
+// that contract — it pulls fresh data, it never writes to Shopee.
 //
 // Deliberately NOT shown: "stock left" / "units sold". Shopee's
 // get_shop_flash_sale_items exposes no such field — campaign_stock is the
@@ -24,6 +28,32 @@ const MODEL_STATUS = {
   2: { label: 'Deleted', cls: 'bg-gray-100 text-gray-500' },
   4: { label: 'System rejected', cls: 'bg-red-100 text-red-700' },
   5: { label: 'Manual rejected', cls: 'bg-red-100 text-red-700' },
+}
+
+// Session-level status. Distinct enum from MODEL_STATUS above — a session can
+// be system-rejected while its items still read as enabled, which is exactly
+// the case that used to be invisible on this page.
+const SESSION_STATUS = {
+  0: { label: 'Deleted', cls: 'bg-gray-100 text-gray-500' },
+  1: { label: 'Enabled', cls: 'bg-green-100 text-green-700' },
+  2: { label: 'Disabled', cls: 'bg-gray-100 text-gray-600' },
+  3: { label: 'System rejected', cls: 'bg-red-100 text-red-700' },
+}
+
+// Server enforces a 60s per-session cooldown (SESSION_SYNC_COOLDOWN_MS in
+// api/_lib/flashSaleSync.js). Mirrored here only to grey the button out; the
+// endpoint is the thing that actually holds the line.
+const SYNC_COOLDOWN_MS = 60_000
+
+function formatRelative(iso, nowMs) {
+  if (!iso) return 'never'
+  const diff = nowMs - new Date(iso).getTime()
+  if (diff < 60_000) return 'just now'
+  const mins = Math.floor(diff / 60_000)
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
 }
 
 function imageUrlFor(item) {
@@ -142,8 +172,13 @@ function SessionCard({ sale, state, nowMs, onOpen }) {
 function ItemRow({ item }) {
   const orig = Number(item.original_price)
   const promo = Number(item.input_promotion_price)
+  const withTax = Number(item.promotion_price_with_tax)
   const pct = orig > 0 && promo > 0 ? Math.round(((orig - promo) / orig) * 100) : null
   const status = MODEL_STATUS[item.status] ?? { label: `Status ${item.status}`, cls: 'bg-gray-100 text-gray-600' }
+  // Shopee's criteria (get_item_criteria, criteria_id 12, category "All") require
+  // min 10% off. Flagged rather than hidden: a variant sitting under the floor
+  // is the reason a session gets rejected, and that should be visible here.
+  const underDiscountFloor = pct != null && pct < 10
 
   return (
     <div className="flex items-start gap-3 border-b border-[#ECECEC] py-3">
@@ -159,17 +194,38 @@ function ItemRow({ item }) {
             <span className="text-xs text-gray-400 line-through">RM {orig.toFixed(2)}</span>
           )}
           {pct > 0 && (
-            <span className="rounded bg-[#EE4D2D]/10 px-1.5 py-0.5 text-[10px] font-medium text-[#EE4D2D]">
-              -{pct}%
+            <span
+              className={cn(
+                'rounded px-1.5 py-0.5 text-[10px] font-medium',
+                underDiscountFloor
+                  ? 'bg-yellow-100 text-yellow-800'
+                  : 'bg-[#EE4D2D]/10 text-[#EE4D2D]'
+              )}
+            >
+              -{pct}%{underDiscountFloor && ' · under 10% floor'}
             </span>
           )}
         </div>
+        {/* promotion_price_with_tax has been synced since day one but was never
+            surfaced. Only shown when it actually differs from the input price,
+            so it stays quiet on the shops where tax is not applied. */}
+        {withTax > 0 && Math.abs(withTax - promo) >= 0.01 && (
+          <p className="mt-1 text-[11px] text-gray-500">Buyer pays incl. tax: RM {withTax.toFixed(2)}</p>
+        )}
         {/* Quota, NOT "stock left" — Shopee does not expose units sold, and
             campaign_stock never decrements. See the note at the top of this file. */}
         <p className="mt-1 text-[11px] text-gray-500">
           Promo quota: {item.campaign_stock ?? 0}
           {item.purchase_limit > 0 && ` · max ${item.purchase_limit}/buyer`}
         </p>
+        {/* Live product stock at last poll — deliberately labelled as such, NOT
+            as campaign stock remaining, which this is not. */}
+        {item.item_stock != null && (
+          <p className="mt-0.5 text-[11px] text-gray-400">
+            Product stock now: {item.item_stock}
+            {item.item_stock === 0 && ' · out of stock'}
+          </p>
+        )}
         {item.reject_reason && (
           <p className="mt-1 text-[11px] text-red-600">{item.reject_reason}</p>
         )}
@@ -177,6 +233,124 @@ function ItemRow({ item }) {
       <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', status.cls)}>
         {status.label}
       </span>
+    </div>
+  )
+}
+
+function SyncButton({ sale, nowMs, syncing, onSync }) {
+  // nowMs only ticks every 30s, so right after a sync it can still be BEHIND
+  // observed_at — clamped at 0, otherwise the countdown briefly reads higher
+  // than the cooldown itself (a 60s cooldown showing "63s").
+  const since = Math.max(0, nowMs - new Date(sale.observed_at ?? 0).getTime())
+  const cooling = since < SYNC_COOLDOWN_MS
+  const secsLeft = Math.ceil((SYNC_COOLDOWN_MS - since) / 1000)
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSync(sale)}
+      disabled={syncing || cooling}
+      className={cn(
+        'flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors',
+        syncing || cooling
+          ? 'border-[#ECECEC] bg-[#F3F4F6] text-gray-400'
+          : 'border-[#EE4D2D]/30 bg-[#EE4D2D]/10 text-[#EE4D2D] active:bg-[#EE4D2D]/20'
+      )}
+    >
+      <RefreshCw className={cn('h-3.5 w-3.5', syncing && 'animate-spin')} />
+      {/* The countdown is cosmetic — the server enforces the same cooldown and
+          answers 429 with its own retryAfterMs regardless of what's shown here.
+          nowMs ticks every 30s, so this can lag by up to that much; it never
+          re-enables the button earlier than the server would. */}
+      {syncing ? 'Syncing…' : cooling ? `${secsLeft}s` : 'Sync'}
+    </button>
+  )
+}
+
+function SessionDetails({ sale, nowMs }) {
+  const status = SESSION_STATUS[sale.status] ?? {
+    label: `Status ${sale.status}`,
+    cls: 'bg-gray-100 text-gray-600',
+  }
+  // item_count is Shopee's own figure; the derived count comes from the items
+  // endpoint. They disagree on expired sessions (Shopee reports
+  // enabled_item_count=0 while the items endpoint still returns enabled models),
+  // which is why both are shown rather than one being picked silently.
+  const reported = sale.enabled_item_count_reported
+  const derived = sale.enabled_item_count_derived
+  const countsDisagree = reported != null && derived != null && reported !== derived
+
+  return (
+    <div className="border-b border-[#ECECEC] py-3">
+      <div className="mb-2 flex items-center gap-2">
+        <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium', status.cls)}>
+          {status.label}
+        </span>
+        <span className="text-[11px] text-gray-400">
+          Synced {formatRelative(sale.observed_at, nowMs)}
+        </span>
+      </div>
+
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px]">
+        <div className="flex justify-between gap-2">
+          <dt className="text-gray-500">Items in slot</dt>
+          <dd className="text-[#1F2937]">{sale.item_count ?? 0}</dd>
+        </div>
+        <div className="flex justify-between gap-2">
+          <dt className="text-gray-500">Enabled items</dt>
+          <dd className="text-[#1F2937]">{derived ?? 0}</dd>
+        </div>
+        <div className="flex justify-between gap-2">
+          <dt className="text-gray-500">Variants</dt>
+          <dd className="text-[#1F2937]">{sale.enabled_model_count ?? 0}</dd>
+        </div>
+        <div className="flex justify-between gap-2">
+          <dt className="text-gray-500">Shopee reports</dt>
+          <dd className={cn(countsDisagree ? 'text-yellow-700' : 'text-[#1F2937]')}>
+            {reported ?? '—'}
+          </dd>
+        </div>
+        <div className="col-span-2 flex justify-between gap-2">
+          <dt className="text-gray-500">Flash sale ID</dt>
+          <dd className="font-mono text-[10px] text-gray-500">{sale.flash_sale_id}</dd>
+        </div>
+        <div className="col-span-2 flex justify-between gap-2">
+          <dt className="text-gray-500">Time slot ID</dt>
+          <dd className="font-mono text-[10px] text-gray-500">{sale.timeslot_id ?? '—'}</dd>
+        </div>
+      </dl>
+
+      {countsDisagree && (
+        <p className="mt-2 text-[11px] text-yellow-700">
+          Shopee reports {reported} enabled item(s), but the item list returns {derived}. The item
+          list is the one to trust — Shopee zeroes this figure on ended sessions.
+        </p>
+      )}
+    </div>
+  )
+}
+
+// MOCK UI ONLY. No logic, no scheduling, no persistence — this exists so the
+// layout can be judged before the real thing is built. It cannot renew anything:
+// renewing means creating a flash sale on Shopee, and this app has no write path
+// to Shopee at all (see the header comment and api/_lib/flashSaleSync.js).
+// The label says so plainly rather than implying a feature that isn't there.
+function AutoRenewRow({ enabled, onChange }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-[#ECECEC] py-3">
+      <div className="min-w-0">
+        <p className="flex items-center gap-1.5 text-sm text-[#1F2937]">
+          <Repeat className="h-3.5 w-3.5 text-gray-400" />
+          Auto-renew this slot
+          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
+            Preview
+          </span>
+        </p>
+        <p className="mt-0.5 text-[11px] text-gray-500">
+          Not active yet — this toggle does nothing so far.
+        </p>
+      </div>
+      <Switch checked={enabled} onCheckedChange={onChange} />
     </div>
   )
 }
@@ -189,6 +363,11 @@ export default function FlashDeals() {
   const [itemsBySale, setItemsBySale] = useState({})
   const [itemsLoading, setItemsLoading] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const [syncingId, setSyncingId] = useState(null)
+  // MOCK ONLY — see the AutoRenewRow comment. Kept in component state so the
+  // toggle feels real while it is being designed; nothing reads this but the
+  // switch itself, and it resets on reload.
+  const [autoRenewBySale, setAutoRenewBySale] = useState({})
 
   // Re-render every 30s so countdowns stay honest without refetching.
   useEffect(() => {
@@ -200,14 +379,19 @@ export default function FlashDeals() {
   // sheet is opened (see the effect below).
   const fetchAll = useCallback(async () => {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('flash_sales')
-      .select(
-        'id, store_id, flash_sale_id, timeslot_id, status, type, start_time, end_time, ' +
-          'item_count, enabled_item_count_derived, enabled_model_count, click_count, remindme_count, ' +
-          'observed_at, stores(shop_name)'
-      )
-      .order('start_time', { ascending: false })
+    // Paged: ~44 sessions per store under the 7-day retention window, so this
+    // scales with store count and would reach the cap at ~23 stores.
+    const { data, error } = await selectAllPaged('flashDeals.sessions', (from, to) =>
+      supabase
+        .from('flash_sales')
+        .select(
+          'id, store_id, flash_sale_id, timeslot_id, status, type, start_time, end_time, ' +
+            'item_count, enabled_item_count_reported, enabled_item_count_derived, enabled_model_count, ' +
+            'click_count, remindme_count, observed_at, stores(shop_name)'
+        )
+        .order('start_time', { ascending: false })
+        .range(from, to)
+    )
 
     if (error) {
       console.error('[flash-deals] load failed', error)
@@ -231,13 +415,20 @@ export default function FlashDeals() {
 
     ;(async () => {
       setItemsLoading(true)
-      const { data, error } = await supabase
-        .from('flash_sale_items')
-        .select(
-          'id, item_id, model_id, item_name, model_name, image, status, original_price, ' +
-            'input_promotion_price, purchase_limit, campaign_stock, reject_reason, products(image_url)'
-        )
-        .eq('flash_sale_row_id', openSaleId)
+      // Paged: one session held 239 variant rows in live data — comfortably
+      // under the cap, but this is exactly the shape that grew past it server
+      // side, so it is bounded explicitly rather than by assumption.
+      const { data, error } = await selectAllPaged('flashDeals.items', (from, to) =>
+        supabase
+          .from('flash_sale_items')
+          .select(
+            'id, item_id, model_id, item_name, model_name, image, status, original_price, ' +
+              'input_promotion_price, promotion_price_with_tax, purchase_limit, campaign_stock, ' +
+              'item_stock, reject_reason, products(image_url)'
+          )
+          .eq('flash_sale_row_id', openSaleId)
+          .range(from, to)
+      )
 
       if (cancelled) return
       if (error) {
@@ -251,6 +442,78 @@ export default function FlashDeals() {
       cancelled = true
     }
   }, [openSaleId, itemsBySale])
+
+  // Per-slot on-demand refresh. Hits the same fetch/persist path the cron uses
+  // (syncOneFlashSale), then reloads this one session's rows from Supabase
+  // rather than re-running the whole page query.
+  const handleSyncSession = useCallback(async (sale) => {
+    setSyncingId(sale.id)
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+      if (!session) {
+        toast.error('You must be logged in to sync.')
+        return
+      }
+
+      const res = await fetch('/api/shopee/sync-flash-sale', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ flash_sale_row_id: sale.id }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        // 429 carries retryAfterMs from whichever throttle layer fired, so the
+        // message can be specific instead of a generic failure.
+        if (res.status === 429 && data.retryAfterMs) {
+          toast.error(`${data.error} Try again in ${Math.ceil(data.retryAfterMs / 1000)}s.`)
+        } else {
+          toast.error(data.error ?? 'Refresh failed.')
+        }
+        return
+      }
+
+      // Pull the freshly-written rows back. Both the session row and its items
+      // change, and the items cache is keyed on session id, so it's replaced
+      // outright rather than merged.
+      const [{ data: freshSale }, { data: freshItems }] = await Promise.all([
+        supabase
+          .from('flash_sales')
+          .select(
+            'id, store_id, flash_sale_id, timeslot_id, status, type, start_time, end_time, ' +
+              'item_count, enabled_item_count_reported, enabled_item_count_derived, enabled_model_count, ' +
+              'click_count, remindme_count, observed_at, stores(shop_name)'
+          )
+          .eq('id', sale.id)
+          .maybeSingle(),
+        selectAllPaged('flashDeals.items.resync', (from, to) =>
+          supabase
+            .from('flash_sale_items')
+            .select(
+              'id, item_id, model_id, item_name, model_name, image, status, original_price, ' +
+                'input_promotion_price, promotion_price_with_tax, purchase_limit, campaign_stock, ' +
+                'item_stock, reject_reason, products(image_url)'
+            )
+            .eq('flash_sale_row_id', sale.id)
+            .range(from, to)
+        ),
+      ])
+
+      if (freshSale) setSales((prev) => prev.map((s) => (s.id === sale.id ? freshSale : s)))
+      setItemsBySale((prev) => ({ ...prev, [sale.id]: freshItems ?? [] }))
+      toast.success(`Refreshed — ${data.enabledItemCount} item(s), ${data.models} variant(s).`)
+    } catch (err) {
+      console.error('[flash-deals] session sync failed', err)
+      toast.error('Refresh failed.')
+    } finally {
+      setSyncingId(null)
+    }
+  }, [])
 
   const grouped = useMemo(() => {
     const out = { ongoing: [], upcoming: [], expired: [] }
@@ -327,16 +590,30 @@ export default function FlashDeals() {
           side="bottom"
           className="!h-screen w-full gap-0 rounded-t-2xl border-[#ECECEC] bg-white p-0"
         >
-          <SheetHeader className="border-b border-[#ECECEC] px-4 py-4">
-            <SheetTitle className="text-[#1F2937]">
-              {openSale ? slotLabel(openSale) : 'Session'}
-            </SheetTitle>
-            {openSale && (
-              <p className="text-xs text-[#6B7280]">
-                {openSale.stores?.shop_name} ·{' '}
-                <Countdown sale={openSale} state={liveState(openSale, nowMs)} nowMs={nowMs} />
-              </p>
-            )}
+          {/* pr-12 keeps the Sync button clear of the sheet's own close X, which
+              is absolutely positioned at top-3 right-3 (see ui/sheet.jsx). */}
+          <SheetHeader className="border-b border-[#ECECEC] px-4 py-4 pr-12">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <SheetTitle className="text-[#1F2937]">
+                  {openSale ? slotLabel(openSale) : 'Session'}
+                </SheetTitle>
+                {openSale && (
+                  <p className="text-xs text-[#6B7280]">
+                    {openSale.stores?.shop_name} ·{' '}
+                    <Countdown sale={openSale} state={liveState(openSale, nowMs)} nowMs={nowMs} />
+                  </p>
+                )}
+              </div>
+              {openSale && (
+                <SyncButton
+                  sale={openSale}
+                  nowMs={nowMs}
+                  syncing={syncingId === openSale.id}
+                  onSync={handleSyncSession}
+                />
+              )}
+            </div>
           </SheetHeader>
 
           <div className="flex-1 overflow-y-auto px-4 pb-8">
@@ -350,6 +627,15 @@ export default function FlashDeals() {
                 </span>
                 <span>{openItems.length} variants</span>
               </div>
+            )}
+            {openSale && <SessionDetails sale={openSale} nowMs={nowMs} />}
+            {openSale && (
+              <AutoRenewRow
+                enabled={!!autoRenewBySale[openSale.id]}
+                onChange={(next) =>
+                  setAutoRenewBySale((prev) => ({ ...prev, [openSale.id]: next }))
+                }
+              />
             )}
             {itemsLoading ? (
               <div className="space-y-2 py-3">

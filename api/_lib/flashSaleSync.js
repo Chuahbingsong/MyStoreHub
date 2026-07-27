@@ -1,6 +1,7 @@
 import { generateSign, SHOPEE_PARTNER_ID, SHOPEE_API_BASE } from './shopee.js';
 import { supabaseAdmin } from './supabaseAdmin.js';
 import { acquireSyncLock, logSyncStart, logSyncComplete, ensureFreshToken } from './shopeeSync.js';
+import { selectAllPaged, warnIfAtCap } from './supabaseSelect.js';
 
 // Flash Deals sync — READ-ONLY monitoring of Shopee shop flash sales.
 //
@@ -258,10 +259,14 @@ async function persistItems(storeId, flashSaleRowId, models, itemInfoById, produ
   // Prune models this session no longer carries. Scoped to the one session, so
   // a partial fetch elsewhere can never delete another session's rows.
   const keep = rows.map((r) => `${r.item_id}:${r.model_id}`);
+  // Scoped to ONE session (max ~239 models observed), so the cap is far off.
+  // Truncation here would under-delete, never over-delete, but warn anyway so
+  // it can't become another invisible cap.
   const { data: existing } = await supabaseAdmin
     .from('flash_sale_items')
     .select('id, item_id, model_id')
     .eq('flash_sale_row_id', flashSaleRowId);
+  warnIfAtCap(`flash_sale_items.prune[${flashSaleRowId}]`, existing);
 
   const stale = (existing ?? []).filter((e) => !keep.includes(`${e.item_id}:${e.model_id}`));
   if (stale.length > 0) {
@@ -275,6 +280,125 @@ async function persistItems(storeId, flashSaleRowId, models, itemInfoById, produ
   return {
     enabledModelCount: enabled.length,
     enabledItemCount: new Set(enabled.map((r) => r.item_id)).size,
+  };
+}
+
+/* --------------------------- on-demand single sync ------------------------- */
+
+// Minimum gap between two on-demand refreshes of the SAME session. Enforced
+// server-side against flash_sales.observed_at, because the button being
+// disabled in the UI guards nothing — the endpoint is reachable directly.
+export const SESSION_SYNC_COOLDOWN_MS = 60_000;
+// Second, coarser floor: how many on-demand refreshes one STORE may run in a
+// rolling window, regardless of which sessions they target. Without this, the
+// per-session cooldown alone still lets someone walk 44 sessions back-to-back
+// and issue ~130 Shopee calls in a minute.
+export const STORE_SYNC_WINDOW_MS = 60_000;
+export const STORE_SYNC_MAX_PER_WINDOW = 5;
+
+/**
+ * Refreshes ONE session on demand, reusing the same fetch/persist path the cron
+ * sync uses (fetchFlashSaleItems + persistItems) rather than a parallel
+ * implementation — the two must never disagree about how a session is stored.
+ *
+ * Call budget per invocation is deliberately small and bounded:
+ *   1x get_shop_flash_sale  (authoritative session state)
+ *   1x get_shop_flash_sale_list, single page (engagement counters only — see
+ *      below; skipped entirely if it fails)
+ *   ceil(item_count / 50) x get_shop_flash_sale_items  (1-2 in practice; these
+ *      sessions carry 10 items)
+ * So ~3-4 calls, versus the whole-store sync's dozens.
+ *
+ * ENGAGEMENT COUNTERS: get_shop_flash_sale does NOT return click_count or
+ * remindme_count (verified live 2026-07-27 — the response carries only
+ * timeslot_id, flash_sale_id, status, start/end_time, item_count,
+ * enabled_item_count, type). Those two fields exist ONLY on the list endpoint,
+ * so one single page of it is fetched to pick them up. Sessions come back
+ * newest-first and these shops run ~6 sessions/day, so any session inside our
+ * 7-day retention window lands on page 1 for its type. If it doesn't, the
+ * stored counters are left alone rather than being zeroed.
+ */
+export async function syncOneFlashSale(store, flashSaleId, options = {}) {
+  const deadline = options.deadline ?? Date.now() + 25_000;
+  const freshStore = await ensureFreshToken(store);
+
+  const { data: existingRow, error: rowError } = await supabaseAdmin
+    .from('flash_sales')
+    .select('id, store_id, flash_sale_id')
+    .eq('store_id', store.id)
+    .eq('flash_sale_id', String(flashSaleId))
+    .maybeSingle();
+  if (rowError) throw new Error(`failed to load flash sale row: ${rowError.message}`);
+  if (!existingRow) throw new Error('flash sale not tracked for this store');
+
+  const detail = await flashSaleGet(freshStore, '/api/v2/shop_flash_sale/get_shop_flash_sale', {
+    flash_sale_id: flashSaleId,
+  });
+  const session = detail.response ?? {};
+
+  // Best-effort engagement refresh; a failure here must not sink the sync,
+  // since the session state and items above are the point of the call.
+  let engagement = null;
+  try {
+    const listType = session.type ?? TYPE_ONGOING;
+    const listData = await flashSaleGet(
+      freshStore,
+      '/api/v2/shop_flash_sale/get_shop_flash_sale_list',
+      { type: listType, offset: 0, limit: LIST_PAGE_LIMIT }
+    );
+    engagement =
+      (listData.response?.flash_sale_list ?? []).find(
+        (s) => String(s.flash_sale_id) === String(flashSaleId)
+      ) ?? null;
+  } catch (err) {
+    console.error(`[flash-sale] [${store.id}] engagement refresh failed for fs=${flashSaleId}:`, err.message);
+  }
+
+  const { data: products, error: productsError } = await selectAllPaged(
+    `products.flashMap[${store.id}]`,
+    (from, to) =>
+      supabaseAdmin.from('products').select('id, platform_product_id').eq('store_id', store.id).range(from, to)
+  );
+  if (productsError) throw new Error(`failed to load products: ${productsError.message}`);
+  const productIdByItemId = new Map((products ?? []).map((p) => [String(p.platform_product_id), p.id]));
+
+  const { models, itemInfoById } = await fetchFlashSaleItems(freshStore, flashSaleId, { deadline });
+  const counts = await persistItems(store.id, existingRow.id, models, itemInfoById, productIdByItemId);
+
+  const update = {
+    timeslot_id: session.timeslot_id != null ? String(session.timeslot_id) : undefined,
+    status: session.status ?? undefined,
+    type: session.type ?? undefined,
+    start_time: session.start_time ? toIso(session.start_time) : undefined,
+    end_time: session.end_time ? toIso(session.end_time) : undefined,
+    item_count: session.item_count ?? undefined,
+    enabled_item_count_reported: session.enabled_item_count ?? undefined,
+    enabled_model_count: counts.enabledModelCount,
+    enabled_item_count_derived: counts.enabledItemCount,
+    observed_at: new Date().toISOString(),
+  };
+  if (engagement) {
+    update.click_count = engagement.click_count ?? 0;
+    update.remindme_count = engagement.remindme_count ?? 0;
+  }
+  // Strip the undefineds so a field Shopee omitted is left at its stored value
+  // instead of being nulled out.
+  for (const k of Object.keys(update)) if (update[k] === undefined) delete update[k];
+
+  const { error: updateError } = await supabaseAdmin
+    .from('flash_sales')
+    .update(update)
+    .eq('id', existingRow.id);
+  if (updateError) throw new Error(`failed to update flash sale: ${updateError.message}`);
+
+  return {
+    flashSaleId: String(flashSaleId),
+    rowId: existingRow.id,
+    models: models.length,
+    enabledModelCount: counts.enabledModelCount,
+    enabledItemCount: counts.enabledItemCount,
+    engagementRefreshed: Boolean(engagement),
+    observedAt: update.observed_at,
   };
 }
 
@@ -313,10 +437,13 @@ export async function syncStoreFlashSales(store, options = {}) {
       console.error(`[flash-sale] [${store.id}] slot cache refresh failed:`, err.message);
     }
 
-    const { data: products, error: productsError } = await supabaseAdmin
-      .from('products')
-      .select('id, platform_product_id')
-      .eq('store_id', store.id);
+    // Paged: truncation would silently null out product_id linkage on flash
+    // sale items for everything past the cap.
+    const { data: products, error: productsError } = await selectAllPaged(
+      `products.flashMap[${store.id}]`,
+      (from, to) =>
+        supabaseAdmin.from('products').select('id, platform_product_id').eq('store_id', store.id).range(from, to)
+    );
     if (productsError) throw new Error(`failed to load products: ${productsError.message}`);
 
     const productIdByItemId = new Map(

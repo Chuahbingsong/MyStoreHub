@@ -13,6 +13,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { supabase } from '@/lib/supabase'
+import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 
 const PLATFORM_META = {
@@ -168,10 +169,12 @@ export default function Products() {
 
   const fetchProducts = useCallback(async () => {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('products')
-      .select('*')
-      .order('title', { ascending: true })
+    // Paged: this page filters and searches client-side over the full list, so
+    // a silent stop at PostgREST's 1000-row cap would make products past it
+    // unfindable rather than merely unlisted.
+    const { data, error } = await selectAllPaged('products.list', (from, to) =>
+      supabase.from('products').select('*').order('title', { ascending: true }).range(from, to)
+    )
 
     if (!error && data) {
       setProducts(data.map(mapSupabaseProduct))

@@ -1,6 +1,7 @@
 import { generateSign, SHOPEE_PARTNER_ID, SHOPEE_API_BASE } from './shopee.js';
 import { supabaseAdmin } from './supabaseAdmin.js';
 import { acquireSyncLock, logSyncStart, logSyncComplete, ensureFreshToken } from './shopeeSync.js';
+import { selectAllPaged, warnIfAtCap } from './supabaseSelect.js';
 
 // Auto-boost: re-boosts a store's product rotation into its 5 Shopee boost
 // slots every ~4h. Runs last in the cron per-store pipeline (after orders,
@@ -164,10 +165,14 @@ export async function autoBoostStore(store, options = {}) {
     // Map this store's Shopee item_id -> our product uuid, for slot linkage and
     // for recognising which boosted items are "ours". A boosted item_id absent
     // from this map is one we've never synced (definitely external).
-    const { data: products, error: productsError } = await supabaseAdmin
-      .from('products')
-      .select('id, platform_product_id')
-      .eq('store_id', store.id);
+    // Paged: truncation here would silently drop item_id -> product_id
+    // linkages, making genuinely-ours boosted items look externally controlled
+    // and skipping the store's whole cycle.
+    const { data: products, error: productsError } = await selectAllPaged(
+      `products.boostMap[${store.id}]`,
+      (from, to) =>
+        supabaseAdmin.from('products').select('id, platform_product_id').eq('store_id', store.id).range(from, to)
+    );
     if (productsError) throw new Error(`failed to load products: ${productsError.message}`);
 
     const productIdByItemId = new Map(
@@ -180,6 +185,9 @@ export async function autoBoostStore(store, options = {}) {
       .select('id, product_id, position, last_boosted_at, products(platform_product_id)')
       .eq('store_id', store.id);
     if (rotationError) throw new Error(`failed to load rotation: ${rotationError.message}`);
+    // A rotation is a hand-curated shortlist (tens of items), so the cap should
+    // be unreachable; warn loudly rather than page if that assumption breaks.
+    warnIfAtCap(`boost_rotation[${store.id}]`, rotationRows);
 
     const rotation = (rotationRows ?? [])
       .map((r) => ({

@@ -14,6 +14,11 @@ export const AUTO_PACK_MIN_AGE_MS = 15 * 60 * 1000;
 // can't blow the cron time budget or hammer Shopee's ship_order endpoint.
 export const MAX_AUTO_PACK_PER_RUN = 10;
 
+// How many candidates to pull before the age filter narrows them to
+// MAX_AUTO_PACK_PER_RUN. Bounded so the query can never silently hit
+// PostgREST's 1000-row cap; ample, since only the oldest handful are ever used.
+const AUTO_PACK_CANDIDATE_LIMIT = 200;
+
 async function markAttempt(orderId, patch) {
   const { error } = await supabaseAdmin
     .from('orders')
@@ -60,12 +65,20 @@ export async function autoPackStore(store, options = {}) {
   // of a second column that can also go silently missing. Confirmed nothing
   // else in this file, or the UI badges/terminal gate, keys on paid_at —
   // this fallback is scoped to the age check alone.
+  // Explicitly ordered and bounded. Previously neither: an unordered, unbounded
+  // select would let PostgREST's 1000-row cap pick an ARBITRARY thousand once a
+  // store's pending backlog grew past it, so which orders got packed first was
+  // undefined. Oldest-first is the intended fairness rule, and the cap is a
+  // generous multiple of MAX_AUTO_PACK_PER_RUN since only the oldest few
+  // survive the age filter below anyway.
   const { data: candidates, error: queryError } = await supabaseAdmin
     .from('orders')
     .select('id, platform_order_id, paid_at, order_created_at')
     .eq('store_id', store.id)
     .eq('order_status', 'READY_TO_SHIP')
-    .is('auto_pack_status', null);
+    .is('auto_pack_status', null)
+    .order('order_created_at', { ascending: true })
+    .limit(AUTO_PACK_CANDIDATE_LIMIT);
 
   if (queryError) {
     console.error('[auto-pack] failed to load candidate orders for store', store.id, queryError);

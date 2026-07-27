@@ -15,6 +15,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { supabase } from '@/lib/supabase'
+import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { getAutoSyncOrdersEnabled } from '@/lib/preferences'
 import {
@@ -181,6 +182,12 @@ const TABS = [
 ]
 
 const TAB_KEYS = new Set(TABS.map((tab) => tab.key))
+
+// Hard ceiling on the paged order fetch. Generous enough that it should never
+// trip in practice (~20 pages), but it exists so "too many orders to load" is a
+// LOUD, visible state rather than a silent short list — the failure mode that
+// PostgREST's 1000-row cap produced for free.
+const ORDERS_CEILING = 20_000
 const DEFAULT_TAB = 'new'
 
 // A mobile pull-to-refresh is a full page reload, which wipes React state —
@@ -713,6 +720,9 @@ export default function Orders() {
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [orders, setOrders] = useState([])
+  // True only when the paged fetch hit ORDERS_CEILING, i.e. the list on screen
+  // really is incomplete. Surfaced to the user — never silently swallowed.
+  const [ordersTruncated, setOrdersTruncated] = useState(false)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [printingId, setPrintingId] = useState(null)
@@ -758,13 +768,37 @@ export default function Orders() {
 
   const fetchOrders = useCallback(async () => {
     setLoading(true)
+    // PAGED to completeness rather than one unbounded select, which silently
+    // stopped at PostgREST's 1000-row cap and hid 244 real orders — invisible
+    // to search, tabs and filters alike, because all three run client-side over
+    // this array.
+    //
+    // Paging (not a bigger .limit()) because a bigger number is the same bug
+    // with a later fuse. This page genuinely needs every row: the tab counts,
+    // the platform counts and "Print All" are all computed across the whole
+    // set, so a windowed or server-filtered fetch would silently wrong those
+    // counts instead — a worse failure than a slow load.
+    //
+    // ORDERS_CEILING bounds the worst case. Past it the list IS incomplete, and
+    // that is surfaced in the UI (see the banner below) rather than being
+    // swallowed the way the 1000-row cap was. If this ever trips in practice,
+    // the real fix is server-side filtering with server-computed tab counts —
+    // a rewrite of this page's data model, not another number bump.
     const [ordersRes, storesRes] = await Promise.all([
-      supabase
-        .from('orders')
-        .select('*, order_items(*)')
-        .order('order_created_at', { ascending: false }),
+      selectAllPaged(
+        'orders.list',
+        (from, to) =>
+          supabase
+            .from('orders')
+            .select('*, order_items(*)')
+            .order('order_created_at', { ascending: false })
+            .range(from, to),
+        { maxRows: ORDERS_CEILING }
+      ),
       supabase.from('stores').select('id, shop_id, shop_name'),
     ])
+
+    setOrdersTruncated(ordersRes.truncated === true)
 
     const storeNames = {}
     ;(storesRes.data ?? []).forEach((store) => {
@@ -1554,6 +1588,16 @@ export default function Orders() {
           )}
         </div>
       </div>
+
+      {ordersTruncated && (
+        <div className="mx-4 mb-3 flex items-start gap-2 rounded-xl border border-yellow-300 bg-yellow-50 p-3">
+          <Package className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600" />
+          <p className="text-xs text-yellow-800">
+            Showing the {ORDERS_CEILING.toLocaleString()} most recent orders only — older ones are
+            not loaded, so counts and search below exclude them.
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-col gap-3.5 px-4">
         {loading ? (

@@ -13,8 +13,16 @@ import {
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { supabase } from '@/lib/supabase'
+import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/i18n/I18nContext'
+
+const ORDER_COLUMNS =
+  'id, store_id, platform, order_status, buyer_name, total_amount, order_created_at, platform_order_id'
+
+// The recent-orders card shows 5. Fetched per store (not as one global limit)
+// because the store filter is applied client-side — see fetchData.
+const RECENT_ORDERS_PER_STORE = 5
 
 const PLATFORM_LABELS = {
   shopee: 'Shopee',
@@ -110,22 +118,70 @@ export default function Dashboard() {
   const fetchData = useCallback(async () => {
     setLoading(true)
     // RLS scopes every table to the logged-in user's own stores/orders/products.
-    const [storesRes, ordersRes, productsRes] = await Promise.all([
-      supabase
-        .from('stores')
-        .select('id, platform, shop_name, shop_id')
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('orders')
-        .select(
-          'id, store_id, platform, order_status, buyer_name, total_amount, order_created_at, platform_order_id'
+
+    // This deliberately does NOT load the whole orders table. It used to, which
+    // silently truncated at PostgREST's 1000-row cap once the account passed
+    // 1244 orders — and raising that number would just move the fuse.
+    //
+    // Instead each thing the dashboard actually derives is fetched as its own
+    // BOUNDED query, so cost is O(today + pending + 5·stores) and never grows
+    // with lifetime order count:
+    //   - today's orders  -> the stat tiles and per-platform breakdown
+    //   - READY_TO_SHIP   -> the "to pack" tile (previously counted across the
+    //                        truncated page, so an old unshipped order past row
+    //                        1000 would have gone uncounted)
+    //   - 5 newest/store  -> the recent-orders list. Per-store rather than a
+    //                        global limit because the store filter is applied
+    //                        client-side; the global newest 5 is always a
+    //                        subset of the union of each store's newest 5.
+    const storesRes = await supabase
+      .from('stores')
+      .select('id, platform, shop_name, shop_id')
+      .order('created_at', { ascending: false })
+    const storeRows = storesRes.data ?? []
+
+    const todayStart = new Date()
+    todayStart.setHours(0, 0, 0, 0)
+
+    const [todayRes, toPackRes, recentResults, productsRes] = await Promise.all([
+      selectAllPaged('dashboard.orders.today', (from, to) =>
+        supabase
+          .from('orders')
+          .select(ORDER_COLUMNS)
+          .gte('order_created_at', todayStart.toISOString())
+          .range(from, to)
+      ),
+      selectAllPaged('dashboard.orders.toPack', (from, to) =>
+        supabase.from('orders').select(ORDER_COLUMNS).eq('order_status', 'READY_TO_SHIP').range(from, to)
+      ),
+      Promise.all(
+        storeRows.map((s) =>
+          supabase
+            .from('orders')
+            .select(ORDER_COLUMNS)
+            .eq('store_id', s.id)
+            .order('order_created_at', { ascending: false })
+            .limit(RECENT_ORDERS_PER_STORE)
         )
-        .order('order_created_at', { ascending: false }),
-      supabase.from('products').select('store_id, stock'),
+      ),
+      selectAllPaged('dashboard.products', (from, to) =>
+        supabase.from('products').select('store_id, stock').range(from, to)
+      ),
     ])
 
-    setStores(storesRes.data ?? [])
-    setOrders(ordersRes.data ?? [])
+    // The three order sets overlap (a READY_TO_SHIP order placed today appears
+    // in all of them), so merge on id before anything counts them.
+    const byId = new Map()
+    for (const row of todayRes.data ?? []) byId.set(row.id, row)
+    for (const row of toPackRes.data ?? []) byId.set(row.id, row)
+    for (const res of recentResults) for (const row of res.data ?? []) byId.set(row.id, row)
+
+    const merged = [...byId.values()].sort(
+      (a, b) => new Date(b.order_created_at) - new Date(a.order_created_at)
+    )
+
+    setStores(storeRows)
+    setOrders(merged)
     setProducts(productsRes.data ?? [])
     setLoading(false)
   }, [])

@@ -1,5 +1,6 @@
 import { generateSign, SHOPEE_PARTNER_ID, SHOPEE_API_BASE } from './shopee.js';
 import { supabaseAdmin } from './supabaseAdmin.js';
+import { selectAllPaged, warnIfAtCap } from './supabaseSelect.js';
 
 // Shared Shopee sync core, reused by api/shopee/sync-orders.js,
 // api/shopee/sync-products.js and api/cron/sync-all.js.
@@ -359,10 +360,16 @@ async function loadProductImageMap(storeId) {
   const byItemId = new Map();
   const bySku = new Map();
 
-  const { data, error } = await supabaseAdmin
-    .from('products')
-    .select('platform_product_id, sku, image_url')
-    .eq('store_id', storeId);
+  // Paged: a store with >1000 products would otherwise silently lose the image
+  // fallback for everything past the cap, showing imageless order items with no
+  // error anywhere.
+  const { data, error } = await selectAllPaged(`products.imageMap[${storeId}]`, (from, to) =>
+    supabaseAdmin
+      .from('products')
+      .select('platform_product_id, sku, image_url')
+      .eq('store_id', storeId)
+      .range(from, to)
+  );
 
   if (error) {
     console.error('[shopee-sync] failed to load product images for fallback', error);
@@ -427,6 +434,12 @@ async function fetchTerminalOrderSns(storeId, orderSnList) {
     return new Set(); // fail open — skip nothing rather than risk skipping something live
   }
 
+  // Bounded by orderSnList (one sync window), so the cap should be
+  // unreachable — but if a window ever exceeds it, truncation means terminal
+  // orders go unrecognised and get needlessly re-fetched from Shopee. That
+  // fails safe (wasted budget, never wrong data), so warn rather than page.
+  warnIfAtCap(`orders.terminalSkip[${storeId}]`, data);
+
   return new Set(
     (data ?? [])
       .filter(
@@ -446,16 +459,22 @@ async function fetchTerminalOrderSns(storeId, orderSnList) {
 async function existingItemCounts(orderIds) {
   if (orderIds.length === 0) return new Map();
 
-  const { data, error } = await supabaseAdmin
-    .from('order_items')
-    .select('order_id')
-    .in('order_id', orderIds);
+  // PAGED, not a bare select. This returns one row per order_item, so a batch
+  // of orders averaging >20 items each would hit PostgREST's silent 1000-row
+  // cap. A truncated result makes an order look like it has ZERO items, which
+  // flips the guard below from "skip, this would wipe real data" to "safe,
+  // proceed" — the exact wipe this function exists to prevent. Paging removes
+  // that failure mode entirely; hitting the ceiling degrades to the same -1
+  // "couldn't verify" sentinel as an outright query error.
+  const { data, error, truncated } = await selectAllPaged('order_items.existingItemCounts', (from, to) =>
+    supabaseAdmin.from('order_items').select('order_id').in('order_id', orderIds).range(from, to)
+  );
 
-  if (error) {
+  if (error || truncated) {
     console.error(
       '[shopee-sync] failed to check existing item counts before an empty item_list write — skipping all affected orders this cycle to be safe',
       orderIds,
-      error
+      error ?? 'result truncated at the paging ceiling'
     );
     return new Map(orderIds.map((id) => [id, -1]));
   }
