@@ -53,7 +53,7 @@ function toIso(unixSeconds) {
  * the WHOLE call was rejected — an out-of-scope module, a dead token, or a bad
  * param name. Never returns a partially-usable body.
  */
-async function flashSaleGet(store, path, extra = {}) {
+export async function flashSaleGet(store, path, extra = {}) {
   const timestamp = nowUnix();
   const sign = generateSign(path, timestamp, store.access_token, store.shop_id);
 
