@@ -10,6 +10,7 @@ import Boost from '@/pages/Boost'
 import FlashDeals from '@/pages/FlashDeals'
 import Inventory from '@/pages/Inventory'
 import Analytics from '@/pages/Analytics'
+import Sales from '@/pages/Sales'
 import Settings from '@/pages/Settings'
 import Scan from '@/pages/Scan'
 
@@ -24,6 +25,14 @@ function App() {
           element={
             <AppShell>
               <Dashboard />
+            </AppShell>
+          }
+        />
+        <Route
+          path="/sales"
+          element={
+            <AppShell>
+              <Sales />
             </AppShell>
           }
         />

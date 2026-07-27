@@ -16,6 +16,14 @@ import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/i18n/I18nContext'
+import {
+  addDaysISO,
+  fetchSalesReport,
+  figuresForDay,
+  formatRM,
+  seriesFor,
+  todayKL,
+} from '@/lib/salesReport'
 
 const ORDER_COLUMNS =
   'id, store_id, platform, order_status, buyer_name, total_amount, order_created_at, platform_order_id'
@@ -106,6 +114,33 @@ function formatToday(locale) {
   })
 }
 
+// A stat tile, optionally a link. Same visual box either way so the strip
+// stays a uniform row — the chevron is the only affordance difference.
+function StatTile({ stat }) {
+  const body = (
+    <>
+      <p className={cn('text-2xl font-bold tabular-nums', stat.valueClass)}>{stat.value}</p>
+      <p className="mt-0.5 flex items-center gap-1 text-sm text-[#6B7280]">
+        {stat.label}
+        {stat.to && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#2563EB]" />}
+      </p>
+      {stat.sub && <p className="mt-1 text-xs tabular-nums text-[#6B7280]">{stat.sub}</p>}
+    </>
+  )
+
+  const className =
+    'min-w-[140px] shrink-0 rounded-2xl border border-[#E8E6E1] bg-white p-4 shadow-card'
+
+  if (stat.to) {
+    return (
+      <Link to={stat.to} aria-label={stat.toLabel} className={cn(className, 'block text-left transition-transform active:scale-[0.98]')}>
+        {body}
+      </Link>
+    )
+  }
+  return <div className={className}>{body}</div>
+}
+
 export default function Dashboard() {
   const navigate = useNavigate()
   const { t, locale } = useTranslation()
@@ -114,6 +149,11 @@ export default function Dashboard() {
   const [orders, setOrders] = useState([])
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
+  // Aggregated server-side; see src/lib/salesReport.js. Null until loaded, and
+  // left null on failure so the revenue tile degrades to RM 0.00 rather than
+  // showing a figure derived some other way — two different methods producing
+  // two different numbers is exactly what this is meant to prevent.
+  const [salesReport, setSalesReport] = useState(null)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -183,6 +223,17 @@ export default function Dashboard() {
     setStores(storeRows)
     setOrders(merged)
     setProducts(productsRes.data ?? [])
+
+    // Separate from the Promise.all above on purpose: if the reporting
+    // functions aren't installed yet, the rest of the dashboard must still
+    // render rather than the whole page failing on a missing RPC.
+    try {
+      setSalesReport(await fetchSalesReport())
+    } catch (err) {
+      console.error('[dashboard] sales report unavailable', err)
+      setSalesReport(null)
+    }
+
     setLoading(false)
   }, [])
 
@@ -213,17 +264,40 @@ export default function Dashboard() {
 
   const stats = useMemo(() => {
     const todaysOrders = scopedOrders.filter((o) => isToday(o.order_created_at))
-    const revenueToday = todaysOrders.reduce((sum, o) => sum + (Number(o.total_amount) || 0), 0)
     const toPack = scopedOrders.filter((o) => o.order_status === 'READY_TO_SHIP').length
     const lowStock = scopedProducts.filter((p) => (Number(p.stock) || 0) <= 10).length
 
+    // Revenue comes from the daily_sales() RPC, NOT from summing scopedOrders.
+    // Two reasons it had to move:
+    //   1. The client-side sum counted EVERY status, including UNPAID —
+    //      cash-at-counter orders that mostly never get paid, which inflated
+    //      the figure.
+    //   2. It bucketed "today" by the browser's clock rather than Malaysia
+    //      time, and it summed a select that PostgREST caps at 1,000 rows.
+    // Sharing one source with the Sales page is also the only way "Today" and
+    // "Yesterday" here can be guaranteed to agree with the report.
+    const series = seriesFor(salesReport, store)
+    const today = figuresForDay(series, todayKL())
+    const yesterday = figuresForDay(series, addDaysISO(todayKL(), -1))
+
     return [
       { id: 'ordersToday', label: t('dashboard.stats.ordersToday'), value: String(todaysOrders.length), valueClass: 'text-[#1F2937]' },
-      { id: 'revenue', label: t('dashboard.stats.revenue'), value: formatRevenue(revenueToday), valueClass: 'text-[#1F2937]' },
+      {
+        id: 'revenue',
+        label: t('dashboard.stats.revenue'),
+        value: salesReport ? formatRM(today.revenue) : formatRevenue(0),
+        valueClass: 'text-[#1F2937]',
+        // Bottom nav is full, so the revenue tile is the way into the report.
+        to: '/sales',
+        toLabel: t('sales.open'),
+        // Rendered as a smaller line under the value; same series, same day
+        // bucketing, so it can never disagree with the number above it.
+        sub: salesReport ? `${t('sales.yesterday')}: ${formatRM(yesterday.revenue)}` : null,
+      },
       { id: 'toPack', label: t('dashboard.status.toPack'), value: String(toPack), valueClass: 'text-red-600' },
       { id: 'lowStock', label: t('dashboard.stats.lowStock'), value: String(lowStock), valueClass: 'text-yellow-700' },
     ]
-  }, [scopedOrders, scopedProducts, t])
+  }, [scopedOrders, scopedProducts, salesReport, store, t])
 
   const platforms = useMemo(() => {
     const connectedSet = new Set(stores.map((s) => platformLabel(s.platform)))
@@ -331,10 +405,7 @@ export default function Dashboard() {
               </div>
             ))
           : stats.map((stat) => (
-              <div key={stat.id} className="min-w-[140px] shrink-0 rounded-2xl border border-[#E8E6E1] bg-white p-4 shadow-card">
-                <p className={cn('text-2xl font-bold tabular-nums', stat.valueClass)}>{stat.value}</p>
-                <p className="mt-0.5 text-sm text-[#6B7280]">{stat.label}</p>
-              </div>
+              <StatTile key={stat.id} stat={stat} />
             ))}
       </section>
 
