@@ -55,6 +55,12 @@ create index if not exists idx_orders_created_at
 -- Days with no sales come back as zeros rather than missing rows, so the chart
 -- has no phantom gaps and the caller never has to fill them.
 -- ---------------------------------------------------------------------------
+-- `create or replace` alone CANNOT change a function's return type — Postgres
+-- rejects it with "cannot change return type of existing function". Dropping
+-- first is what actually makes this re-runnable after the RETURNS TABLE shape
+-- is edited, which is the case that would otherwise bite on a second run.
+drop function if exists daily_sales(int);
+
 create or replace function daily_sales(p_days int default 30)
 returns table (
   day date,
@@ -138,6 +144,8 @@ $$;
 -- Deliberately NOT status-filtered: this answers "how far back does the record
 -- go", which is about sync coverage, not about which orders count as revenue.
 -- ---------------------------------------------------------------------------
+drop function if exists sales_coverage();
+
 create or replace function sales_coverage()
 returns table (
   store_id uuid,
@@ -172,3 +180,10 @@ $$;
 -- only role that needs them.
 grant execute on function daily_sales(int) to authenticated;
 grant execute on function sales_coverage() to authenticated;
+
+-- PostgREST answers RPC calls from a cached view of the schema, and that cache
+-- is what produced "Could not find the function public.daily_sales(p_days) in
+-- the schema cache". Supabase reloads it on its own, but not always instantly —
+-- this makes the functions callable the moment this script finishes instead of
+-- after an unpredictable wait.
+notify pgrst, 'reload schema';
