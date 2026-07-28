@@ -6,17 +6,10 @@ import { selectAllPaged } from './supabaseSelect.js';
 
 // Flash Deals COPY — the only WRITE path to Shopee in this codebase.
 //
-// ============================ SHIPPED DISABLED =============================
-// COPY_ENABLED is false. Every entrypoint refuses before touching Shopee.
-// The reason is operational, not technical: on 2026-08-02 we are observing
-// whether BigSeller overwrites a slot we already own (Big Hammer, flash sale
-// 485935703994404, slot 481466245264485, 12:00-14:00 MYT). Until that race is
-// understood, a working Copy could silently schedule deals that get replaced.
-//
-// Flipping this to true also requires flipping COPY_ENABLED in
-// src/pages/FlashDeals.jsx — the UI keeps its own copy of the flag because the
-// browser cannot import this module. They are meant to move together.
-// ===========================================================================
+// Enabled 2026-07-28 after the 2 Aug slot-ownership test (see git history for
+// SHIPPED DISABLED rationale). COPY_ENABLED is mirrored in
+// src/pages/FlashDeals.jsx — the UI keeps its own copy because the browser
+// cannot import this module. They must move together.
 //
 // ENDPOINTS (verified live against Partner ID 2038912 on production,
 // 2026-07-27, by an actual create+add on Big Hammer):
@@ -44,7 +37,7 @@ import { selectAllPaged } from './supabaseSelect.js';
 // items endpoint had already confirmed as complete (observed live).
 // ===========================================================================
 
-export const COPY_ENABLED = false;
+export const COPY_ENABLED = true;
 
 // Copy is a write and costs ~3 Shopee calls (create + add + read-back page).
 // Tighter than the read-only per-slot sync's budget for that reason.

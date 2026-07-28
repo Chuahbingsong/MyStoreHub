@@ -10,9 +10,8 @@ import {
 // Copies one flash sale session into a free upcoming slot. This is the ONLY
 // endpoint in the app that writes to Shopee.
 //
-// SHIPPED DISABLED — COPY_ENABLED is false, and the gate below is the first
-// thing checked after auth, before any store or session is even loaded. See
-// api/_lib/flashSaleCopy.js for why.
+// COPY_ENABLED is checked first, before any store or session is loaded. See
+// api/_lib/flashSaleCopy.js for the gate's history.
 //
 // Throttling mirrors sync-flash-sale.js, tightened because this writes:
 //   1. per-store rolling window, COPY_MAX_PER_WINDOW per COPY_WINDOW_MS,

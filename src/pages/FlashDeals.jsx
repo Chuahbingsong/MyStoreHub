@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils'
 // Dense row view of Shopee flash sale sessions.
 //
 // Sync is read-only — it pulls fresh data, it never writes to Shopee. Copy is
-// the one write path, and it is SHIPPED DISABLED (see COPY_ENABLED below).
+// the one write path (see COPY_ENABLED below).
 //
 // Deliberately NOT shown: "stock left" / "units sold". Shopee's
 // get_shop_flash_sale_items exposes no such field — campaign_stock is the
@@ -30,18 +30,13 @@ import { cn } from '@/lib/utils'
 // rather than a campaign figure. Showing either as "left" would be a lie, so
 // this page shows the quota, the prices, engagement, and the countdown only.
 
-// ============================ COPY: SHIPPED OFF ============================
 // Mirrors COPY_ENABLED in api/_lib/flashSaleCopy.js. The browser cannot import
 // that module, so the flag exists twice on purpose — flip BOTH together. The
 // server gate is the one that actually protects Shopee; this one only decides
 // whether the UI looks interactive.
 //
-// Off because on 2026-08-02 we are observing whether BigSeller overwrites a
-// slot we already own (Big Hammer, flash sale 485935703994404, slot
-// 481466245264485, 12:00-14:00 MYT). Until that race is understood, a working
-// Copy could silently schedule deals that get replaced.
-// ===========================================================================
-const COPY_ENABLED = false
+// Enabled 2026-07-28 after the 2 Aug slot-ownership test passed.
+const COPY_ENABLED = true
 const COPY_DISABLED_HINT = 'Copy is coming soon — pending the 2 Aug slot-ownership test'
 
 // Shopee model status. 2 (deleted) never appears in a fetched list in practice
