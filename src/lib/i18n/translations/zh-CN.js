@@ -142,4 +142,36 @@ export default {
       logout: '退出登录',
     },
   },
+  sales: {
+    title: '销售',
+    subtitle: '近 30 天每日营业额',
+    allStores: '全部店铺',
+    open: '查看销售报表',
+    yesterday: '昨日',
+    totals: {
+      revenue: '30 天营业额',
+      orders: '30 天订单数',
+      avgPerDay: '日均',
+    },
+    chart: {
+      title: '每日营业额',
+      noSales: '此期间没有销售。',
+    },
+    table: {
+      title: '每日明细',
+      date: '日期',
+      revenue: '营业额',
+      orders: '订单数',
+      noData: '暂无数据。',
+      beforeHistory: '早于已同步记录',
+    },
+    coverage: {
+      partial:
+        '订单记录自 {{date}} 开始。此区间内更早的 {{days}} 天不在已同步的数据范围内 —— 并非当天没有销售。',
+      none: '尚未同步任何订单，暂时无法生成报表。',
+    },
+    basis:
+      '统计处理中、已发货、待收货、已完成及重新发货的订单，不含未付款、已取消及退货订单。每日以马来西亚时间 00:00–24:00 计算。',
+    error: '无法加载销售报表，数据库函数可能尚未安装。',
+  },
 }

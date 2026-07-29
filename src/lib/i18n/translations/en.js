@@ -145,4 +145,38 @@ export default {
       logout: 'Logout',
     },
   },
+  sales: {
+    title: 'Sales',
+    subtitle: 'Daily revenue, last 30 days',
+    allStores: 'All Stores',
+    open: 'View sales report',
+    yesterday: 'Yesterday',
+    totals: {
+      revenue: '30-day revenue',
+      orders: '30-day orders',
+      avgPerDay: 'Avg / day',
+    },
+    chart: {
+      title: 'Daily revenue',
+      noSales: 'No sales in this window.',
+    },
+    table: {
+      title: 'Daily figures',
+      date: 'Date',
+      revenue: 'Revenue',
+      orders: 'Orders',
+      noData: 'No data yet.',
+      beforeHistory: 'Before synced history',
+    },
+    coverage: {
+      partial:
+        'Order history starts {{date}}. The {{days}} earlier day(s) in this window are outside your synced data — they are not days with no sales.',
+      none: 'No orders have been synced yet, so there is nothing to report.',
+    },
+    // Stated in the UI rather than buried in a tooltip: which orders count is
+    // the single assumption a revenue figure rests on.
+    basis:
+      'Counts processed, shipped, to-confirm, completed and retry-ship orders. Excludes unpaid, cancelled and returns. Days run 00:00–24:00 Malaysia time.',
+    error: 'Could not load the sales report. The database function may not be installed yet.',
+  },
 }
