@@ -1,17 +1,28 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Bell,
+  CalendarClock,
+  Check,
   ChevronDown,
   ChevronRight,
   Copy as CopyIcon,
   Eye,
+  Loader2,
   Package,
   RefreshCw,
   Repeat,
+  X,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -38,6 +49,103 @@ import { cn } from '@/lib/utils'
 // Enabled 2026-07-28 after the 2 Aug slot-ownership test passed.
 const COPY_ENABLED = true
 const COPY_DISABLED_HINT = 'Copy is coming soon — pending the 2 Aug slot-ownership test'
+
+// ===================== MULTI-SLOT COPY: PACING =============================
+// A copy targets ONE slot per request — api/shopee/copy-flash-sale.js runs
+// maxDuration 30 against a 25s copy deadline, so two slots cannot share an
+// invocation. Selecting N slots therefore means N sequential requests driven
+// from this page, which is also what gives each slot its own sync_logs row and
+// its own independent outcome.
+//
+// These three mirror the server's limiter. They exist here ONLY so the client
+// spaces its own requests instead of discovering the ceiling by being 429'd —
+// the server stays the enforcer, and a 429 is still handled below because
+// another tab or device can spend budget this page cannot see.
+const COPY_WINDOW_MS = 60_000
+const COPY_MAX_PER_WINDOW = 3
+// The window is rolling and counted server-side, so browser/server clock skew
+// decides whether the 4th request lands just inside or just outside it. Slack
+// is cheaper than a round-trip spent getting refused.
+const COPY_WINDOW_MARGIN_MS = 2_000
+
+// 12 slots = 4 windows ≈ 3 minutes. The batch runs in the page (there is no
+// server-side queue), so this ceiling is really a ceiling on how long the user
+// has to stay on this screen.
+const COPY_MAX_SLOTS = 12
+
+// A copy hard-killed by the platform never reaches logSyncComplete, so its
+// 'started' row keeps holding acquireSyncLock for the full LOCK_TTL_MS (90s,
+// api/_lib/shopeeSync.js). Every following slot then gets reason:'locked', and
+// the server's retryAfterMs of 5s is a POLL interval, not a time-to-clear.
+// Polling past the TTL is what stops one timed-out slot from failing the rest.
+const LOCK_POLL_MS = 10_000
+const LOCK_MAX_WAIT_MS = 100_000
+const RATE_MAX_RETRIES = 3
+
+// ===================== MULTI-SLOT COPY: RISK BUCKETS =======================
+// BigSeller creates sessions in these same slots, and the ownership race is
+// still UNOBSERVED — the 2 Aug test slot hasn't happened. Multi-select makes it
+// easy to fill several near-term slots in one go, so the picker must not
+// present every slot as equally safe.
+//
+// This is an explicit heuristic on lead time, not a measurement: the less
+// notice a slot gives, the likelier BigSeller is already working it. The UI
+// says so rather than implying the buckets are evidence.
+const NEAR_TERM_MS = 48 * 3_600_000
+const MID_TERM_MS = 7 * 24 * 3_600_000
+
+const RISK_BUCKETS = [
+  {
+    key: 'near',
+    label: 'Within 48h',
+    note: 'Higher risk — the slot-ownership race with BigSeller is still untested',
+    dot: 'bg-yellow-500',
+    text: 'text-yellow-800',
+  },
+  { key: 'mid', label: '2–7 days out', note: 'Some lead time', dot: 'bg-gray-400', text: 'text-[#6B7280]' },
+  {
+    key: 'far',
+    label: '7+ days out',
+    note: 'Safest — most lead time before BigSeller would act',
+    dot: 'bg-green-500',
+    text: 'text-green-800',
+  },
+]
+
+function slotRisk(slot, nowMs) {
+  const lead = new Date(slot.start_time).getTime() - nowMs
+  if (lead < NEAR_TERM_MS) return 'near'
+  if (lead < MID_TERM_MS) return 'mid'
+  return 'far'
+}
+
+/** Rough wall-clock cost of a batch, so the picker can warn before confirming. */
+function estimateBatchMs(n) {
+  if (n <= 0) return 0
+  const waits = Math.floor((n - 1) / COPY_MAX_PER_WINDOW)
+  return waits * (COPY_WINDOW_MS + COPY_WINDOW_MARGIN_MS) + n * 8_000
+}
+
+/**
+ * How long before the next request may be sent, from the timestamps of requests
+ * that actually consumed rate budget. Derived from the wall clock on every call
+ * rather than from a running counter — a backgrounded mobile tab throttles
+ * timers, and a stale counter would send early and get refused.
+ */
+function rateWaitMs(submissions, now) {
+  if (submissions.length < COPY_MAX_PER_WINDOW) return 0
+  const oldest = submissions[submissions.length - COPY_MAX_PER_WINDOW]
+  return Math.max(0, oldest + COPY_WINDOW_MS + COPY_WINDOW_MARGIN_MS - now)
+}
+
+/** Sleeps in slices so an abort lands promptly and the deadline is re-read from
+ *  the wall clock instead of trusted to a single long timer. */
+async function sleepUntil(target, stopRef) {
+  while (Date.now() < target) {
+    if (stopRef.current) return
+    await new Promise((r) => setTimeout(r, Math.min(500, target - Date.now())))
+  }
+}
 
 // Shopee model status. 2 (deleted) never appears in a fetched list in practice
 // but is mapped rather than falling through to "unknown".
@@ -555,43 +663,105 @@ function AutoRenewRow({ enabled, onChange }) {
 }
 
 /**
- * Renders a copy's outcome. Success is NEVER inferred from the write call —
- * add_shop_flash_sale_items returns an empty body — so everything here comes
- * from the server's read-back diff, and anything short of an exact match is
- * shown as PARTIAL with the offending models named.
+ * One slot's outcome within a batch. Success is NEVER inferred from the write
+ * call — add_shop_flash_sale_items returns an empty body — so everything here
+ * comes from the server's read-back diff, and anything short of an exact match
+ * is shown as PARTIAL with the offending models named.
+ *
+ * Deliberately renders ONE slot. Outcomes are never merged across slots: a
+ * batch where 3 of 5 landed cleanly has no honest single-line summary, and the
+ * two that didn't are the whole reason to look.
  */
-function CopyResult({ result }) {
-  if (!result) return null
-  const ok = result.status === 'success'
+function CopySlotResult({ entry, tickMs }) {
+  const result = entry.result
+  // 'failed' means we hold no verdict at all — distinct from 'unverified',
+  // which means the session exists but its contents could not be read back.
+  const status = result?.status ?? (entry.error ? 'failed' : null)
+  const ok = status === 'success'
+
+  const tone = ok
+    ? 'border-green-200 bg-green-50'
+    : status === 'failed'
+      ? 'border-red-200 bg-red-50'
+      : status
+        ? 'border-yellow-300 bg-yellow-50'
+        : 'border-[#E8E6E1] bg-white'
+
+  const secsLeft =
+    entry.waitUntil != null ? Math.max(0, Math.ceil((entry.waitUntil - tickMs) / 1000)) : 0
 
   return (
-    <div
-      className={cn(
-        'rounded-xl border p-3 text-xs',
-        ok ? 'border-green-200 bg-green-50' : 'border-yellow-300 bg-yellow-50'
-      )}
-    >
-      <p className={cn('font-medium', ok ? 'text-green-800' : 'text-yellow-900')}>
-        {ok
-          ? `Copied — ${result.persistedCount}/${result.sentCount} models verified`
-          : `${result.status === 'unverified' ? 'UNVERIFIED' : 'PARTIAL'} — ${result.persistedCount ?? '?'}/${result.sentCount} models verified`}
-      </p>
-      <p className="mt-1 text-[11px] text-gray-600">
-        New flash sale <span className="font-mono">{result.flashSaleId}</span> on slot{' '}
-        <span className="font-mono">{result.timeslotId}</span>
-      </p>
+    <div className={cn('rounded-xl border p-3 text-xs', tone)}>
+      <div className="flex items-start justify-between gap-2">
+        <span className="min-w-0 flex-1 truncate text-[11px] font-medium tabular-nums text-[#1F2937]">
+          {entry.label}
+        </span>
+        {entry.state === 'running' && (
+          <span className="flex shrink-0 items-center gap-1 text-[10px] text-[#2563EB]">
+            <Loader2 className="h-3 w-3 animate-spin" /> Copying
+          </span>
+        )}
+        {entry.state === 'waiting' && (
+          <span className="shrink-0 text-[10px] tabular-nums text-[#6B7280]">
+            {entry.waitReason === 'lock' ? 'Waiting for lock' : 'Rate limit'} · {secsLeft}s
+          </span>
+        )}
+        {entry.state === 'queued' && <span className="shrink-0 text-[10px] text-gray-400">Queued</span>}
+        {entry.state === 'skipped' && <span className="shrink-0 text-[10px] text-gray-400">Skipped</span>}
+      </div>
 
-      {result.addError && (
+      {entry.state === 'waiting' && entry.waitReason === 'lock' && (
+        <p className="mt-1 text-[11px] text-gray-600">
+          An earlier copy still holds this store&apos;s lock. If it was killed mid-flight the lock
+          clears on its own within 90s — this slot has not failed.
+        </p>
+      )}
+
+      {status && (
+        <p
+          className={cn(
+            'mt-1 font-medium',
+            ok ? 'text-green-800' : status === 'failed' ? 'text-red-800' : 'text-yellow-900'
+          )}
+        >
+          {ok
+            ? `Copied — ${result.persistedCount}/${result.sentCount} models verified`
+            : status === 'failed'
+              ? 'FAILED — no flash sale confirmed'
+              : `${status === 'unverified' ? 'UNVERIFIED' : 'PARTIAL'} — ${result.persistedCount ?? '?'}/${result.sentCount} models verified`}
+        </p>
+      )}
+
+      {entry.error && <p className="mt-1 text-[11px] text-red-700">{entry.error}</p>}
+
+      {/* The request went out but no verdict came back, so a session may or may
+          not exist on this slot. Saying "failed" here would invite a retry that
+          silently creates a duplicate. */}
+      {entry.uncertain && (
+        <p className="mt-1.5 text-[11px] text-red-700">
+          The request was sent but its outcome is unknown — a session may still have been created on
+          this slot. Check Shopee before retrying it.
+        </p>
+      )}
+
+      {result && (
+        <p className="mt-1 text-[11px] text-gray-600">
+          New flash sale <span className="font-mono">{result.flashSaleId}</span> on slot{' '}
+          <span className="font-mono">{result.timeslotId}</span>
+        </p>
+      )}
+
+      {result?.addError && (
         <p className="mt-1.5 text-[11px] text-red-700">Add call reported: {result.addError}</p>
       )}
-      {result.readBackError && (
+      {result?.readBackError && (
         <p className="mt-1.5 text-[11px] text-red-700">
           Read-back failed: {result.readBackError}. What landed is unknown — inspect the session on
           Shopee before retrying.
         </p>
       )}
 
-      {result.missing?.length > 0 && (
+      {result?.missing?.length > 0 && (
         <div className="mt-2">
           <p className="text-[11px] font-medium text-yellow-900">
             Sent but not persisted ({result.missing.length}):
@@ -606,7 +776,7 @@ function CopyResult({ result }) {
         </div>
       )}
 
-      {result.priceMismatches?.length > 0 && (
+      {result?.priceMismatches?.length > 0 && (
         <div className="mt-2">
           <p className="text-[11px] font-medium text-yellow-900">
             Price drift ({result.priceMismatches.length}):
@@ -621,7 +791,7 @@ function CopyResult({ result }) {
         </div>
       )}
 
-      {result.stockMismatches?.length > 0 && (
+      {result?.stockMismatches?.length > 0 && (
         <div className="mt-2">
           <p className="text-[11px] font-medium text-yellow-900">
             Quota drift ({result.stockMismatches.length}):
@@ -636,7 +806,7 @@ function CopyResult({ result }) {
         </div>
       )}
 
-      {result.rejected?.length > 0 && (
+      {result?.rejected?.length > 0 && (
         <div className="mt-2">
           <p className="text-[11px] font-medium text-red-700">
             Rejected by Shopee ({result.rejected.length}):
@@ -656,21 +826,214 @@ function CopyResult({ result }) {
 }
 
 /**
- * Copy target picker. Lists FREE upcoming slots — every slot in the cached
- * ~18-day horizon minus those that already hold a session for THIS store —
- * and shows exactly what would be written, at what prices.
+ * Multi-select slot picker, opened over the Copy sheet.
+ *
+ * Checkboxes rather than a native multi-select: at 390px a native multiple
+ * <select> collapses to a control that can't be operated one-handed and gives
+ * no room for the risk grouping, which is the whole point of this screen.
+ *
+ * Slots are grouped by lead time (see RISK_BUCKETS) but stay in chronological
+ * order inside each group, so picking is still predictable.
  */
-function CopySheet({ open, sale, items, itemsLoading, onClose, onConfirm, copying, result }) {
+function SlotPickerDialog({ open, onOpenChange, slots, consumedSlotIds, selected, onConfirm, nowMs }) {
+  // Seeded once per mount. The caller remounts this component each time it
+  // opens (see pickerSeq), which is what makes reopening to adjust a choice
+  // start from the current selection instead of from empty — and it does so
+  // without an effect that would re-seed mid-edit.
+  const [picked, setPicked] = useState(() => new Set(selected))
+
+  const groups = useMemo(() => {
+    const out = { near: [], mid: [], far: [] }
+    for (const s of slots ?? []) out[slotRisk(s, nowMs)].push(s)
+    return out
+  }, [slots, nowMs])
+
+  const atCap = picked.size >= COPY_MAX_SLOTS
+
+  const toggle = useCallback((id, next) => {
+    setPicked((prev) => {
+      const out = new Set(prev)
+      if (next) {
+        if (out.size >= COPY_MAX_SLOTS) return prev
+        out.add(id)
+      } else {
+        out.delete(id)
+      }
+      return out
+    })
+  }, [])
+
+  const estMs = estimateBatchMs(picked.size)
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {/* bg-white, not the bg-popover DialogContent defaults to: `popover` is
+          absent from tailwind.config.js's color map, so that class compiles to
+          nothing and the popup renders transparent over the sheet behind it.
+          Every SheetContent in this app hardcodes bg-white for the same reason. */}
+      <DialogContent className="grid max-h-[85vh] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden border border-[#E8E6E1] bg-white p-0 shadow-xl sm:max-w-md">
+        <DialogHeader className="border-b border-[#E8E6E1] px-4 py-3 pr-12">
+          <DialogTitle className="text-sm text-[#1F2937]">Choose time slots</DialogTitle>
+          <DialogDescription className="text-[11px] text-[#6B7280]">
+            Free slots in the 18-day horizon. Pick up to {COPY_MAX_SLOTS} — each one becomes its own
+            flash sale.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="overflow-y-auto px-4 py-3">
+          {slots === null ? (
+            <div className="space-y-1.5">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <Skeleton key={i} className="h-10 w-full rounded-lg" />
+              ))}
+            </div>
+          ) : slots.length === 0 ? (
+            <p className="py-6 text-center text-xs text-gray-400">
+              No free slots in the 18-day horizon for this store.
+            </p>
+          ) : (
+            RISK_BUCKETS.map((bucket) => {
+              const rows = groups[bucket.key]
+              if (rows.length === 0) return null
+              return (
+                <div key={bucket.key} className="mb-4 last:mb-0">
+                  <div className="mb-1.5 flex items-center gap-1.5">
+                    <span className={cn('h-2 w-2 shrink-0 rounded-full', bucket.dot)} />
+                    <span className={cn('text-[11px] font-medium', bucket.text)}>{bucket.label}</span>
+                    <span className="text-[10px] text-gray-400">({rows.length})</span>
+                  </div>
+                  <p className="mb-1.5 text-[10px] leading-snug text-gray-500">{bucket.note}</p>
+
+                  <div className="rounded-xl border border-[#E8E6E1] bg-white">
+                    {rows.map((s) => {
+                      const id = String(s.timeslot_id)
+                      const { date, range, nextDay } = slotRange(s)
+                      // Copied this session but not yet re-synced, so the
+                      // server's occupancy guard still reads it as free —
+                      // see consumedSlotIds in FlashDeals.
+                      const consumed = consumedSlotIds.has(id)
+                      const checked = picked.has(id)
+                      const blocked = consumed || (!checked && atCap)
+
+                      return (
+                        <label
+                          key={id}
+                          className={cn(
+                            'flex items-center gap-2.5 border-b border-[#ECECEC] px-3 py-3 last:border-b-0',
+                            blocked ? 'opacity-45' : 'cursor-pointer active:bg-[#F3F4F6]',
+                            checked && 'bg-[#2563EB]/5'
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={blocked}
+                            onChange={(e) => toggle(id, e.target.checked)}
+                            className="h-5 w-5 shrink-0 rounded border-[#E8E6E1] accent-[#2563EB] disabled:cursor-not-allowed"
+                          />
+                          <span className={cn('h-2 w-2 shrink-0 rounded-full', bucket.dot)} />
+                          <span className="text-xs tabular-nums text-[#1F2937]">{date}</span>
+                          <span className="text-xs tabular-nums text-[#1F2937]">{range}</span>
+                          {nextDay && (
+                            <span className="rounded bg-[#F3F4F6] px-1 text-[10px] text-gray-500">
+                              +1
+                            </span>
+                          )}
+                          {consumed && (
+                            <span className="ml-auto shrink-0 text-[10px] text-gray-500">
+                              just copied
+                            </span>
+                          )}
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })
+          )}
+        </div>
+
+        <div className="border-t border-[#E8E6E1] bg-white px-4 py-3">
+          <div className="mb-2 flex items-baseline justify-between gap-2">
+            <span className="text-[11px] text-[#6B7280]">
+              {picked.size} of {COPY_MAX_SLOTS} selected
+            </span>
+            {picked.size > COPY_MAX_PER_WINDOW && (
+              <span className="text-[10px] text-[#6B7280]">
+                ~{formatDuration(estMs)} — {COPY_MAX_PER_WINDOW}/min rate limit
+              </span>
+            )}
+          </div>
+          {atCap && (
+            <p className="mb-2 text-[10px] text-gray-500">
+              {COPY_MAX_SLOTS} is the cap — the batch runs in this screen, and more would mean
+              waiting here far longer.
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={() => onConfirm([...picked])}
+            disabled={picked.size === 0}
+            className={cn(
+              'w-full rounded-xl px-4 py-2.5 text-sm font-medium transition-colors',
+              picked.size === 0
+                ? 'cursor-not-allowed bg-[#F3F4F6] text-gray-400'
+                : 'bg-[#2563EB] text-white active:bg-[#2563EB]/90'
+            )}
+          >
+            Confirm {picked.size > 0 ? `${picked.size} slot${picked.size === 1 ? '' : 's'}` : 'slots'}
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
+ * Copy screen. Order is: choose slots (via the popup above) → review the chosen
+ * slots and the items that will be written → confirm for real.
+ *
+ * The free-slot list is every slot in the cached ~18-day horizon minus those
+ * that already hold a session for THIS store, minus any consumed earlier in
+ * this page's life.
+ */
+function CopySheet({
+  open,
+  sale,
+  items,
+  itemsLoading,
+  onClose,
+  onConfirm,
+  onStop,
+  copying,
+  entries,
+  consumedSlotIds,
+  nowMs,
+  tickMs,
+}) {
   const [slots, setSlots] = useState(null)
-  const [chosen, setChosen] = useState(null)
+  const [chosen, setChosen] = useState([])
+  const [pickerOpen, setPickerOpen] = useState(false)
+  // Bumped on every open so the picker remounts and re-seeds its checkboxes.
+  // Not bumped on close, so the close animation still plays.
+  const [pickerSeq, setPickerSeq] = useState(0)
+
+  // Keyed on the sale's ID, NOT the sale object: a batch ends with fetchAll(),
+  // which rebuilds `sales` and hands this component a fresh object for the same
+  // session. Depending on identity would re-run this effect at that moment and
+  // silently clear the slots the user just picked, right as the results appear.
+  const saleId = sale?.id ?? null
+  const storeId = sale?.store_id ?? null
 
   useEffect(() => {
-    if (!open || !sale) return
+    if (!open || !saleId) return
     let cancelled = false
 
     ;(async () => {
       setSlots(null)
-      setChosen(null)
+      setChosen([])
+      setPickerOpen(false)
       const nowIso = new Date().toISOString()
       const [{ data: allSlots }, { data: taken }] = await Promise.all([
         selectAllPaged('flashDeals.slots', (from, to) =>
@@ -681,7 +1044,7 @@ function CopySheet({ open, sale, items, itemsLoading, onClose, onConfirm, copyin
             .order('start_time')
             .range(from, to)
         ),
-        supabase.from('flash_sales').select('timeslot_id').eq('store_id', sale.store_id),
+        supabase.from('flash_sales').select('timeslot_id').eq('store_id', storeId),
       ])
       if (cancelled) return
       // Occupancy is per-store: another shop holding this slot is irrelevant.
@@ -692,19 +1055,44 @@ function CopySheet({ open, sale, items, itemsLoading, onClose, onConfirm, copyin
     return () => {
       cancelled = true
     }
-  }, [open, sale])
+  }, [open, saleId, storeId])
 
   const enabled = useMemo(() => (items ?? []).filter((i) => i.status === 1), [items])
   const itemIds = useMemo(() => new Set(enabled.map((i) => i.item_id)), [enabled])
 
+  const slotsById = useMemo(
+    () => new Map((slots ?? []).map((s) => [String(s.timeslot_id), s])),
+    [slots]
+  )
+  // Chronological regardless of the order they were ticked, so the batch runs
+  // soonest-first — if it gets interrupted, the slots that mattered most are
+  // the ones already done.
+  const chosenSlots = useMemo(
+    () =>
+      chosen
+        .map((id) => slotsById.get(id))
+        .filter(Boolean)
+        .sort((a, b) => new Date(a.start_time) - new Date(b.start_time)),
+    [chosen, slotsById]
+  )
+
+  const canConfirm = COPY_ENABLED && chosenSlots.length > 0 && !copying && enabled.length > 0
+  const done = entries.length > 0 && !copying
+
   return (
-    <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
+    <Sheet
+      open={open}
+      // Not dismissable mid-batch: the sequencing loop lives in this page, so
+      // closing here would abandon whichever slots haven't been attempted yet.
+      onOpenChange={(o) => !o && !copying && onClose()}
+    >
       <SheetContent
         side="bottom"
+        showCloseButton={!copying}
         className="!h-screen w-full gap-0 rounded-t-2xl border-[#E8E6E1] bg-white p-0"
       >
         <SheetHeader className="border-b border-[#E8E6E1] px-4 py-4 pr-12">
-          <SheetTitle className="text-[#1F2937]">Copy to a free slot</SheetTitle>
+          <SheetTitle className="text-[#1F2937]">Copy to free slots</SheetTitle>
           {sale && (
             <p className="text-xs text-[#6B7280]">
               From {slotLabel(sale)} · {sale.stores?.shop_name}
@@ -722,17 +1110,89 @@ function CopySheet({ open, sale, items, itemsLoading, onClose, onConfirm, copyin
             </div>
           )}
 
-          {result && (
-            <div className="mt-3">
-              <CopyResult result={result} />
+          {/* ------------------- 1. choose the slots ------------------- */}
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => {
+                setPickerSeq((n) => n + 1)
+                setPickerOpen(true)
+              }}
+              disabled={copying || slots === null}
+              className={cn(
+                'flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium transition-colors',
+                copying || slots === null
+                  ? 'cursor-not-allowed bg-[#F3F4F6] text-gray-400'
+                  : chosenSlots.length > 0
+                    ? 'border border-[#2563EB]/30 bg-[#2563EB]/5 text-[#2563EB] active:bg-[#2563EB]/10'
+                    : 'bg-[#2563EB] text-white active:bg-[#2563EB]/90'
+              )}
+            >
+              <CalendarClock className="h-4 w-4 shrink-0" />
+              {slots === null
+                ? 'Loading slots…'
+                : chosenSlots.length === 0
+                  ? 'Choose Time Slot'
+                  : `Change slots (${chosenSlots.length})`}
+            </button>
+
+            {chosenSlots.length > 0 && (
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {chosenSlots.map((s) => {
+                  const id = String(s.timeslot_id)
+                  const risk = slotRisk(s, nowMs)
+                  const bucket = RISK_BUCKETS.find((b) => b.key === risk)
+                  return (
+                    <span
+                      key={id}
+                      className="flex items-center gap-1.5 rounded-full border border-[#E8E6E1] bg-white py-1 pl-2 pr-1 text-[11px] tabular-nums text-[#1F2937]"
+                    >
+                      <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', bucket.dot)} />
+                      {slotLabel(s)}
+                      <button
+                        type="button"
+                        onClick={() => setChosen((prev) => prev.filter((c) => c !== id))}
+                        disabled={copying}
+                        aria-label={`Remove ${slotLabel(s)}`}
+                        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-gray-400 active:bg-[#F3F4F6] disabled:opacity-40"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  )
+                })}
+              </div>
+            )}
+
+            {chosenSlots.some((s) => slotRisk(s, nowMs) === 'near') && (
+              <p className="mt-2 text-[11px] leading-snug text-yellow-800">
+                ⚠️ Some picks start within 48h. Whether Shopee lets us hold a slot BigSeller also
+                wants is still unobserved — the 2 Aug test hasn&apos;t run yet.
+              </p>
+            )}
+          </div>
+
+          {/* ------------------- per-slot outcomes ------------------- */}
+          {entries.length > 0 && (
+            <div className="mt-4">
+              <p className="mb-1.5 text-xs font-medium text-[#1F2937]">
+                {copying ? 'Copying…' : 'Results'} · {entries.length} slot
+                {entries.length === 1 ? '' : 's'}
+              </p>
+              <div className="space-y-2">
+                {entries.map((e) => (
+                  <CopySlotResult key={e.timeslotId} entry={e} tickMs={tickMs} />
+                ))}
+              </div>
             </div>
           )}
 
           {/* -------------------- what would be copied -------------------- */}
           <div className="mt-4">
             <p className="mb-1.5 text-xs font-medium text-[#1F2937]">
-              Will copy {itemIds.size} item{itemIds.size === 1 ? '' : 's'} / {enabled.length} variant
-              {enabled.length === 1 ? '' : 's'}, prices unchanged
+              {done ? 'Copied' : 'Will copy'} {itemIds.size} item{itemIds.size === 1 ? '' : 's'} /{' '}
+              {enabled.length} variant{enabled.length === 1 ? '' : 's'}, prices unchanged
+              {chosenSlots.length > 1 && `, into each of ${chosenSlots.length} slots`}
             </p>
             <p className="mb-2 text-[11px] text-gray-500">
               Disabled and rejected variants are skipped. Prices are copied exactly — re-running a
@@ -772,70 +1232,67 @@ function CopySheet({ open, sale, items, itemsLoading, onClose, onConfirm, copyin
             )}
           </div>
 
-          {/* ------------------------- free slots ------------------------- */}
-          <div className="mt-5">
-            <p className="mb-1.5 text-xs font-medium text-[#1F2937]">Choose a free slot</p>
-            {slots === null ? (
-              <div className="space-y-1.5">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Skeleton key={i} className="h-10 w-full rounded-lg" />
-                ))}
-              </div>
-            ) : slots.length === 0 ? (
-              <p className="py-4 text-center text-xs text-gray-400">
-                No free slots in the 18-day horizon for this store.
-              </p>
-            ) : (
-              <div className="rounded-xl border border-[#E8E6E1] bg-white shadow-card">
-                {slots.map((s) => {
-                  const { date, range, nextDay } = slotRange(s)
-                  const active = chosen === s.timeslot_id
-                  return (
-                    <button
-                      key={s.timeslot_id}
-                      type="button"
-                      onClick={() => setChosen(s.timeslot_id)}
-                      className={cn(
-                        'flex w-full items-center gap-2 border-b border-[#ECECEC] px-3 py-2.5 text-left last:border-b-0 transition-colors',
-                        active ? 'bg-[#2563EB]/5' : 'hover:bg-[#F3F4F6]'
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          'h-3.5 w-3.5 shrink-0 rounded-full border-2',
-                          active ? 'border-[#2563EB] bg-[#2563EB]' : 'border-[#E8E6E1]'
-                        )}
-                      />
-                      <span className="text-xs tabular-nums text-[#1F2937]">{date}</span>
-                      <span className="text-xs tabular-nums text-[#1F2937]">{range}</span>
-                      {nextDay && (
-                        <span className="rounded bg-[#F3F4F6] px-1 text-[10px] text-gray-500">+1</span>
-                      )}
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-          </div>
         </div>
 
         <div className="border-t border-[#E8E6E1] bg-white px-4 py-3">
-          <button
-            type="button"
-            disabled={!COPY_ENABLED || !chosen || copying || enabled.length === 0}
-            onClick={() => onConfirm(sale, chosen)}
-            title={COPY_ENABLED ? undefined : COPY_DISABLED_HINT}
-            className={cn(
-              'w-full rounded-xl px-4 py-2.5 text-sm font-medium transition-colors',
-              !COPY_ENABLED || !chosen || copying || enabled.length === 0
-                ? 'cursor-not-allowed bg-[#F3F4F6] text-gray-400'
-                : 'bg-[#2563EB] text-white active:bg-[#2563EB]/90'
-            )}
-          >
-            {copying ? 'Copying…' : COPY_ENABLED ? 'Copy to selected slot' : 'Copy disabled'}
-          </button>
+          {copying ? (
+            <button
+              type="button"
+              onClick={onStop}
+              className="w-full rounded-xl border border-[#E8E6E1] px-4 py-2.5 text-sm font-medium text-[#6B7280] active:bg-[#F3F4F6]"
+            >
+              Stop after the current slot
+            </button>
+          ) : done ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-full rounded-xl bg-[#2563EB] px-4 py-2.5 text-sm font-medium text-white active:bg-[#2563EB]/90"
+            >
+              Done
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={!canConfirm}
+              onClick={() => onConfirm(sale, chosenSlots)}
+              title={COPY_ENABLED ? undefined : COPY_DISABLED_HINT}
+              className={cn(
+                'flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium transition-colors',
+                !canConfirm
+                  ? 'cursor-not-allowed bg-[#F3F4F6] text-gray-400'
+                  : 'bg-[#2563EB] text-white active:bg-[#2563EB]/90'
+              )}
+            >
+              <Check className="h-4 w-4 shrink-0" />
+              {!COPY_ENABLED
+                ? 'Copy disabled'
+                : chosenSlots.length === 0
+                  ? 'Choose a slot first'
+                  : `Create ${chosenSlots.length} flash deal${chosenSlots.length === 1 ? '' : 's'}`}
+            </button>
+          )}
+          {copying && (
+            <p className="mt-1.5 text-center text-[10px] text-gray-500">
+              Keep this screen open — the batch runs here, not on the server.
+            </p>
+          )}
         </div>
       </SheetContent>
+
+      <SlotPickerDialog
+        key={pickerSeq}
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        slots={slots}
+        consumedSlotIds={consumedSlotIds}
+        selected={chosen}
+        nowMs={nowMs}
+        onConfirm={(ids) => {
+          setChosen(ids)
+          setPickerOpen(false)
+        }}
+      />
     </Sheet>
   )
 }
@@ -847,8 +1304,20 @@ export default function FlashDeals() {
   const [openSaleId, setOpenSaleId] = useState(null)
   const [expandedId, setExpandedId] = useState(null)
   const [copySaleId, setCopySaleId] = useState(null)
-  const [copyResult, setCopyResult] = useState(null)
+  // One entry per slot in the running/finished batch. Never collapsed into a
+  // single verdict — see CopySlotResult.
+  const [copyEntries, setCopyEntries] = useState([])
   const [copying, setCopying] = useState(false)
+  // Slots this page has already spent in a batch. The server's occupancy guard
+  // reads flash_sales, which the copy path does NOT write — a new session only
+  // lands there after the next sync. Without this, reopening the picker offers
+  // a just-filled slot as free and a second copy would create a DUPLICATE
+  // session on Shopee that nothing server-side can catch.
+  const [consumedSlotIds, setConsumedSlotIds] = useState(() => new Set())
+  const copyStopRef = useRef(false)
+  // 1s clock, live only during a batch, so per-slot wait countdowns tick
+  // without making the whole page re-render every second the rest of the time.
+  const [tickMs, setTickMs] = useState(() => Date.now())
   const [itemsBySale, setItemsBySale] = useState({})
   const [loadingItemsFor, setLoadingItemsFor] = useState(null)
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -863,6 +1332,24 @@ export default function FlashDeals() {
     const id = setInterval(() => setNowMs(Date.now()), 30_000)
     return () => clearInterval(id)
   }, [])
+
+  useEffect(() => {
+    if (!copying) return
+    const id = setInterval(() => setTickMs(Date.now()), 1_000)
+    return () => clearInterval(id)
+  }, [copying])
+
+  // The batch has no server-side queue behind it, so a reload mid-run simply
+  // loses the slots that haven't been attempted yet.
+  useEffect(() => {
+    if (!copying) return
+    const onBeforeUnload = (e) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [copying])
 
   // Sessions only — no variant rows. Item detail is fetched per-session on
   // demand (see the effect below).
@@ -969,52 +1456,205 @@ export default function FlashDeals() {
     }
   }, [])
 
-  // Copy. Unreachable while COPY_ENABLED is false — the button and the confirm
-  // are both disabled — but written so flipping the two flags is the only step.
-  const handleCopy = useCallback(async (sale, timeslotId) => {
-    if (!COPY_ENABLED) return
-    setCopying(true)
-    setCopyResult(null)
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
-      if (!session) {
-        toast.error('You must be logged in to copy.')
-        return
-      }
+  const patchEntry = useCallback((timeslotId, next) => {
+    setCopyEntries((prev) => prev.map((e) => (e.timeslotId === timeslotId ? { ...e, ...next } : e)))
+  }, [])
 
-      const res = await fetch('/api/shopee/copy-flash-sale', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ source_row_id: sale.id, timeslot_id: timeslotId }),
-      })
-      const data = await res.json()
+  /**
+   * Runs one slot to a verdict, retrying only the two refusals that are
+   * genuinely transient. Returns the entry patch describing how it ended.
+   *
+   * `submissions` is shared across the batch and mutated here: a timestamp is
+   * pushed before each request and POPPED again when the server refused before
+   * logSyncStart, because those refusals write no sync_logs row and so spend no
+   * rate budget. Getting that wrong would make the client pace against attempts
+   * that never counted.
+   */
+  const copyOneSlot = useCallback(
+    async (sale, slot, accessToken, submissions) => {
+      const id = String(slot.timeslot_id)
+      let rateRetries = 0
+      let lockWaited = 0
 
-      if (!res.ok && !data.status) {
-        toast.error(data.error ?? 'Copy failed.')
-        return
-      }
+      while (true) {
+        if (copyStopRef.current) return { state: 'skipped' }
 
-      // Never infer success from the write call — the server's read-back diff
-      // is the verdict, and it rides in the body even on a partial.
-      setCopyResult(data)
-      if (data.status === 'success') {
-        toast.success(`Copied — ${data.persistedCount}/${data.sentCount} variants verified.`)
-        fetchAll()
-      } else {
-        toast.error(`${data.status === 'unverified' ? 'Unverified' : 'Partial'} copy — see details.`)
+        const wait = rateWaitMs(submissions, Date.now())
+        if (wait > 0) {
+          patchEntry(id, { state: 'waiting', waitReason: 'rate', waitUntil: Date.now() + wait })
+          await sleepUntil(Date.now() + wait, copyStopRef)
+          continue
+        }
+
+        patchEntry(id, { state: 'running', waitReason: null, waitUntil: null })
+
+        let res
+        let data
+        try {
+          res = await fetch('/api/shopee/copy-flash-sale', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ source_row_id: sale.id, timeslot_id: slot.timeslot_id }),
+          })
+          submissions.push(Date.now())
+          data = await res.json()
+        } catch (err) {
+          // Covers a dropped connection AND a platform hard-timeout, whose
+          // non-JSON body fails the parse. Either way the create may have
+          // reached Shopee, so this is never reported as a clean failure.
+          console.error('[flash-deals] copy request failed', id, err)
+          return { state: 'done', error: err.message ?? 'Network error', uncertain: true }
+        }
+
+        // These three are refused ahead of logSyncStart, so no sync_logs row
+        // exists and the budget was not spent — take the timestamp back.
+        const refusal = data?.reason
+        if (refusal === 'rate_limited' || refusal === 'locked' || refusal === 'rate_limiter_unavailable') {
+          submissions.pop()
+        }
+
+        if (refusal === 'locked') {
+          if (lockWaited >= LOCK_MAX_WAIT_MS) {
+            return {
+              state: 'done',
+              error:
+                'Another copy held this store’s lock for over 90s — it was probably killed mid-flight. This slot was never attempted; retry it.',
+            }
+          }
+          const pause = Math.max(LOCK_POLL_MS, Number(data.retryAfterMs) || 0)
+          lockWaited += pause
+          patchEntry(id, { state: 'waiting', waitReason: 'lock', waitUntil: Date.now() + pause })
+          await sleepUntil(Date.now() + pause, copyStopRef)
+          continue
+        }
+
+        if (refusal === 'rate_limited' || refusal === 'rate_limiter_unavailable') {
+          if (rateRetries >= RATE_MAX_RETRIES) {
+            return { state: 'done', error: `${data.error} This slot was never attempted; retry it.` }
+          }
+          rateRetries += 1
+          const pause = (Number(data.retryAfterMs) || COPY_WINDOW_MS) + COPY_WINDOW_MARGIN_MS
+          patchEntry(id, { state: 'waiting', waitReason: 'rate', waitUntil: Date.now() + pause })
+          await sleepUntil(Date.now() + pause, copyStopRef)
+          continue
+        }
+
+        // A body carrying `status` is the read-back diff's verdict — partial
+        // and unverified included. HTTP status is not the signal here, and
+        // success is never inferred from the write call.
+        if (data?.status) return { state: 'done', result: data }
+
+        // copy-flash-sale only 502s when copyFlashSale threw, which happens at
+        // or before create_shop_flash_sale — so no session exists to be unsure
+        // about.
+        return {
+          state: 'done',
+          error: data?.error ?? `Copy failed (HTTP ${res.status})`,
+        }
       }
-    } catch (err) {
-      console.error('[flash-deals] copy failed', err)
-      toast.error('Copy failed.')
-    } finally {
-      setCopying(false)
-    }
-  }, [fetchAll])
+    },
+    [patchEntry]
+  )
+
+  /**
+   * Copies one session into N slots. Each slot gets its own request, its own
+   * sync_logs row and its own verdict — a failure on one is recorded and the
+   * batch moves on, never rolling back or blocking a slot that worked.
+   *
+   * Unreachable while COPY_ENABLED is false — the button and the confirm are
+   * both disabled — but written so flipping the two flags is the only step.
+   */
+  const handleCopyBatch = useCallback(
+    async (sale, slots) => {
+      if (!COPY_ENABLED || !sale || slots.length === 0) return
+
+      copyStopRef.current = false
+      setTickMs(Date.now())
+      setCopyEntries(
+        slots.map((s) => ({
+          timeslotId: String(s.timeslot_id),
+          label: slotLabel(s),
+          state: 'queued',
+          waitReason: null,
+          waitUntil: null,
+          result: null,
+          error: null,
+          uncertain: false,
+        }))
+      )
+      setCopying(true)
+
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession()
+        if (!session) {
+          toast.error('You must be logged in to copy.')
+          setCopyEntries([])
+          return
+        }
+
+        const submissions = []
+        const consumed = []
+        const tally = { success: 0, partial: 0, unverified: 0, failed: 0, skipped: 0 }
+
+        for (const slot of slots) {
+          const id = String(slot.timeslot_id)
+
+          if (copyStopRef.current) {
+            patchEntry(id, { state: 'skipped' })
+            tally.skipped += 1
+            continue
+          }
+
+          const patch = await copyOneSlot(sale, slot, session.access_token, submissions)
+          patchEntry(id, patch)
+
+          if (patch.state === 'skipped') {
+            tally.skipped += 1
+            continue
+          }
+
+          const status = patch.result?.status
+          if (status) tally[status] += 1
+          else tally.failed += 1
+
+          // A slot is spent if a session exists on it OR if we simply don't
+          // know — offering an unknown slot again invites a duplicate.
+          if (patch.result?.flashSaleId || patch.uncertain) consumed.push(id)
+        }
+
+        if (consumed.length > 0) {
+          setConsumedSlotIds((prev) => new Set([...prev, ...consumed]))
+        }
+
+        // A summary line, never a verdict — the per-slot list is the answer and
+        // stays on screen. Refetch once, not per slot.
+        const parts = [
+          tally.success && `${tally.success} copied`,
+          tally.partial && `${tally.partial} partial`,
+          tally.unverified && `${tally.unverified} unverified`,
+          tally.failed && `${tally.failed} failed`,
+          tally.skipped && `${tally.skipped} skipped`,
+        ].filter(Boolean)
+
+        if (tally.success === slots.length) toast.success(`${tally.success} slot(s) copied.`)
+        else toast.error(`${parts.join(', ')} — see the per-slot results.`)
+
+        if (tally.success + tally.partial + tally.unverified > 0) fetchAll()
+      } catch (err) {
+        console.error('[flash-deals] copy batch failed', err)
+        toast.error('Copy batch failed.')
+      } finally {
+        copyStopRef.current = false
+        setCopying(false)
+      }
+    },
+    [copyOneSlot, patchEntry, fetchAll]
+  )
 
   const grouped = useMemo(() => {
     const out = { ongoing: [], upcoming: [], expired: [] }
@@ -1139,7 +1779,7 @@ export default function FlashDeals() {
                   syncing={syncingId === sale.id}
                   onSync={handleSyncSession}
                   onCopy={(s) => {
-                    setCopyResult(null)
+                    setCopyEntries([])
                     setCopySaleId(s.id)
                   }}
                   onDetails={(s) => setOpenSaleId(s.id)}
@@ -1250,9 +1890,15 @@ export default function FlashDeals() {
         items={copySale ? itemsBySale[copySale.id] : []}
         itemsLoading={loadingItemsFor === copySaleId}
         onClose={() => setCopySaleId(null)}
-        onConfirm={handleCopy}
+        onConfirm={handleCopyBatch}
+        onStop={() => {
+          copyStopRef.current = true
+        }}
         copying={copying}
-        result={copyResult}
+        entries={copyEntries}
+        consumedSlotIds={consumedSlotIds}
+        nowMs={nowMs}
+        tickMs={tickMs}
       />
     </div>
   )

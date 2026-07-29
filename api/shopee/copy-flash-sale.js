@@ -92,10 +92,21 @@ export default async function handler(req, res) {
     .eq('sync_type', SYNC_TYPE)
     .gte('synced_at', windowStart);
 
+  // `reason` distinguishes the refusals a caller must handle DIFFERENTLY. A
+  // batching client (the multi-slot copy in src/pages/FlashDeals.jsx) cannot
+  // tell them apart from the message or from retryAfterMs alone, and the
+  // required wait is an order of magnitude apart:
+  //   rate_limited — the rolling window; clears in at most COPY_WINDOW_MS.
+  //   locked       — a copy is in flight, OR a previous one was hard-killed by
+  //                  the platform and left a 'started' row holding the lock for
+  //                  the full LOCK_TTL_MS (90s). retryAfterMs is a poll
+  //                  interval here, NOT a time-to-clear.
+  // Neither refusal writes a sync_logs row, so neither consumes rate budget.
   if (countError) {
     console.error('[copy-flash-sale] failed to read rate window, refusing', countError);
     return res.status(503).json({
       success: false,
+      reason: 'rate_limiter_unavailable',
       error: 'Rate limiter unavailable, try again shortly.',
       retryAfterMs: COPY_WINDOW_MS,
     });
@@ -103,6 +114,7 @@ export default async function handler(req, res) {
   if ((count ?? 0) >= COPY_MAX_PER_WINDOW) {
     return res.status(429).json({
       success: false,
+      reason: 'rate_limited',
       error: `Too many copies for this store. Limit is ${COPY_MAX_PER_WINDOW} per minute.`,
       retryAfterMs: COPY_WINDOW_MS,
     });
@@ -113,6 +125,7 @@ export default async function handler(req, res) {
   if (!canProceed) {
     return res.status(429).json({
       success: false,
+      reason: 'locked',
       error: 'A copy is already running for this store.',
       retryAfterMs: 5_000,
     });
