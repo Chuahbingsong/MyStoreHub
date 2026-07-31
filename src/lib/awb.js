@@ -92,6 +92,38 @@ export function logPrintAwbFailure(context, data) {
  * the batch and the server fell back to one PDF per order.
  * Returns the number of files downloaded.
  */
+/**
+ * Android and iOS have no shared "open with" trigger a website can invoke —
+ * only the user's own tap on the OS download notification / share icon does
+ * that. This just tells the UI which one-time hint copy applies.
+ */
+export function detectAwbHintPlatform() {
+  if (typeof navigator === 'undefined') return null
+  const ua = navigator.userAgent || ''
+  if (/android/i.test(ua)) return 'android'
+  if (/iphone|ipad|ipod/i.test(ua)) return 'ios'
+  return null
+}
+
+const AWB_HINT_SEEN_KEY = 'mystorehub.awbOpenWithHintSeen'
+
+export function hasSeenAwbOpenWithHint() {
+  try {
+    return localStorage.getItem(AWB_HINT_SEEN_KEY) === '1'
+  } catch {
+    // Storage unavailable (private mode, etc.) — don't force the hint every time.
+    return true
+  }
+}
+
+export function markAwbOpenWithHintSeen() {
+  try {
+    localStorage.setItem(AWB_HINT_SEEN_KEY, '1')
+  } catch {
+    // Ignore — worst case the hint reappears next time.
+  }
+}
+
 export async function downloadAwbResponse(data, filename) {
   if (data?.documents?.length) {
     let isFirst = true

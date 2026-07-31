@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { AlertTriangle, ArrowLeft, Check, ChevronDown, Loader2, Printer } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
@@ -156,6 +157,7 @@ export default function BulkPrint() {
   // Groups printed in this session are kept on screen with a ✓ state even
   // though awb_printed now excludes them from the query.
   const [printedSections, setPrintedSections] = useState([])
+  const [printConfirm, setPrintConfirm] = useState(null) // { section, group } | null
 
   const fetchData = useCallback(async () => {
     const [ordersRes, storesRes] = await Promise.all([
@@ -205,6 +207,16 @@ export default function BulkPrint() {
       else next.add(key)
       return next
     })
+  }
+
+  function requestPrintGroup(section, group) {
+    setPrintConfirm({ section, group })
+  }
+
+  function confirmPendingPrint() {
+    const pending = printConfirm
+    setPrintConfirm(null)
+    if (pending) handlePrintGroup(pending.section, pending.group)
   }
 
   async function handlePrintGroup(section, group) {
@@ -409,7 +421,7 @@ export default function BulkPrint() {
                       printed={printedKeys.has(group.key)}
                       expanded={expandedKeys.has(group.key)}
                       onToggle={toggleExpanded}
-                      onPrint={handlePrintGroup}
+                      onPrint={requestPrintGroup}
                     />
                   ))}
                 </div>
@@ -418,6 +430,13 @@ export default function BulkPrint() {
           </div>
         </>
       )}
+
+      <PrintAwbConfirmDialog
+        open={Boolean(printConfirm)}
+        count={printConfirm?.group?.orders.length ?? 1}
+        onCancel={() => setPrintConfirm(null)}
+        onConfirm={confirmPendingPrint}
+      />
     </div>
   )
 }

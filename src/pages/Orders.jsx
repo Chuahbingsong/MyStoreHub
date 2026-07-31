@@ -14,6 +14,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
@@ -745,6 +746,7 @@ export default function Orders() {
   const [syncing, setSyncing] = useState(false)
   const [printingId, setPrintingId] = useState(null)
   const [bulkPrinting, setBulkPrinting] = useState(false)
+  const [printConfirm, setPrintConfirm] = useState(null) // { count, run } | null
   const [printedFilter, setPrintedFilter] = useState('All')
   const [actingId, setActingId] = useState(null)
   const [bulkActing, setBulkActing] = useState(null)
@@ -993,12 +995,15 @@ export default function Orders() {
     return () => clearInterval(id)
   }, [lastSyncedAt])
 
-  async function handlePrintAWB(order) {
+  function requestPrintAWB(order) {
     if (!order.platform_order_id || !order.store_id) {
       toast.error('Print AWB works with real connected orders only.')
       return
     }
+    setPrintConfirm({ count: 1, run: () => handlePrintAWB(order) })
+  }
 
+  async function handlePrintAWB(order) {
     setPrintingId(order.id)
     try {
       const {
@@ -1041,20 +1046,42 @@ export default function Orders() {
     }
   }
 
-  async function handleBulkPrintAWB() {
+  function getBulkPrintSelection() {
     const selected = orders.filter((order) => selectedIds.has(order.id))
     const realOrders = selected.filter(
       (order) => order.platform_order_id && order.store_id && order.status !== 'Unpaid'
     )
 
-    if (realOrders.length === 0) {
-      toast.error('Print AWB works with real connected orders only.')
-      return
-    }
+    if (realOrders.length === 0) return null
 
     // The endpoint prints for a single store; scope to the first selected store.
     const storeId = realOrders[0].store_id
     const sameStoreOrders = realOrders.filter((order) => order.store_id === storeId)
+    return { storeId, sameStoreOrders, realOrders }
+  }
+
+  function requestBulkPrintAWB() {
+    const selection = getBulkPrintSelection()
+    if (!selection) {
+      toast.error('Print AWB works with real connected orders only.')
+      return
+    }
+    setPrintConfirm({ count: selection.sameStoreOrders.length, run: () => handleBulkPrintAWB() })
+  }
+
+  function confirmPendingPrint() {
+    const pending = printConfirm
+    setPrintConfirm(null)
+    pending?.run()
+  }
+
+  async function handleBulkPrintAWB() {
+    const selection = getBulkPrintSelection()
+    if (!selection) {
+      toast.error('Print AWB works with real connected orders only.')
+      return
+    }
+    const { storeId, sameStoreOrders, realOrders } = selection
     const orderSnList = sameStoreOrders.map((order) => order.platform_order_id)
 
     setBulkPrinting(true)
@@ -1113,8 +1140,8 @@ export default function Orders() {
         }
       }
 
-      if (sameStoreOrders.length < selected.length) {
-        toast.info(`Printed ${sameStoreOrders.length} of ${selected.length} selected (same store only).`)
+      if (sameStoreOrders.length < realOrders.length) {
+        toast.info(`Printed ${sameStoreOrders.length} of ${realOrders.length} selected (same store only).`)
       }
 
       await fetchOrders()
@@ -1655,7 +1682,7 @@ export default function Orders() {
               onClick={handleCardClick}
               selectionMode={selectionMode}
               selected={selectedIds.has(order.id)}
-              onPrintAWB={handlePrintAWB}
+              onPrintAWB={requestPrintAWB}
               printingId={printingId}
               onPack={handlePackOrder}
               onCancel={handleCancelOrder}
@@ -1675,7 +1702,7 @@ export default function Orders() {
             <Button
               size="sm"
               variant="outline"
-              onClick={handleBulkPrintAWB}
+              onClick={requestBulkPrintAWB}
               disabled={bulkPrinting}
               className={cn(ACTION_BTN_CLS, 'border-[#E8E6E1] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#1F2937]')}
             >
@@ -1873,7 +1900,7 @@ export default function Orders() {
                 <SheetFooter className="flex-row gap-2 border-t border-[#E8E6E1] px-4 py-4">
                   {renderActions(selectedOrder, {
                     fullWidth: true,
-                    onPrintAWB: handlePrintAWB,
+                    onPrintAWB: requestPrintAWB,
                     printingId,
                     onPack: handlePackOrder,
                     onCancel: handleCancelOrder,
@@ -1886,6 +1913,13 @@ export default function Orders() {
           )}
         </SheetContent>
       </Sheet>
+
+      <PrintAwbConfirmDialog
+        open={Boolean(printConfirm)}
+        count={printConfirm?.count ?? 1}
+        onCancel={() => setPrintConfirm(null)}
+        onConfirm={confirmPendingPrint}
+      />
     </div>
   )
 }
