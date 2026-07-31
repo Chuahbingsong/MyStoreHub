@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { Check, Loader2, LogOut, Package, Pencil, RefreshCw, ShoppingBag, X } from 'lucide-react'
+import {
+  Check,
+  ChevronRight,
+  Loader2,
+  LogOut,
+  Package,
+  Pencil,
+  RefreshCw,
+  ShoppingBag,
+  Truck,
+  X,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { supabase } from '@/lib/supabase'
@@ -357,6 +368,26 @@ export default function Settings() {
             {t('settings.language.zh')}
           </button>
         </div>
+      </section>
+
+      <section className="px-4 py-3">
+        <h2 className="mb-2 font-semibold text-[#1F2937]">{t('settings.shipping.title')}</h2>
+        <button
+          type="button"
+          onClick={() => navigate('/shipping')}
+          className="flex w-full items-center gap-3 rounded-xl border border-[#ECECEC] bg-white p-4 text-left shadow-sm transition-colors hover:bg-[#FAFAF9]"
+        >
+          <Truck className="h-5 w-5 shrink-0 text-[#6B7280]" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium text-[#1F2937]">
+              {t('settings.shipping.label')}
+            </span>
+            <span className="block text-xs text-[#6B7280]">
+              {t('settings.shipping.description')}
+            </span>
+          </span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-[#9CA3AF]" />
+        </button>
       </section>
 
       <section className="px-4 py-3">

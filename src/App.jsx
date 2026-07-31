@@ -13,6 +13,7 @@ import Analytics from '@/pages/Analytics'
 import Sales from '@/pages/Sales'
 import Settings from '@/pages/Settings'
 import Scan from '@/pages/Scan'
+import Shipping from '@/pages/Shipping'
 
 function App() {
   return (
@@ -105,6 +106,14 @@ function App() {
           element={
             <AppShell>
               <Scan />
+            </AppShell>
+          }
+        />
+        <Route
+          path="/shipping"
+          element={
+            <AppShell>
+              <Shipping />
             </AppShell>
           }
         />
