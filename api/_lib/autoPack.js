@@ -122,7 +122,7 @@ export async function autoPackStore(store, options = {}) {
       // can't fill (e.g. a non_integrated channel's seller-supplied
       // tracking_number), skip this order rather than send a doomed request —
       // no one is present to notice ship_order failed.
-      await shipOrder(freshStore, orderSn);
+      const { method } = await shipOrder(freshStore, orderSn);
 
       await supabaseAdmin
         .from('orders')
@@ -130,13 +130,14 @@ export async function autoPackStore(store, options = {}) {
           order_status: 'PROCESSED',
           packed_at: new Date().toISOString(),
           packed_by: 'auto',
+          shipping_method: method,
           auto_pack_status: 'success',
           auto_pack_attempted_at: new Date().toISOString(),
           auto_pack_error: null,
         })
         .eq('id', order.id);
 
-      await logSyncComplete(logId, 'success', `Auto-packed ${orderSn}`);
+      await logSyncComplete(logId, 'success', `Auto-packed ${orderSn} via ${method ?? '(unknown method)'}`);
       packed += 1;
     } catch (err) {
       const skipped = err instanceof IncompleteShippingInfoError;

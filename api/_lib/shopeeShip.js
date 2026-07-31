@@ -262,6 +262,10 @@ function buildShipOrderBody(orderSn, shippingParam) {
  * info_needed requires a field we can't fill. When true (the manual Pack
  * button's case, a human is present), sends the best-effort body anyway and
  * lets Shopee's own validation be the final word, matching prior behavior.
+ *
+ * Returns { data, method } — `method` is whichever of pickup/dropoff/
+ * non_integrated info_needed selected (see selectShippingMethod), so callers
+ * can persist it instead of it living only in the console.log lines above.
  */
 export async function shipOrder(store, orderSn, { allowIncomplete = false } = {}) {
   const shippingParam = await getShippingParameter(store, orderSn);
@@ -287,5 +291,5 @@ export async function shipOrder(store, orderSn, { allowIncomplete = false } = {}
   });
 
   console.log('[shopee-ship] shipment arranged for', orderSn);
-  return data;
+  return { data, method };
 }

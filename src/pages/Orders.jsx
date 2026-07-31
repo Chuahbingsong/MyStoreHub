@@ -230,6 +230,18 @@ function formatDateLabel(value) {
   return value ? format(new Date(value), 'd MMM HH:mm') : undefined
 }
 
+// shipping_method is whichever of pickup/dropoff/non_integrated Shopee's
+// info_needed selected when ship_order fired (see api/_lib/shopeeShip.js).
+const SHIPPING_METHOD_LABELS = {
+  pickup: 'Pickup',
+  dropoff: 'Dropoff',
+  non_integrated: 'Non-integrated',
+}
+
+function shippingMethodLabel(method) {
+  return SHIPPING_METHOD_LABELS[method] ?? method
+}
+
 function formatSyncAgo(ms) {
   const seconds = Math.max(0, Math.round(ms / 1000))
   if (seconds < 5) return 'just now'
@@ -328,6 +340,7 @@ function mapSupabaseOrder(row, storeNames) {
     autoPackStatus: row.auto_pack_status || undefined,
     autoPackError: row.auto_pack_error || undefined,
     courier: row.courier_name || undefined,
+    shippingMethod: row.shipping_method || undefined,
     trackingNumber: row.tracking_number || undefined,
     // Buyer-cancellation decision context (populated on IN_CANCEL orders).
     // buyerCancelReason is the free-text/enum reason the seller reads before
@@ -674,6 +687,11 @@ function OrderCard({
             <span className="rounded-md bg-[#F3F4F6] px-2 py-1 text-[11px] text-[#6B7280]">
               {order.platform}-MY-{order.courier}
             </span>
+            {order.shippingMethod && (
+              <span className="rounded-md bg-[#F3F4F6] px-2 py-1 text-[11px] text-[#6B7280]">
+                Arranged via: {shippingMethodLabel(order.shippingMethod)}
+              </span>
+            )}
             {order.trackingNumber && (
               <span className="flex items-center gap-1 font-mono text-[11px] tabular-nums text-[#6B7280]">
                 {order.trackingNumber}
@@ -1751,6 +1769,14 @@ export default function Orders() {
                         <span>Logistics</span>
                         <span className="text-[#1F2937]">
                           {selectedOrder.platform}-MY-{selectedOrder.courier}
+                        </span>
+                      </div>
+                    )}
+                    {selectedOrder.shippingMethod && (
+                      <div className="flex justify-between text-[#6B7280]">
+                        <span>Arranged via</span>
+                        <span className="text-[#1F2937]">
+                          {shippingMethodLabel(selectedOrder.shippingMethod)}
                         </span>
                       </div>
                     )}

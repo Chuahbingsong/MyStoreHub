@@ -287,6 +287,11 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: 'Forbidden' });
   }
 
+  // Set only on the 'ship' branch below; used in the catch block so a failed
+  // manual pack completes its sync_logs row as 'error' instead of leaving it
+  // stuck at 'started' forever.
+  let packLogId = null;
+
   try {
     const freshStore = await ensureFreshToken(store);
 
@@ -299,10 +304,12 @@ export default async function handler(req, res) {
     }
 
     if (action === 'ship') {
+      packLogId = await logSyncStart(store.id, 'manual_pack');
+
       // allowIncomplete: true — a human is present here (manual Pack button),
       // so let Shopee's own validation be the final word on an incomplete
       // info_needed rather than refusing to try. Auto-pack does not do this.
-      await shipOrder(freshStore, order_sn, { allowIncomplete: true });
+      const { method } = await shipOrder(freshStore, order_sn, { allowIncomplete: true });
       // ship_order arranges the shipment; Shopee moves the order to PROCESSED
       // ("seller is preparing the parcel"). It only becomes SHIPPED once the
       // courier collects, which the next sync picks up.
@@ -310,7 +317,10 @@ export default async function handler(req, res) {
         order_status: 'PROCESSED',
         packed_at: new Date().toISOString(),
         packed_by: 'manual',
+        shipping_method: method,
       });
+
+      await logSyncComplete(packLogId, 'success', `Manually packed ${order_sn} via ${method ?? '(unknown method)'}`);
     } else {
       await cancelOrder(freshStore, order_sn);
       await updateOrderStatus(freshStore, order_sn, {
@@ -329,6 +339,10 @@ export default async function handler(req, res) {
       console.error(JSON.stringify(shopeeResponse, null, 2));
     } else {
       console.error(err);
+    }
+
+    if (packLogId) {
+      await logSyncComplete(packLogId, 'error', `Manual pack failed for ${order_sn}: ${err.message}`);
     }
 
     return res.status(502).json({
