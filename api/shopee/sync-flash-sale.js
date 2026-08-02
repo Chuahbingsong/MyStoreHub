@@ -6,6 +6,7 @@ import {
   STORE_SYNC_WINDOW_MS,
   STORE_SYNC_MAX_PER_WINDOW,
 } from '../_lib/flashSaleSync.js';
+import { withCors } from '../_lib/cors.js';
 
 // On-demand refresh of ONE flash sale session. Still read-only against Shopee —
 // this endpoint pulls fresh data, it never creates or edits a sale.
@@ -30,7 +31,9 @@ export const config = { maxDuration: 30 };
 
 const SYNC_TYPE = 'flash_sale_one';
 
-export default async function handler(req, res) {
+export default withCors(handler);
+
+async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ success: false, error: 'Method not allowed' });

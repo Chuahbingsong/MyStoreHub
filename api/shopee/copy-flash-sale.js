@@ -6,6 +6,7 @@ import {
   COPY_WINDOW_MS,
   COPY_MAX_PER_WINDOW,
 } from '../_lib/flashSaleCopy.js';
+import { withCors } from '../_lib/cors.js';
 
 // Copies one flash sale session into a free upcoming slot. This is the ONLY
 // endpoint in the app that writes to Shopee.
@@ -24,7 +25,9 @@ export const config = { maxDuration: 30 };
 
 const SYNC_TYPE = 'flash_sale_copy';
 
-export default async function handler(req, res) {
+export default withCors(handler);
+
+async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ success: false, error: 'Method not allowed' });

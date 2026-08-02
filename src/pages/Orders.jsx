@@ -19,7 +19,7 @@ import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { getAutoSyncOrdersEnabled } from '@/lib/preferences'
-import { apiUrl } from '@/lib/apiBase'
+import { apiUrl, describeRequestError } from '@/lib/apiBase'
 import {
   describeFailedOrders,
   downloadAwbResponse,
@@ -1040,8 +1040,9 @@ export default function Orders() {
       const blob = await res.blob()
       downloadPdf(blob, `AWB-${order.platform_order_id}.pdf`)
       await fetchOrders()
-    } catch {
-      toast.error('Failed to print AWB.')
+    } catch (err) {
+      console.error('[print-awb] request failed', err)
+      toast.error(describeRequestError(err, 'Failed to print AWB.'))
     } finally {
       setPrintingId(null)
     }
@@ -1146,8 +1147,9 @@ export default function Orders() {
       }
 
       await fetchOrders()
-    } catch {
-      toast.error('Failed to print labels.')
+    } catch (err) {
+      console.error('[bulk-print] request failed', err)
+      toast.error(describeRequestError(err, 'Failed to print labels.'))
     } finally {
       setBulkPrinting(false)
     }
@@ -1181,8 +1183,9 @@ export default function Orders() {
 
       toast.success('Shipment arranged — Shopee notified')
       await fetchOrders()
-    } catch {
-      toast.error('Failed to arrange shipment.')
+    } catch (err) {
+      console.error('[pack-order] request failed', err)
+      toast.error(describeRequestError(err, 'Failed to arrange shipment.'))
     } finally {
       setActingId(null)
     }
@@ -1214,8 +1217,9 @@ export default function Orders() {
       if (!silent) toast.success('Order shipped!')
       if (!skipRefetch) await fetchOrders()
       return true
-    } catch {
-      if (!silent) toast.error('Failed to ship order.')
+    } catch (err) {
+      console.error('[ship-order] request failed', err)
+      if (!silent) toast.error(describeRequestError(err, 'Failed to ship order.'))
       return false
     } finally {
       setActingId(null)
@@ -1252,8 +1256,9 @@ export default function Orders() {
       if (!silent) toast.success('Order cancelled.')
       if (!skipRefetch) await fetchOrders()
       return true
-    } catch {
-      if (!silent) toast.error('Failed to cancel order.')
+    } catch (err) {
+      console.error('[cancel-order] request failed', err)
+      if (!silent) toast.error(describeRequestError(err, 'Failed to cancel order.'))
       return false
     } finally {
       setActingId(null)
@@ -1317,8 +1322,9 @@ export default function Orders() {
       } else {
         toast.success(data?.message || `Cancellation ${decision === 'accept' ? 'approved' : 'rejected'}.`)
       }
-    } catch {
-      toast.error(`Failed to ${verb.toLowerCase()} cancellation.`)
+    } catch (err) {
+      console.error('[buyer-cancel] request failed', err)
+      toast.error(describeRequestError(err, `Failed to ${verb.toLowerCase()} cancellation.`))
     } finally {
       setActingId(null)
     }

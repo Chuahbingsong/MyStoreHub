@@ -4,6 +4,7 @@ import { autoPackStore } from '../_lib/autoPack.js';
 import { autoBoostStore } from '../_lib/autoBoost.js';
 import { syncStoreFlashSales } from '../_lib/flashSaleSync.js';
 import { notifyStore } from '../_lib/pushNotify.js';
+import { withCors } from '../_lib/cors.js';
 
 // Cap the runtime. Vercel Hobby allows up to 60s.
 export const config = { maxDuration: 60 };
@@ -31,7 +32,9 @@ function isAuthorized(req) {
   return { ok: provided === secret, misconfigured: false };
 }
 
-export default async function handler(req, res) {
+export default withCors(handler);
+
+async function handler(req, res) {
   const auth = isAuthorized(req);
 
   if (auth.misconfigured) {

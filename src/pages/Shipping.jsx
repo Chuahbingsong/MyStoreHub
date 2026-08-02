@@ -12,7 +12,7 @@ import {
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/i18n/I18nContext'
-import { apiUrl } from '@/lib/apiBase'
+import { apiUrl, describeRequestError } from '@/lib/apiBase'
 
 // Shipping methods — which couriers each store offers at checkout.
 //
@@ -177,7 +177,7 @@ export default function Shipping() {
       setFetchedAt(data.fetchedAt ?? null)
     } catch (err) {
       console.error('[shipping] load failed', err)
-      if (!isCancelled()) setLoadError(t('shipping.loadError'))
+      if (!isCancelled()) setLoadError(describeRequestError(err, t('shipping.loadError')))
     } finally {
       if (!isCancelled()) setLoading(false)
     }
@@ -285,14 +285,15 @@ export default function Shipping() {
       }
     } catch (err) {
       console.error('[shipping] toggle failed', err)
+      const message = describeRequestError(err, t('shipping.toggleError'))
       setLastResult({
         kind: 'unverified',
         storeName: storeName(pending.storeId),
         channelName: pending.channel.displayName,
-        message: t('shipping.toggleError'),
+        message,
         collateral: [],
       })
-      toast.error(t('shipping.toggleError'))
+      toast.error(message)
     } finally {
       setSubmitting(false)
       setPending(null)

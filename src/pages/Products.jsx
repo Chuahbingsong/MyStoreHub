@@ -15,7 +15,7 @@ import {
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
-import { apiUrl } from '@/lib/apiBase'
+import { apiUrl, describeRequestError } from '@/lib/apiBase'
 
 const PLATFORM_META = {
   Shopee: {
@@ -219,8 +219,9 @@ export default function Products() {
 
       toast.success(`Synced ${data.synced} products!`)
       await fetchProducts()
-    } catch {
-      toast.error('Failed to sync products.')
+    } catch (err) {
+      console.error('[products] sync failed', err)
+      toast.error(describeRequestError(err, 'Failed to sync products.'))
     } finally {
       setSyncing(false)
     }

@@ -1,12 +1,15 @@
 import { supabaseAdmin } from '../_lib/supabaseAdmin.js';
 import { syncStoreOrders, SYNC_TIME_BUDGET_MS } from '../_lib/shopeeSync.js';
+import { withCors } from '../_lib/cors.js';
 
 // Cap the function runtime. Vercel Hobby allows up to 60s; the platform default
 // (300s) still times out on large stores. syncStoreOrders' own SYNC_TIME_BUDGET_MS
 // stops it from starting new work well before this wall.
 export const config = { maxDuration: 60 };
 
-export default async function handler(req, res) {
+export default withCors(handler);
+
+async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });

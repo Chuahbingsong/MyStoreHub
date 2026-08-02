@@ -7,3 +7,21 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 export function apiUrl(path) {
   return `${API_BASE}${path}`
 }
+
+/**
+ * A network-level fetch failure (offline, DNS, CORS block) and a JSON parse
+ * failure and a request timeout all land in the same generic `catch` unless
+ * distinguished here — otherwise every failure mode shows the same toast,
+ * which is what made the CORS break look identical to a Shopee-side error.
+ * Always console.error the original err alongside this so the real cause is
+ * still inspectable (e.g. via chrome://inspect), even though the toast text
+ * stays short.
+ */
+export function describeRequestError(err, fallback) {
+  if (err?.name === 'AbortError') return 'Request timed out. Try again.'
+  if (err instanceof SyntaxError) return 'Server sent an unexpected response. Try again.'
+  if (err instanceof TypeError) {
+    return 'Could not reach the server — check your connection (see console for details).'
+  }
+  return err?.message ? `${fallback} (${err.message})` : fallback
+}

@@ -10,6 +10,7 @@ import {
   diffChannelStates,
   ShopeeLogisticsError,
 } from '../_lib/shopeeLogistics.js';
+import { withCors } from '../_lib/cors.js';
 
 // Shop-level courier on/off, for the Shipping page.
 //
@@ -298,7 +299,9 @@ async function handlePost(req, res, user) {
   });
 }
 
-export default async function handler(req, res) {
+export default withCors(handler);
+
+async function handler(req, res) {
   const user = await authenticate(req, res);
   if (!user) return;
 

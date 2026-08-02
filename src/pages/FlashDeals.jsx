@@ -29,7 +29,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
-import { apiUrl } from '@/lib/apiBase'
+import { apiUrl, describeRequestError } from '@/lib/apiBase'
 
 // Dense row view of Shopee flash sale sessions.
 //
@@ -1451,7 +1451,7 @@ export default function FlashDeals() {
       toast.success(`Refreshed — ${data.enabledItemCount} item(s), ${data.models} variant(s).`)
     } catch (err) {
       console.error('[flash-deals] session sync failed', err)
-      toast.error('Refresh failed.')
+      toast.error(describeRequestError(err, 'Refresh failed.'))
     } finally {
       setSyncingId(null)
     }
@@ -1507,7 +1507,7 @@ export default function FlashDeals() {
           // non-JSON body fails the parse. Either way the create may have
           // reached Shopee, so this is never reported as a clean failure.
           console.error('[flash-deals] copy request failed', id, err)
-          return { state: 'done', error: err.message ?? 'Network error', uncertain: true }
+          return { state: 'done', error: describeRequestError(err, 'Network error'), uncertain: true }
         }
 
         // These three are refused ahead of logSyncStart, so no sync_logs row

@@ -1,5 +1,6 @@
 import { generateSign, SHOPEE_PARTNER_ID, SHOPEE_API_BASE } from '../_lib/shopee.js';
 import { supabaseAdmin } from '../_lib/supabaseAdmin.js';
+import { withCors } from '../_lib/cors.js';
 
 const MAX_STATUS_RETRIES = 5;
 const STATUS_RETRY_DELAY_MS = 2000;
@@ -608,7 +609,9 @@ async function markOrdersPrinted(storeId, orderSnList) {
   console.log('[print-awb] marked', data?.length ?? 0, 'order(s) as printed');
 }
 
-export default async function handler(req, res) {
+export default withCors(handler);
+
+async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ success: false, error: 'Method not allowed' });

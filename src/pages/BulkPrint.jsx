@@ -8,7 +8,7 @@ import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
-import { apiUrl } from '@/lib/apiBase'
+import { apiUrl, describeRequestError } from '@/lib/apiBase'
 import {
   downloadAwbResponse,
   downloadPdf,
@@ -291,7 +291,7 @@ export default function BulkPrint() {
       await fetchData()
     } catch (err) {
       console.error('[bulk-print] print failed', err)
-      toast.error('Failed to print labels.')
+      toast.error(describeRequestError(err, 'Failed to print labels.'))
     } finally {
       setPrintingKey(null)
     }

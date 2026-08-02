@@ -26,7 +26,7 @@ import {
   disablePush,
 } from '@/lib/push'
 import { useTranslation } from '@/lib/i18n/I18nContext'
-import { apiUrl } from '@/lib/apiBase'
+import { apiUrl, describeRequestError } from '@/lib/apiBase'
 
 const PLATFORMS = [
   {
@@ -129,8 +129,9 @@ export default function Settings() {
       }
 
       window.location.href = data.authUrl
-    } catch {
-      toast.error(t('settings.connectStore.startErrorToast'))
+    } catch (err) {
+      console.error('[settings] connect shopee failed', err)
+      toast.error(describeRequestError(err, t('settings.connectStore.startErrorToast')))
       setConnectingShopee(false)
     }
   }
@@ -166,8 +167,9 @@ export default function Settings() {
       if (user?.id) {
         fetchStores(user.id)
       }
-    } catch {
-      toast.error(t('settings.connectedStores.sync.ordersError'))
+    } catch (err) {
+      console.error('[settings] sync orders failed', err)
+      toast.error(describeRequestError(err, t('settings.connectedStores.sync.ordersError')))
     } finally {
       setSyncingStoreId(null)
     }
@@ -204,8 +206,9 @@ export default function Settings() {
       if (user?.id) {
         fetchStores(user.id)
       }
-    } catch {
-      toast.error(t('settings.connectedStores.sync.productsError'))
+    } catch (err) {
+      console.error('[settings] sync products failed', err)
+      toast.error(describeRequestError(err, t('settings.connectedStores.sync.productsError')))
     } finally {
       setSyncingProductsStoreId(null)
     }

@@ -2,6 +2,7 @@ import { generateSign, SHOPEE_PARTNER_ID, SHOPEE_API_BASE } from '../_lib/shopee
 import { supabaseAdmin } from '../_lib/supabaseAdmin.js';
 import { ensureFreshToken, shipOrder, ShopeeStepError } from '../_lib/shopeeShip.js';
 import { logSyncStart, logSyncComplete, resyncOrder } from '../_lib/shopeeSync.js';
+import { withCors } from '../_lib/cors.js';
 
 // Human-readable labels for the messages we surface to the seller after a
 // buyer-cancellation decision — same vocabulary as the Orders page.
@@ -226,7 +227,9 @@ async function updateOrderStatus(store, orderSn, patch) {
   }
 }
 
-export default async function handler(req, res) {
+export default withCors(handler);
+
+async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ success: false, error: 'Method not allowed' });
