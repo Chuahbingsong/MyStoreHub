@@ -19,6 +19,7 @@ import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { getAutoSyncOrdersEnabled } from '@/lib/preferences'
+import { apiUrl } from '@/lib/apiBase'
 import {
   describeFailedOrders,
   downloadAwbResponse,
@@ -260,7 +261,7 @@ function awbFilename(orderSnList) {
 }
 
 async function postOrderAction(session, order, action) {
-  const res = await fetch('/api/shopee/order-action', {
+  const res = await fetch(apiUrl('/api/shopee/order-action'), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${session.access_token}`,
@@ -852,7 +853,7 @@ export default function Orders() {
 
     let res
     try {
-      res = await fetch('/api/shopee/sync-orders', {
+      res = await fetch(apiUrl('/api/shopee/sync-orders'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -1015,7 +1016,7 @@ export default function Orders() {
         return
       }
 
-      const res = await fetch('/api/shopee/print-awb', {
+      const res = await fetch(apiUrl('/api/shopee/print-awb'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -1095,7 +1096,7 @@ export default function Orders() {
         return
       }
 
-      const res = await fetch('/api/shopee/print-awb', {
+      const res = await fetch(apiUrl('/api/shopee/print-awb'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,

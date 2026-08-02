@@ -12,6 +12,7 @@ import {
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/i18n/I18nContext'
+import { apiUrl } from '@/lib/apiBase'
 
 // Shipping methods — which couriers each store offers at checkout.
 //
@@ -160,7 +161,7 @@ export default function Shipping() {
         return
       }
 
-      const res = await fetch('/api/shopee/logistics-channels', {
+      const res = await fetch(apiUrl('/api/shopee/logistics-channels'), {
         headers: { Authorization: `Bearer ${session.access_token}` },
       })
       const data = await res.json()
@@ -218,7 +219,7 @@ export default function Shipping() {
         return
       }
 
-      const res = await fetch('/api/shopee/logistics-channels', {
+      const res = await fetch(apiUrl('/api/shopee/logistics-channels'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

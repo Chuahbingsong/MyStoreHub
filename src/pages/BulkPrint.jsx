@@ -8,6 +8,7 @@ import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
+import { apiUrl } from '@/lib/apiBase'
 import {
   downloadAwbResponse,
   downloadPdf,
@@ -232,7 +233,7 @@ export default function BulkPrint() {
         return
       }
 
-      const res = await fetch('/api/shopee/print-awb', {
+      const res = await fetch(apiUrl('/api/shopee/print-awb'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,

@@ -29,6 +29,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
+import { apiUrl } from '@/lib/apiBase'
 
 // Dense row view of Shopee flash sale sessions.
 //
@@ -1417,7 +1418,7 @@ export default function FlashDeals() {
         return
       }
 
-      const res = await fetch('/api/shopee/sync-flash-sale', {
+      const res = await fetch(apiUrl('/api/shopee/sync-flash-sale'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -1491,7 +1492,7 @@ export default function FlashDeals() {
         let res
         let data
         try {
-          res = await fetch('/api/shopee/copy-flash-sale', {
+          res = await fetch(apiUrl('/api/shopee/copy-flash-sale'), {
             method: 'POST',
             headers: {
               Authorization: `Bearer ${accessToken}`,

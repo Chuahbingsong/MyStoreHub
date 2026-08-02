@@ -26,6 +26,7 @@ import {
   disablePush,
 } from '@/lib/push'
 import { useTranslation } from '@/lib/i18n/I18nContext'
+import { apiUrl } from '@/lib/apiBase'
 
 const PLATFORMS = [
   {
@@ -118,7 +119,7 @@ export default function Settings() {
   async function handleConnectShopee() {
     setConnectingShopee(true)
     try {
-      const res = await fetch('/api/shopee/auth')
+      const res = await fetch(apiUrl('/api/shopee/auth'))
       const data = await res.json()
 
       if (!res.ok || !data.authUrl) {
@@ -146,7 +147,7 @@ export default function Settings() {
         return
       }
 
-      const res = await fetch('/api/shopee/sync-orders', {
+      const res = await fetch(apiUrl('/api/shopee/sync-orders'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -184,7 +185,7 @@ export default function Settings() {
         return
       }
 
-      const res = await fetch('/api/shopee/sync-products', {
+      const res = await fetch(apiUrl('/api/shopee/sync-products'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,

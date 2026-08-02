@@ -15,6 +15,7 @@ import {
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
+import { apiUrl } from '@/lib/apiBase'
 
 const PLATFORM_META = {
   Shopee: {
@@ -201,7 +202,7 @@ export default function Products() {
         return
       }
 
-      const res = await fetch('/api/shopee/sync-products', {
+      const res = await fetch(apiUrl('/api/shopee/sync-products'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,
