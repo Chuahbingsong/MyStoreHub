@@ -21,9 +21,10 @@ import { cn } from '@/lib/utils'
 import { getAutoSyncOrdersEnabled } from '@/lib/preferences'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
 import {
+  confirmAwbPrinted,
+  deliverPdf,
   describeFailedOrders,
   downloadAwbResponse,
-  downloadPdf,
   logPrintAwbFailure,
   printAwbErrorMessage,
 } from '@/lib/awb'
@@ -1038,7 +1039,15 @@ export default function Orders() {
       }
 
       const blob = await res.blob()
-      downloadPdf(blob, `AWB-${order.platform_order_id}.pdf`)
+      try {
+        await deliverPdf(blob, `AWB-${order.platform_order_id}.pdf`)
+      } catch (err) {
+        console.error('[print-awb] PDF did not reach the device', err)
+        toast.error('Label generated but could not be saved/opened on this device.')
+        return
+      }
+
+      await confirmAwbPrinted(session.access_token, order.store_id, [order.platform_order_id])
       await fetchOrders()
     } catch (err) {
       console.error('[print-awb] request failed', err)
@@ -1112,7 +1121,14 @@ export default function Orders() {
       // one document per logistics channel as base64 JSON.
       if (res.ok && contentType.includes('application/pdf')) {
         const blob = await res.blob()
-        downloadPdf(blob, awbFilename(orderSnList))
+        try {
+          await deliverPdf(blob, awbFilename(orderSnList))
+        } catch (err) {
+          console.error('[bulk-print] PDF did not reach the device', err)
+          toast.error('Labels generated but could not be saved/opened on this device.')
+          return
+        }
+        await confirmAwbPrinted(session.access_token, storeId, orderSnList)
       } else {
         const data = await res.json().catch(() => ({}))
         if (!res.ok || !data.success) {
@@ -1121,14 +1137,19 @@ export default function Orders() {
           return
         }
 
-        const fileCount = await downloadAwbResponse(data, awbFilename(data.printed_order_sn_list ?? orderSnList))
+        const { fileCount, deliveredOrderSns } = await downloadAwbResponse(
+          data,
+          awbFilename(data.printed_order_sn_list ?? orderSnList)
+        )
         if (fileCount === 0) {
           logPrintAwbFailure('bulk print (no pdf)', data)
-          toast.error('Shopee returned no PDF.')
+          toast.error('Labels generated but could not be saved/opened on this device.')
           return
         }
 
-        const orderCount = data.printed_order_sn_list?.length ?? orderSnList.length
+        await confirmAwbPrinted(session.access_token, storeId, deliveredOrderSns)
+
+        const orderCount = deliveredOrderSns.length
         toast.success(
           `Downloaded ${fileCount} label file${fileCount === 1 ? '' : 's'} covering ${orderCount} order${orderCount === 1 ? '' : 's'}`
         )

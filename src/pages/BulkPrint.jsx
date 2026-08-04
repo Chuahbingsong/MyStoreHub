@@ -10,8 +10,9 @@ import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
 import {
+  confirmAwbPrinted,
+  deliverPdf,
   downloadAwbResponse,
-  downloadPdf,
   describeFailedOrders,
   logPrintAwbFailure,
   printAwbErrorMessage,
@@ -248,7 +249,14 @@ export default function BulkPrint() {
       let printedCount = group.orders.length
 
       if (res.ok && contentType.includes('application/pdf')) {
-        downloadPdf(await res.blob(), filename)
+        try {
+          await deliverPdf(await res.blob(), filename)
+        } catch (err) {
+          console.error(`[bulk-print] PDF did not reach the device for ${group.key}`, err)
+          toast.error('Labels generated but could not be saved/opened on this device.')
+          return
+        }
+        await confirmAwbPrinted(session.access_token, group.storeId, group.orderSns)
       } else {
         const data = await res.json().catch(() => ({}))
 
@@ -258,14 +266,15 @@ export default function BulkPrint() {
           return
         }
 
-        const files = await downloadAwbResponse(data, filename)
-        if (files === 0) {
+        const { fileCount, deliveredOrderSns } = await downloadAwbResponse(data, filename)
+        if (fileCount === 0) {
           logPrintAwbFailure(`bulk print ${group.key} (no pdf)`, data)
-          toast.error('Shopee returned no PDF for this group.')
+          toast.error('Labels generated but could not be saved/opened on this device.')
           return
         }
 
-        printedCount = data.printed_order_sn_list?.length ?? printedCount
+        await confirmAwbPrinted(session.access_token, group.storeId, deliveredOrderSns)
+        printedCount = deliveredOrderSns.length
 
         if (data.skipped_orders?.length) {
           toast.info(`${data.skipped_orders.length} order(s) not ready — no tracking number yet.`)

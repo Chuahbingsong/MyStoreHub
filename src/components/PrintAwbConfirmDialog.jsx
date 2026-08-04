@@ -6,12 +6,21 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { detectAwbHintPlatform, hasSeenAwbOpenWithHint, markAwbOpenWithHintSeen } from '@/lib/awb'
+import {
+  detectAwbHintPlatform,
+  hasSeenAwbOpenWithHint,
+  isNativePlatform,
+  markAwbOpenWithHintSeen,
+} from '@/lib/awb'
 
 // Android and iOS land on genuinely different post-download experiences (see
-// src/lib/awb.js downloadPdf) — say so instead of promising one universal flow.
+// src/lib/awb.js deliverPdf) — say so instead of promising one universal flow.
+// Inside the Capacitor app, Android gets a real native "Open with" chooser
+// instead of a download notification.
 const HINT_TEXT = {
-  android: 'On Android, tap the download notification to choose which app opens it.',
+  android: isNativePlatform()
+    ? 'An "Open with" chooser will appear — pick your printer app (or Drive, WPS, etc).'
+    : 'On Android, tap the download notification to choose which app opens it.',
   ios: 'On iPhone/iPad, the label opens in Safari — tap the share icon to open it in another app.',
 }
 

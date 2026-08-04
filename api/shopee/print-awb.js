@@ -588,27 +588,6 @@ async function downloadOnePerOrder(store, orderSnList) {
   return { documents, failed };
 }
 
-/**
- * Flags orders as printed once their PDF exists. Never throws: the label has
- * already been generated at this point and the caller needs the PDF back, so a
- * bookkeeping failure must not turn into a failed print.
- */
-async function markOrdersPrinted(storeId, orderSnList) {
-  const { data, error } = await supabaseAdmin
-    .from('orders')
-    .update({ awb_printed: true, awb_printed_at: new Date().toISOString() })
-    .eq('store_id', storeId)
-    .in('platform_order_id', orderSnList)
-    .select('platform_order_id');
-
-  if (error) {
-    console.error('[print-awb] failed to mark orders printed', error);
-    return;
-  }
-
-  console.log('[print-awb] marked', data?.length ?? 0, 'order(s) as printed');
-}
-
 export default withCors(handler);
 
 async function handler(req, res) {
@@ -735,10 +714,12 @@ async function handler(req, res) {
 
     const printedOrderSns = documents.flatMap((doc) => doc.order_sn_list);
 
-    // 4. Record only what actually printed.
-    if (printedOrderSns.length > 0) {
-      await markOrdersPrinted(store.id, printedOrderSns);
-    }
+    // 4. NOT marked as printed here. Generating the label PDF is not the same
+    //    as it reaching the seller's device — a Capacitor WebView blob
+    //    download used to silently no-op, yet this endpoint still reported
+    //    success and the order got marked printed regardless. The client now
+    //    calls /api/shopee/confirm-awb-printed once it has actually saved or
+    //    downloaded the PDF; see api/_lib/awbPrinted.js.
 
     console.log(
       `[print-awb] done: ${documents.length} document(s), ${printedOrderSns.length} printed, ${failed.length} failed, ${skipped.length} skipped`
