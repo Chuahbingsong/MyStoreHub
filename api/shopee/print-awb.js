@@ -16,6 +16,33 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// --- Perf instrumentation (temporary — remove once we've measured real timings).
+// Marks are kept per-request (not module-level) so concurrent invocations on a
+// warm lambda can't interleave each other's timings. ---
+function makePerfTracker() {
+  const marks = [];
+  return {
+    start(label) {
+      const t = Date.now();
+      return () => {
+        const ms = Date.now() - t;
+        marks.push({ label, ms });
+        console.log(`[print-awb][perf] ${label}: ${ms}ms`);
+        return ms;
+      };
+    },
+    summary() {
+      const total = marks.reduce((sum, m) => sum + m.ms, 0);
+      console.log('[print-awb][perf] ===== SUMMARY =====');
+      for (const m of marks) {
+        console.log(`[print-awb][perf]   ${m.label}: ${m.ms}ms (${((m.ms / total) * 100).toFixed(1)}%)`);
+      }
+      console.log(`[print-awb][perf]   TOTAL: ${total}ms`);
+    },
+  };
+}
+// --- end perf instrumentation ---
+
 /**
  * Carries the step name and Shopee's complete response body up to the handler,
  * so the client gets the real reason instead of a generic message.
@@ -192,12 +219,14 @@ const NO_TRACKING_REASON = 'Order not ready for shipping label yet (no tracking 
  * label created, so they're reported as skipped rather than poisoning the
  * whole batch.
  */
-async function resolveTrackingNumbers(store, orderSnList) {
+async function resolveTrackingNumbers(store, orderSnList, perf) {
   const trackingByOrderSn = {};
   const skipped = [];
 
   for (const orderSn of orderSnList) {
+    const done = perf.start(`get_tracking_number[${orderSn}]`);
     const trackingNumber = await getTrackingNumber(store, orderSn);
+    done();
     if (trackingNumber) {
       trackingByOrderSn[orderSn] = trackingNumber;
     } else {
@@ -383,7 +412,7 @@ async function createShippingDocument(store, orderSnList, typeByOrderSn = {}, tr
   return { created, failed };
 }
 
-async function waitForDocumentReady(store, orderSnList, typeByOrderSn = {}) {
+async function waitForDocumentReady(store, orderSnList, typeByOrderSn = {}, perf) {
   const path = '/api/v2/logistics/get_shipping_document_result';
 
   // This request takes shipping_document_type but NOT tracking_number; it must
@@ -405,11 +434,13 @@ async function waitForDocumentReady(store, orderSnList, typeByOrderSn = {}) {
 
     console.log(`[print-awb] checking document status (attempt ${attempt}/${MAX_STATUS_RETRIES})`);
 
+    const pollDone = perf.start(`get_shipping_document_result[poll ${attempt}]`);
     const data = await shopeeJsonCall('get_shipping_document_result', url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
+    pollDone();
 
     lastData = data;
 
@@ -645,15 +676,23 @@ async function handler(req, res) {
     return res.status(403).json({ success: false, error: 'Forbidden' });
   }
 
+  const requestStart = Date.now();
+  const perf = makePerfTracker();
   try {
+    const tokenDone = perf.start('ensureFreshToken');
     const freshStore = await ensureFreshToken(store);
+    tokenDone();
 
     console.log('[print-awb] printing AWB for store', store.id, 'orders:', order_sn_list.join(', '));
 
     // 1. Resolve a tracking number per order; create_shipping_document
     //    validates it, so orders without one cannot be printed.
-    const { trackingByOrderSn, skipped } = await resolveTrackingNumbers(freshStore, order_sn_list);
+    const trackingDone = perf.start(`resolveTrackingNumbers[${order_sn_list.length} order(s), sequential]`);
+    const { trackingByOrderSn, skipped } = await resolveTrackingNumbers(freshStore, order_sn_list, perf);
+    trackingDone();
+    const persistDone = perf.start('persistTrackingNumbers');
     await persistTrackingNumbers(store.id, trackingByOrderSn);
+    persistDone();
     const printableOrderSns = order_sn_list.filter((orderSn) => trackingByOrderSn[orderSn]);
 
     if (printableOrderSns.length === 0) {
@@ -669,28 +708,37 @@ async function handler(req, res) {
 
     // 2. The caller sends one store + one logistics channel per request, so
     //    this is a single create -> poll -> download run.
+    const typesDone = perf.start('get_shipping_document_parameter');
     const typeByOrderSn = await getShippingDocumentTypes(freshStore, printableOrderSns);
+    typesDone();
 
+    const createDone = perf.start('create_shipping_document');
     const { created, failed: createFailed } = await createShippingDocument(
       freshStore,
       printableOrderSns,
       typeByOrderSn,
       trackingByOrderSn
     );
+    createDone();
 
+    const waitDone = perf.start('waitForDocumentReady[total]');
     const { ready, failed: resultFailed } = await waitForDocumentReady(
       freshStore,
       created,
-      typeByOrderSn
+      typeByOrderSn,
+      perf
     );
+    waitDone();
 
     const failed = [...createFailed, ...resultFailed].map(toFailedEntry);
 
     // 3. Download the batch as one PDF, falling back to one PDF per order if
     //    Shopee still refuses to combine them.
     let documents = [];
+    const downloadDone = perf.start('download_shipping_document');
     try {
       const pdfBuffer = await downloadShippingDocument(freshStore, ready);
+      downloadDone();
       documents = [
         {
           order_sn_list: ready,
@@ -699,6 +747,7 @@ async function handler(req, res) {
         },
       ];
     } catch (err) {
+      downloadDone();
       if (!isCannotDownloadTogether(err) || ready.length <= 1) throw err;
 
       console.error(
@@ -711,6 +760,9 @@ async function handler(req, res) {
       documents = perOrder.documents;
       failed.push(...perOrder.failed);
     }
+
+    console.log(`[print-awb][perf] REQUEST TOTAL: ${Date.now() - requestStart}ms`);
+    perf.summary();
 
     const printedOrderSns = documents.flatMap((doc) => doc.order_sn_list);
 
@@ -762,6 +814,9 @@ async function handler(req, res) {
   } catch (err) {
     const step = err instanceof ShopeeStepError ? err.step : 'unknown';
     const shopeeResponse = err instanceof ShopeeStepError ? err.shopeeResponse : null;
+
+    console.log(`[print-awb][perf] REQUEST TOTAL (failed): ${Date.now() - requestStart}ms`);
+    perf.summary();
 
     console.error(`[print-awb] print failed at step "${step}":`, err.message);
     if (shopeeResponse) {
