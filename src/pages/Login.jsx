@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Eye, EyeOff, Loader2, ShoppingBag } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { supabase } from '@/lib/supabase'
+import { supabase, setRememberMe as persistRememberMe } from '@/lib/supabase'
 import { useTranslation } from '@/lib/i18n/I18nContext'
 
 export default function Login() {
@@ -15,7 +15,26 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false)
   const [rememberMe, setRememberMe] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [checkingSession, setCheckingSession] = useState(true)
   const [error, setError] = useState('')
+
+  // The app always cold-boots at "/", which routes here regardless of
+  // whether a valid session already exists — skip straight to the dashboard
+  // if one does instead of forcing a fresh sign-in every launch.
+  useEffect(() => {
+    let cancelled = false
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return
+      if (data.session) {
+        navigate('/dashboard', { replace: true })
+        return
+      }
+      setCheckingSession(false)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [navigate])
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -27,6 +46,10 @@ export default function Login() {
 
     setError('')
     setLoading(true)
+
+    // Must land in storage before signInWithPassword writes the session, so
+    // the write goes to the right place (durable vs. memory-only).
+    await persistRememberMe(rememberMe)
 
     const { error: authError } = await supabase.auth.signInWithPassword({
       email: email.trim(),
@@ -45,6 +68,14 @@ export default function Login() {
     }
 
     navigate('/dashboard')
+  }
+
+  if (checkingSession) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#FAF9F6]">
+        <Loader2 className="h-6 w-6 animate-spin text-[#2563EB]" />
+      </div>
+    )
   }
 
   return (

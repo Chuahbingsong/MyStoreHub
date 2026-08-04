@@ -5,19 +5,26 @@ import { AlertTriangle, ArrowLeft, Check, ChevronDown, Loader2, Printer } from '
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
+import PrintAwbMarkPrintedDialog from '@/components/PrintAwbMarkPrintedDialog'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
 import {
-  confirmAwbPrinted,
   deliverPdf,
   downloadAwbResponse,
   describeFailedOrders,
+  isNativePlatform,
   logPrintAwbFailure,
   printAwbErrorMessage,
   slugify,
 } from '@/lib/awb'
+import {
+  confirmPendingAwbPrint,
+  dismissPendingAwbPrint,
+  finalizeAwbDelivery,
+  usePendingAwbPrint,
+} from '@/lib/awbPrintPrompt'
 
 // Raw Shopee statuses for orders still awaiting handover, i.e. the ones that
 // still need a label. SHIPPED/COMPLETED/CANCELLED are already out the door.
@@ -160,6 +167,7 @@ export default function BulkPrint() {
   // though awb_printed now excludes them from the query.
   const [printedSections, setPrintedSections] = useState([])
   const [printConfirm, setPrintConfirm] = useState(null) // { section, group } | null
+  const pendingAwbPrint = usePendingAwbPrint()
 
   const fetchData = useCallback(async () => {
     const [ordersRes, storesRes] = await Promise.all([
@@ -221,6 +229,27 @@ export default function BulkPrint() {
     if (pending) handlePrintGroup(pending.section, pending.group)
   }
 
+  // Keeps a just-printed group's card visible with its ✓ state even though
+  // awb_printed now excludes it from fetchData()'s query.
+  function markGroupPrintedInUI(section, group, printedCount) {
+    setPrintedKeys((prev) => new Set(prev).add(group.key))
+    setPrintedSections((prev) =>
+      prev.some((s) => s.groups.some((g) => g.key === group.key))
+        ? prev
+        : [...prev, { ...section, groups: [group] }]
+    )
+    toast.success(
+      `Printed ${printedCount} label${printedCount === 1 ? '' : 's'} — ${group.courier}`
+    )
+  }
+
+  async function handleConfirmPendingAwbPrint() {
+    const meta = pendingAwbPrint?.meta
+    await confirmPendingAwbPrint()
+    if (meta) markGroupPrintedInUI(meta.section, meta.group, meta.printedCount)
+    await fetchData()
+  }
+
   async function handlePrintGroup(section, group) {
     setPrintingKey(group.key)
 
@@ -247,6 +276,7 @@ export default function BulkPrint() {
       const filename = `AWB-${slugify(section.storeName, 'store')}-${slugify(group.courier, 'courier')}-${group.orders.length}orders.pdf`
 
       let printedCount = group.orders.length
+      let deliveredOrderSns = group.orderSns
 
       if (res.ok && contentType.includes('application/pdf')) {
         try {
@@ -256,7 +286,6 @@ export default function BulkPrint() {
           toast.error('Labels generated but could not be saved/opened on this device.')
           return
         }
-        await confirmAwbPrinted(session.access_token, group.storeId, group.orderSns)
       } else {
         const data = await res.json().catch(() => ({}))
 
@@ -266,14 +295,14 @@ export default function BulkPrint() {
           return
         }
 
-        const { fileCount, deliveredOrderSns } = await downloadAwbResponse(data, filename)
-        if (fileCount === 0) {
+        const result = await downloadAwbResponse(data, filename)
+        if (result.fileCount === 0) {
           logPrintAwbFailure(`bulk print ${group.key} (no pdf)`, data)
           toast.error('Labels generated but could not be saved/opened on this device.')
           return
         }
 
-        await confirmAwbPrinted(session.access_token, group.storeId, deliveredOrderSns)
+        deliveredOrderSns = result.deliveredOrderSns
         printedCount = deliveredOrderSns.length
 
         if (data.skipped_orders?.length) {
@@ -285,19 +314,22 @@ export default function BulkPrint() {
         }
       }
 
-      // Keep the card visible with its printed state, then refresh the rest.
-      setPrintedKeys((prev) => new Set(prev).add(group.key))
-      setPrintedSections((prev) =>
-        prev.some((s) => s.groups.some((g) => g.key === group.key))
-          ? prev
-          : [...prev, { ...section, groups: [group] }]
-      )
+      // Native: deliverPdf only launched the "Open with" chooser — marking
+      // printed (and the UI below that depends on it) waits for the user to
+      // confirm via the resume prompt (see awbPrintPrompt.js). Browser/PWA:
+      // unchanged, mark immediately since there's no resume signal to hang a
+      // prompt off of.
+      await finalizeAwbDelivery({
+        storeId: group.storeId,
+        accessToken: session.access_token,
+        orderSnList: deliveredOrderSns,
+        meta: { section, group, printedCount },
+      })
 
-      toast.success(
-        `Printed ${printedCount} label${printedCount === 1 ? '' : 's'} — ${group.courier}`
-      )
-
-      await fetchData()
+      if (!isNativePlatform()) {
+        markGroupPrintedInUI(section, group, printedCount)
+        await fetchData()
+      }
     } catch (err) {
       console.error('[bulk-print] print failed', err)
       toast.error(describeRequestError(err, 'Failed to print labels.'))
@@ -446,6 +478,13 @@ export default function BulkPrint() {
         count={printConfirm?.group?.orders.length ?? 1}
         onCancel={() => setPrintConfirm(null)}
         onConfirm={confirmPendingPrint}
+      />
+
+      <PrintAwbMarkPrintedDialog
+        open={Boolean(pendingAwbPrint)}
+        count={pendingAwbPrint?.orderSnList?.length ?? 1}
+        onCancel={dismissPendingAwbPrint}
+        onConfirm={handleConfirmPendingAwbPrint}
       />
     </div>
   )

@@ -15,19 +15,25 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
+import PrintAwbMarkPrintedDialog from '@/components/PrintAwbMarkPrintedDialog'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { getAutoSyncOrdersEnabled } from '@/lib/preferences'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
 import {
-  confirmAwbPrinted,
   deliverPdf,
   describeFailedOrders,
   downloadAwbResponse,
   logPrintAwbFailure,
   printAwbErrorMessage,
 } from '@/lib/awb'
+import {
+  confirmPendingAwbPrint,
+  dismissPendingAwbPrint,
+  finalizeAwbDelivery,
+  usePendingAwbPrint,
+} from '@/lib/awbPrintPrompt'
 
 const AUTO_SYNC_INTERVAL_MS = 60_000
 
@@ -749,6 +755,7 @@ export default function Orders() {
   const [printingId, setPrintingId] = useState(null)
   const [bulkPrinting, setBulkPrinting] = useState(false)
   const [printConfirm, setPrintConfirm] = useState(null) // { count, run } | null
+  const pendingAwbPrint = usePendingAwbPrint()
   const [printedFilter, setPrintedFilter] = useState('All')
   const [actingId, setActingId] = useState(null)
   const [bulkActing, setBulkActing] = useState(null)
@@ -1047,7 +1054,11 @@ export default function Orders() {
         return
       }
 
-      await confirmAwbPrinted(session.access_token, order.store_id, [order.platform_order_id])
+      await finalizeAwbDelivery({
+        storeId: order.store_id,
+        accessToken: session.access_token,
+        orderSnList: [order.platform_order_id],
+      })
       await fetchOrders()
     } catch (err) {
       console.error('[print-awb] request failed', err)
@@ -1084,6 +1095,11 @@ export default function Orders() {
     const pending = printConfirm
     setPrintConfirm(null)
     pending?.run()
+  }
+
+  async function handleConfirmPendingAwbPrint() {
+    await confirmPendingAwbPrint()
+    await fetchOrders()
   }
 
   async function handleBulkPrintAWB() {
@@ -1128,7 +1144,7 @@ export default function Orders() {
           toast.error('Labels generated but could not be saved/opened on this device.')
           return
         }
-        await confirmAwbPrinted(session.access_token, storeId, orderSnList)
+        await finalizeAwbDelivery({ storeId, accessToken: session.access_token, orderSnList })
       } else {
         const data = await res.json().catch(() => ({}))
         if (!res.ok || !data.success) {
@@ -1147,7 +1163,7 @@ export default function Orders() {
           return
         }
 
-        await confirmAwbPrinted(session.access_token, storeId, deliveredOrderSns)
+        await finalizeAwbDelivery({ storeId, accessToken: session.access_token, orderSnList: deliveredOrderSns })
 
         const orderCount = deliveredOrderSns.length
         toast.success(
@@ -1947,6 +1963,13 @@ export default function Orders() {
         count={printConfirm?.count ?? 1}
         onCancel={() => setPrintConfirm(null)}
         onConfirm={confirmPendingPrint}
+      />
+
+      <PrintAwbMarkPrintedDialog
+        open={Boolean(pendingAwbPrint)}
+        count={pendingAwbPrint?.orderSnList?.length ?? 1}
+        onCancel={dismissPendingAwbPrint}
+        onConfirm={handleConfirmPendingAwbPrint}
       />
     </div>
   )
