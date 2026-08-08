@@ -1418,7 +1418,7 @@ export default function FlashDeals() {
         return
       }
 
-      const res = await fetch(apiUrl('/api/shopee/sync-flash-sale'), {
+      const res = await fetch(apiUrl('/api/shopee/sync?type=flash-sale'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,

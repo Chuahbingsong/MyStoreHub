@@ -2,9 +2,46 @@ import { generateSign, SHOPEE_PARTNER_ID, SHOPEE_API_BASE } from '../_lib/shopee
 import { supabaseAdmin } from '../_lib/supabaseAdmin.js';
 import { withCors } from '../_lib/cors.js';
 
+// Combines what used to be api/shopee/auth.js and api/shopee/callback.js into
+// one Vercel function (dispatched on ?action=) to stay under the Hobby plan's
+// 12-function cap. This flow is live — behaviour of each branch is unchanged
+// from the originals.
 export default withCors(handler);
 
-async function handler(req, res) {
+function handler(req, res) {
+  const { action } = req.query;
+
+  if (action === 'auth') return handleAuth(req, res);
+  if (action === 'callback') return handleCallback(req, res);
+
+  return res.status(400).json({ error: 'Unknown or missing action. Use ?action=auth or ?action=callback' });
+}
+
+function handleAuth(req, res) {
+  if (req.method !== 'GET') {
+    res.setHeader('Allow', 'GET');
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const path = '/api/v2/shop/auth_partner';
+  const timestamp = Math.floor(Date.now() / 1000);
+  const sign = generateSign(path, timestamp);
+  const redirect = encodeURIComponent(process.env.SHOPEE_REDIRECT_URL);
+
+  const baseString = `${SHOPEE_PARTNER_ID}${path}${timestamp}`;
+  console.log('[shopee/auth] partner_id:', SHOPEE_PARTNER_ID);
+  console.log('[shopee/auth] timestamp:', timestamp);
+  console.log('[shopee/auth] baseString:', baseString);
+  console.log('[shopee/auth] sign:', sign);
+
+  const authUrl =
+    `${SHOPEE_API_BASE}${path}?partner_id=${SHOPEE_PARTNER_ID}` +
+    `&timestamp=${timestamp}&sign=${sign}&redirect=${redirect}`;
+
+  return res.status(200).json({ authUrl });
+}
+
+async function handleCallback(req, res) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
     return res.status(405).json({ error: 'Method not allowed' });

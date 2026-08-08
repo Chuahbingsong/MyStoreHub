@@ -119,7 +119,7 @@ export default function Settings() {
   async function handleConnectShopee() {
     setConnectingShopee(true)
     try {
-      const res = await fetch(apiUrl('/api/shopee/auth'))
+      const res = await fetch(apiUrl('/api/shopee/oauth?action=auth'))
       const data = await res.json()
 
       if (!res.ok || !data.authUrl) {
@@ -148,7 +148,7 @@ export default function Settings() {
         return
       }
 
-      const res = await fetch(apiUrl('/api/shopee/sync-orders'), {
+      const res = await fetch(apiUrl('/api/shopee/sync?type=orders'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -187,7 +187,7 @@ export default function Settings() {
         return
       }
 
-      const res = await fetch(apiUrl('/api/shopee/sync-products'), {
+      const res = await fetch(apiUrl('/api/shopee/sync?type=products'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,

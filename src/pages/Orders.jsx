@@ -861,7 +861,7 @@ export default function Orders() {
 
     let res
     try {
-      res = await fetch(apiUrl('/api/shopee/sync-orders'), {
+      res = await fetch(apiUrl('/api/shopee/sync?type=orders'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -870,7 +870,7 @@ export default function Orders() {
         body: JSON.stringify({}),
       })
     } catch (err) {
-      console.error('[sync] network error calling /api/shopee/sync-orders', err)
+      console.error('[sync] network error calling /api/shopee/sync?type=orders', err)
       return { ok: false, message: `Sync failed: ${err.message || 'network error'}.` }
     }
 
@@ -878,7 +878,7 @@ export default function Orders() {
     try {
       data = await res.json()
     } catch (err) {
-      console.error('[sync] non-JSON response from /api/shopee/sync-orders', res.status, err)
+      console.error('[sync] non-JSON response from /api/shopee/sync?type=orders', res.status, err)
       return { ok: false, message: `Sync failed: unexpected response (HTTP ${res.status}).` }
     }
 

@@ -202,7 +202,7 @@ export default function Products() {
         return
       }
 
-      const res = await fetch(apiUrl('/api/shopee/sync-products'), {
+      const res = await fetch(apiUrl('/api/shopee/sync?type=products'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,

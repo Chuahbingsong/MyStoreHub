@@ -1,14 +1,52 @@
+import crypto from 'crypto';
 import {
   TIKTOK_APP_KEY,
   TIKTOK_APP_SECRET,
+  TIKTOK_REDIRECT_URI,
   TIKTOK_AUTH_BASE,
   TIKTOK_API_BASE,
   generateSign,
-} from '../_lib/tiktok.js';
-import { supabaseAdmin } from '../_lib/supabaseAdmin.js';
-import { withCors } from '../_lib/cors.js';
+} from './_lib/tiktok.js';
+import { supabaseAdmin } from './_lib/supabaseAdmin.js';
+import { withCors } from './_lib/cors.js';
 
+// Combines what used to be api/tiktok/auth.js and api/tiktok/callback.js into
+// one Vercel function (dispatched on ?action=) to stay under the Hobby plan's
+// 12-function cap. Behaviour of each branch is unchanged from the originals.
 export default withCors(handler);
+
+function handler(req, res) {
+  const { action } = req.query;
+
+  if (action === 'auth') return handleAuth(req, res);
+  if (action === 'callback') return handleCallback(req, res);
+
+  return res.status(400).json({ error: 'Unknown or missing action. Use ?action=auth or ?action=callback' });
+}
+
+function handleAuth(req, res) {
+  if (req.method !== 'GET') {
+    res.setHeader('Allow', 'GET');
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const state = crypto.randomBytes(16).toString('hex');
+
+  // Stashed as an httpOnly cookie (not a redirect param) so the callback can
+  // check the state it gets back against what THIS browser was issued,
+  // rather than trusting whatever state value happens to show up.
+  res.setHeader(
+    'Set-Cookie',
+    `tiktok_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`
+  );
+
+  const authUrl =
+    `${TIKTOK_AUTH_BASE}/api/v2/authorization?app_key=${encodeURIComponent(TIKTOK_APP_KEY)}` +
+    `&state=${state}&redirect_uri=${encodeURIComponent(TIKTOK_REDIRECT_URI)}`;
+
+  res.writeHead(302, { Location: authUrl });
+  return res.end();
+}
 
 function parseCookie(header, name) {
   if (!header) return null;
@@ -24,7 +62,7 @@ function esc(value) {
     .replace(/"/g, '&quot;');
 }
 
-async function handler(req, res) {
+async function handleCallback(req, res) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
     return res.status(405).json({ error: 'Method not allowed' });
