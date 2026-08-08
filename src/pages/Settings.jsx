@@ -44,8 +44,8 @@ const PLATFORMS = [
   {
     key: 'tiktok',
     name: 'TikTok Shop',
-    dotClass: 'bg-gray-400',
-    enabled: false,
+    dotClass: 'bg-gray-800',
+    enabled: true,
   },
   {
     key: 'shopify',
@@ -63,6 +63,7 @@ export default function Settings() {
   const [stores, setStores] = useState([])
   const [loadingStores, setLoadingStores] = useState(true)
   const [connectingShopee, setConnectingShopee] = useState(false)
+  const [connectingTikTok, setConnectingTikTok] = useState(false)
   const [syncingStoreId, setSyncingStoreId] = useState(null)
   const [syncingProductsStoreId, setSyncingProductsStoreId] = useState(null)
   const [editingStoreId, setEditingStoreId] = useState(null)
@@ -133,6 +134,47 @@ export default function Settings() {
       console.error('[settings] connect shopee failed', err)
       toast.error(describeRequestError(err, t('settings.connectStore.startErrorToast')))
       setConnectingShopee(false)
+    }
+  }
+
+  // Unlike Shopee's ?action=auth (no session check at all), TikTok's requires
+  // a verified session — see api/tiktok.js — so this has to fetch() with an
+  // Authorization header rather than just navigating to the URL directly.
+  // The callback itself renders a raw debug page rather than redirecting
+  // back into the app (intentional, for verifying the OAuth exchange), so
+  // there's no ?connected=tiktok toast here the way Shopee has one — the user
+  // navigates back to Settings manually after reviewing the debug page.
+  async function handleConnectTikTok() {
+    setConnectingTikTok(true)
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
+      if (!session) {
+        toast.error(t('settings.connectStore.tiktokLoginRequired'))
+        setConnectingTikTok(false)
+        return
+      }
+
+      const res = await fetch(apiUrl('/api/tiktok?action=auth'), {
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      })
+      const data = await res.json()
+
+      if (!res.ok || !data.authUrl) {
+        toast.error(t('settings.connectStore.tiktokStartErrorToast'))
+        setConnectingTikTok(false)
+        return
+      }
+
+      window.location.href = data.authUrl
+    } catch (err) {
+      console.error('[settings] connect tiktok failed', err)
+      toast.error(describeRequestError(err, t('settings.connectStore.tiktokStartErrorToast')))
+      setConnectingTikTok(false)
     }
   }
 
@@ -409,6 +451,12 @@ export default function Settings() {
           <div className="space-y-2">
             {stores.map((store) => {
               const platform = PLATFORMS.find((p) => p.key === store.platform)
+              // Auto-pack and the Sync buttons below both drive Shopee-only
+              // endpoints/columns — showing them for a TikTok mirror row
+              // (store.platform === 'tiktok') would either no-op misleadingly
+              // (auto_pack_enabled) or 404 against /api/shopee/sync?type=...
+              // ("No matching Shopee store found") when clicked.
+              const isShopee = store.platform === 'shopee'
               const isEditing = editingStoreId === store.id
               const isSaving = savingStoreId === store.id
               return (
@@ -490,64 +538,70 @@ export default function Settings() {
                       })}
                     </p>
                   )}
-                  <div className="mt-3 flex items-center justify-between rounded-lg bg-[#F9FAFB] px-3 py-2">
-                    <div>
-                      <p className="text-xs font-medium text-[#1F2937]">
-                        {t('settings.connectedStores.autoPack.title')}
-                      </p>
-                      <p className="text-[11px] text-[#6B7280]">
-                        {t('settings.connectedStores.autoPack.description')}
-                      </p>
+                  {isShopee && (
+                    <div className="mt-3 flex items-center justify-between rounded-lg bg-[#F9FAFB] px-3 py-2">
+                      <div>
+                        <p className="text-xs font-medium text-[#1F2937]">
+                          {t('settings.connectedStores.autoPack.title')}
+                        </p>
+                        <p className="text-[11px] text-[#6B7280]">
+                          {t('settings.connectedStores.autoPack.description')}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={!!store.auto_pack_enabled}
+                        disabled={togglingAutoPackId === store.id}
+                        onCheckedChange={() => handleToggleAutoPack(store)}
+                        aria-label={t('settings.connectedStores.autoPack.toggleAria', {
+                          name: store.shop_name || store.shop_id,
+                        })}
+                      />
                     </div>
-                    <Switch
-                      checked={!!store.auto_pack_enabled}
-                      disabled={togglingAutoPackId === store.id}
-                      onCheckedChange={() => handleToggleAutoPack(store)}
-                      aria-label={t('settings.connectedStores.autoPack.toggleAria', {
-                        name: store.shop_name || store.shop_id,
-                      })}
-                    />
-                  </div>
-                  <div className="mt-2 flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleSyncStore(store.id)}
-                      disabled={syncingStoreId === store.id}
-                      className="flex-1 border-[#E5E7EB] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#1F2937]"
-                    >
-                      {syncingStoreId === store.id ? (
-                        <>
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          {t('settings.connectedStores.sync.syncing')}
-                        </>
-                      ) : (
-                        <>
-                          <RefreshCw className="h-4 w-4" />
-                          {t('settings.connectedStores.sync.ordersButton')}
-                        </>
-                      )}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleSyncProductsStore(store.id)}
-                      disabled={syncingProductsStoreId === store.id}
-                      className="flex-1 border-[#E5E7EB] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#1F2937]"
-                    >
-                      {syncingProductsStoreId === store.id ? (
-                        <>
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          {t('settings.connectedStores.sync.syncing')}
-                        </>
-                      ) : (
-                        <>
-                          <Package className="h-4 w-4" />
-                          {t('settings.connectedStores.sync.productsButton')}
-                        </>
-                      )}
-                    </Button>
-                  </div>
+                  )}
+                  {isShopee ? (
+                    <div className="mt-2 flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleSyncStore(store.id)}
+                        disabled={syncingStoreId === store.id}
+                        className="flex-1 border-[#E5E7EB] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#1F2937]"
+                      >
+                        {syncingStoreId === store.id ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            {t('settings.connectedStores.sync.syncing')}
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="h-4 w-4" />
+                            {t('settings.connectedStores.sync.ordersButton')}
+                          </>
+                        )}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleSyncProductsStore(store.id)}
+                        disabled={syncingProductsStoreId === store.id}
+                        className="flex-1 border-[#E5E7EB] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#1F2937]"
+                      >
+                        {syncingProductsStoreId === store.id ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            {t('settings.connectedStores.sync.syncing')}
+                          </>
+                        ) : (
+                          <>
+                            <Package className="h-4 w-4" />
+                            {t('settings.connectedStores.sync.productsButton')}
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-gray-400">{t('settings.connectedStores.sync.notSupported')}</p>
+                  )}
                 </div>
               )
             })}
@@ -588,6 +642,19 @@ export default function Settings() {
                   className="bg-orange-500 text-white hover:bg-orange-500/90"
                 >
                   {connectingShopee ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    t('settings.connectStore.connect')
+                  )}
+                </Button>
+              ) : platform.key === 'tiktok' ? (
+                <Button
+                  size="sm"
+                  onClick={handleConnectTikTok}
+                  disabled={connectingTikTok}
+                  className="bg-gray-800 text-white hover:bg-gray-800/90"
+                >
+                  {connectingTikTok ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
                     t('settings.connectStore.connect')

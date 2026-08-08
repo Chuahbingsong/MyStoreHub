@@ -112,6 +112,7 @@ export default {
         ordersError: '同步订单失败。',
         productsSuccess: '已同步 {{count}} 个商品！',
         productsError: '同步商品失败。',
+        notSupported: '该平台暂不支持同步。',
       },
       nameUpdatedToast: '店铺名称已更新',
       nameErrorToast: '更新店铺名称失败。',
@@ -122,6 +123,8 @@ export default {
       connect: '连接',
       connectedToast: 'Shopee 店铺已连接！',
       startErrorToast: '启动 Shopee 连接失败。',
+      tiktokLoginRequired: '请先登录后再连接 TikTok Shop。',
+      tiktokStartErrorToast: '启动 TikTok Shop 连接失败。',
     },
     orders: {
       title: '订单',

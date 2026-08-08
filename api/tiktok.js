@@ -12,7 +12,11 @@ import { withCors } from './_lib/cors.js';
 
 // Combines what used to be api/tiktok/auth.js and api/tiktok/callback.js into
 // one Vercel function (dispatched on ?action=) to stay under the Hobby plan's
-// 12-function cap. Behaviour of each branch is unchanged from the originals.
+// 12-function cap. ?action=auth now also requires an authenticated session
+// and carries that user's id through the OAuth round trip (see
+// signOAuthUser below) — the ?action=auth response is JSON, not a redirect,
+// so the frontend calling it needs to fetch() with an Authorization header
+// and then do window.location.href = data.authUrl itself.
 export default withCors(handler);
 
 function handler(req, res) {
@@ -24,28 +28,73 @@ function handler(req, res) {
   return res.status(400).json({ error: 'Unknown or missing action. Use ?action=auth or ?action=callback' });
 }
 
-function handleAuth(req, res) {
+// HMACs a user id together with the CSRF state value using the (already
+// process.env-sourced) service role key as the signing secret. This is what
+// lets ?action=callback trust a user id that arrived via an ordinary,
+// unsigned browser cookie: a client can edit their own cookie jar freely,
+// but can't produce a signature without the service role key, which never
+// reaches the browser. Binding the state value into the signature also means
+// a captured cookie can't be replayed against a different auth attempt.
+function signOAuthUser(userId, state) {
+  return crypto
+    .createHmac('sha256', process.env.SUPABASE_SERVICE_ROLE_KEY || '')
+    .update(`${userId}:${state}`)
+    .digest('hex');
+}
+
+async function handleAuth(req, res) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const state = crypto.randomBytes(16).toString('hex');
+  // api/shopee/oauth.js's ?action=auth has no session check at all (it
+  // hardcodes a single user_id downstream) — there's no existing mechanism to
+  // mirror for "require an authenticated session". This instead reuses the
+  // Bearer-token verification convention every OTHER authenticated endpoint
+  // in this app already uses (see api/shopee/sync.js), which is only
+  // possible because the caller reaches this via fetch(), not a raw
+  // top-level navigation — see the JSON response note below.
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
-  // Stashed as an httpOnly cookie (not a redirect param) so the callback can
-  // check the state it gets back against what THIS browser was issued,
-  // rather than trusting whatever state value happens to show up.
-  res.setHeader(
-    'Set-Cookie',
-    `tiktok_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`
-  );
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabaseAdmin.auth.getUser(token);
+
+  if (authError || !user) {
+    console.error('[tiktok/auth] session verification failed', authError);
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const state = crypto.randomBytes(16).toString('hex');
+  const userSig = signOAuthUser(user.id, state);
+
+  // Two httpOnly cookies, both 10-minute-lived (long enough for the TikTok
+  // consent screen, no longer): tiktok_oauth_state is the existing CSRF
+  // nonce; tiktok_oauth_user carries the VERIFIED user id through the
+  // redirect to TikTok and back, since that round trip can't carry an
+  // Authorization header the way this request could.
+  res.setHeader('Set-Cookie', [
+    `tiktok_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
+    `tiktok_oauth_user=${user.id}:${userSig}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
+  ]);
 
   const authUrl =
     `${TIKTOK_AUTH_BASE}/api/v2/authorization?app_key=${encodeURIComponent(TIKTOK_APP_KEY)}` +
     `&state=${state}&redirect_uri=${encodeURIComponent(TIKTOK_REDIRECT_URI)}`;
 
-  res.writeHead(302, { Location: authUrl });
-  return res.end();
+  // JSON, not a redirect — mirrors api/shopee/oauth.js's ?action=auth shape
+  // ({ authUrl }, with the frontend doing window.location.href itself).
+  // Required here (this previously did a raw 302) because verifying the
+  // session above needs a fetch() call with an Authorization header, which a
+  // top-level navigation can't send.
+  return res.status(200).json({ authUrl });
 }
 
 function parseCookie(header, name) {
@@ -74,16 +123,36 @@ async function handleCallback(req, res) {
   const cookieState = parseCookie(req.headers.cookie, 'tiktok_oauth_state');
   const stateOk = Boolean(state) && Boolean(cookieState) && state === cookieState;
 
+  // Only trust the user cookie once the CSRF state itself checks out — the
+  // signature is verified against THIS state value, so there's nothing to
+  // gain by checking it earlier.
+  let userId = null;
+  if (stateOk) {
+    const cookieUser = parseCookie(req.headers.cookie, 'tiktok_oauth_user');
+    if (cookieUser) {
+      const separatorIndex = cookieUser.indexOf(':');
+      const candidateUserId = separatorIndex === -1 ? null : cookieUser.slice(0, separatorIndex);
+      const candidateSig = separatorIndex === -1 ? null : cookieUser.slice(separatorIndex + 1);
+      if (candidateUserId && candidateSig && signOAuthUser(candidateUserId, state) === candidateSig) {
+        userId = candidateUserId;
+      }
+    }
+  }
+  const sessionOk = Boolean(userId);
+
   const result = {
     stateOk,
+    sessionOk,
     tokenExchange: { ok: false, raw: null },
     authorizedShops: { ok: false, raw: null },
     dbUpsert: { ok: false, raw: null },
+    storeMirror: { ok: false, raw: null },
     shop_id: null,
     shop_name: null,
     hasShopCipher: false,
     accessTokenExpiresAt: null,
     refreshTokenExpiresAt: null,
+    store_id: null,
   };
 
   if (!authCode) {
@@ -93,6 +162,13 @@ async function handleCallback(req, res) {
   if (!stateOk) {
     console.log('[tiktok/callback] state mismatch', { received: state, expected: cookieState });
     return res.status(200).send(renderDebugPage(result, 'CSRF state mismatch — aborting before token exchange'));
+  }
+
+  if (!sessionOk) {
+    console.log('[tiktok/callback] missing or invalid session cookie — aborting before token exchange');
+    return res
+      .status(200)
+      .send(renderDebugPage(result, 'Missing or invalid session — reconnect from Settings while logged in'));
   }
 
   // 1. Exchange the auth code for tokens.
@@ -203,7 +279,9 @@ async function handleCallback(req, res) {
     return res.status(200).send(renderDebugPage(result, 'Authorized-shops request threw an exception'));
   }
 
-  // 3. Persist.
+  // 3. Persist credentials. tiktok_shops is the sole source of truth for
+  // TikTok tokens — the stores mirror below never gets access_token/
+  // refresh_token written to it.
   try {
     const { error: dbError } = await supabaseAdmin.from('tiktok_shops').upsert(
       {
@@ -215,6 +293,7 @@ async function handleCallback(req, res) {
         access_token_expires_at: result.accessTokenExpiresAt,
         refresh_token_expires_at: result.refreshTokenExpiresAt,
         is_sandbox: true,
+        user_id: userId,
       },
       { onConflict: 'shop_id' }
     );
@@ -232,21 +311,71 @@ async function handleCallback(req, res) {
     return res.status(200).send(renderDebugPage(result, 'Supabase upsert threw an exception'));
   }
 
+  // 4. Mirror into `stores` — identity/ownership only, never credentials — so
+  // orders/sync_logs (FK'd to stores(id)) and the per-store ownership checks
+  // every Shopee endpoint already does against `stores.user_id` work for a
+  // TikTok shop with no code changes elsewhere. Then link tiktok_shops back
+  // to the mirror row via store_id.
+  try {
+    const { data: storeRow, error: storeError } = await supabaseAdmin
+      .from('stores')
+      .upsert(
+        {
+          user_id: userId,
+          platform: 'tiktok',
+          shop_id: String(shopId),
+          shop_name: shopName,
+          is_active: true,
+        },
+        { onConflict: 'user_id,platform,shop_id' }
+      )
+      .select('id')
+      .single();
+
+    if (storeError) {
+      console.log('[tiktok/callback] stores mirror upsert error:', JSON.stringify(storeError));
+      result.storeMirror.raw = storeError;
+      return res.status(200).send(renderDebugPage(result, 'Stores mirror upsert failed'));
+    }
+
+    result.store_id = storeRow.id;
+
+    const { error: linkError } = await supabaseAdmin
+      .from('tiktok_shops')
+      .update({ store_id: storeRow.id })
+      .eq('shop_id', String(shopId));
+
+    if (linkError) {
+      console.log('[tiktok/callback] tiktok_shops.store_id link error:', JSON.stringify(linkError));
+      result.storeMirror.raw = linkError;
+      return res.status(200).send(renderDebugPage(result, 'Failed to link tiktok_shops.store_id'));
+    }
+
+    result.storeMirror.ok = true;
+  } catch (err) {
+    console.log('[tiktok/callback] stores mirror threw:', err);
+    result.storeMirror.raw = { error: String(err) };
+    return res.status(200).send(renderDebugPage(result, 'Stores mirror threw an exception'));
+  }
+
   return res.status(200).send(renderDebugPage(result, null));
 }
 
 function renderDebugPage(result, fatalError) {
   const rows = [
     ['CSRF state check', result.stateOk],
+    ['Session verified', result.sessionOk],
     ['Token exchange succeeded', result.tokenExchange.ok],
     ['Authorized-shops lookup succeeded', result.authorizedShops.ok],
-    ['Supabase upsert succeeded', result.dbUpsert.ok],
+    ['tiktok_shops upsert succeeded', result.dbUpsert.ok],
+    ['stores mirror written', result.storeMirror.ok],
   ];
 
   const failedRaw = [
     ['tokenExchange', result.tokenExchange],
     ['authorizedShops', result.authorizedShops],
     ['dbUpsert', result.dbUpsert],
+    ['storeMirror', result.storeMirror],
   ].filter(([, step]) => !step.ok && step.raw != null);
 
   return `<!doctype html>
@@ -276,6 +405,7 @@ ${rows.map(([label, ok]) => `<tr><td>${esc(label)}</td><td class="${ok ? 'ok' : 
 <tr><td>shop_cipher present</td><td class="${result.hasShopCipher ? 'ok' : 'fail'}">${result.hasShopCipher}</td></tr>
 <tr><td>access_token_expires_at</td><td>${esc(result.accessTokenExpiresAt)}</td></tr>
 <tr><td>refresh_token_expires_at</td><td>${esc(result.refreshTokenExpiresAt)}</td></tr>
+<tr><td>stores.id (mirror row)</td><td>${esc(result.store_id)}</td></tr>
 </table>
 ${failedRaw.map(([name, step]) => `<h2>Raw response — ${esc(name)}</h2><pre>${esc(JSON.stringify(step.raw, null, 2))}</pre>`).join('\n')}
 </body>

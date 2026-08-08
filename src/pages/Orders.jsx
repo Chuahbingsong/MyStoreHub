@@ -160,11 +160,25 @@ const MARKETPLACE_STATUS = {
     'Return Requested': 'To Return/Refund',
     Cancelled: 'Cancelled',
   },
-  // Lazada/TikTok/Shopify aren't connected yet — only the statuses already
-  // reachable through their (currently unused) integrations are mapped here.
-  // Anything else falls back to the raw status via getMarketplaceStatus().
+  // Lazada/Shopify aren't connected yet — only the statuses already reachable
+  // through their (currently unused) integrations are mapped here. Anything
+  // else falls back to the raw status via getMarketplaceStatus().
   Lazada: { Unpaid: 'Pending', 'To Pack': 'Ready to Ship', Packed: 'Ready to Ship', Shipped: 'Shipped', Cancelled: 'Cancelled' },
-  TikTok: { Unpaid: 'Awaiting Shipment', 'To Pack': 'Processing', Packed: 'Processing', Shipped: 'Shipped', Cancelled: 'Cancelled' },
+  // Audited against TIKTOK_STATUS_MAP / TikTok Shop's documented order_status
+  // enum and Seller Center's own status vocabulary — replaces the earlier
+  // placeholder guess (the previous values here were never checked against
+  // TikTok's real vocabulary at all). Still not verified against a live
+  // sandbox order — confirm before relying on it for real decisions.
+  TikTok: {
+    Unpaid: 'Unpaid',
+    'Invoice Pending': 'On Hold',
+    'To Pack': 'Awaiting Shipment',
+    Packed: 'Awaiting Collection',
+    Shipped: 'In Transit',
+    'To Confirm Receipt': 'Delivered',
+    Completed: 'Completed',
+    Cancelled: 'Cancelled',
+  },
   Shopify: { Unpaid: 'Unfulfilled', 'To Pack': 'Unfulfilled', Packed: 'Unfulfilled', Shipped: 'Fulfilled', Cancelled: 'Cancelled' },
 }
 
@@ -235,6 +249,29 @@ const SHOPEE_STATUS_MAP = {
   CANCELLED: 'Cancelled',
 }
 
+// TikTok Shop Orders API (v202309) order_status enum, mapped to the same
+// shared canonical labels SHOPEE_STATUS_MAP uses so tab bucketing and badge
+// styling work identically across platforms. This is best-effort from
+// TikTok's documented status enum — unlike SHOPEE_STATUS_MAP above, it has
+// NOT been audited against a live sandbox order yet, so verify it against
+// real TikTok order data before depending on it for fulfilment decisions.
+// TikTok exposes cancellations/returns through a separate Return/Refund
+// object rather than a top-level order_status value, so there's no TikTok
+// analogue for Shopee's IN_CANCEL/TO_RETURN buckets here — an order in one of
+// those states just falls through to the "Other" tab via the same unmapped-
+// status fallback below until that's wired up.
+const TIKTOK_STATUS_MAP = {
+  UNPAID: 'Unpaid',
+  ON_HOLD: 'Invoice Pending',
+  AWAITING_SHIPMENT: 'To Pack',
+  PARTIALLY_SHIPPING: 'Packed',
+  AWAITING_COLLECTION: 'Packed',
+  IN_TRANSIT: 'Shipped',
+  DELIVERED: 'To Confirm Receipt',
+  COMPLETED: 'Completed',
+  CANCELLED: 'Cancelled',
+}
+
 function formatDateLabel(value) {
   return value ? format(new Date(value), 'd MMM HH:mm') : undefined
 }
@@ -296,16 +333,22 @@ async function postOrderAction(session, order, action) {
   return { ok: res.ok && data.success, error: data.error, data }
 }
 
+const RAW_STATUS_MAP_BY_PLATFORM = {
+  shopee: SHOPEE_STATUS_MAP,
+  tiktok: TIKTOK_STATUS_MAP,
+}
+
 function mapSupabaseOrder(row, storeNames) {
   const platform = PLATFORM_LABELS[row.platform] ?? row.platform
-  const mappedStatus = row.platform === 'shopee' ? SHOPEE_STATUS_MAP[row.order_status] : undefined
+  const statusMap = RAW_STATUS_MAP_BY_PLATFORM[row.platform]
+  const mappedStatus = statusMap?.[row.order_status]
 
   // Never let an unrecognized status make the order vanish: fall back to the
   // raw value (still routed somewhere visible via getOrderTab's OTHER_TAB
-  // fallback) and flag it loudly so the map above gets updated.
-  if (row.platform === 'shopee' && row.order_status && !mappedStatus) {
+  // fallback) and flag it loudly so the relevant map above gets updated.
+  if (statusMap && row.order_status && !mappedStatus) {
     console.warn(
-      `[orders] unmapped Shopee order_status "${row.order_status}" for order ${row.platform_order_id} — showing under "Other" until SHOPEE_STATUS_MAP is updated.`
+      `[orders] unmapped ${platform} order_status "${row.order_status}" for order ${row.platform_order_id} — showing under "Other" until the status map for this platform is updated.`
     )
   }
 
@@ -387,6 +430,16 @@ function ItemThumb({ image, alt, tint, className }) {
 }
 
 function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId } = {}) {
+  // TikTok orders are read-only for now: Pack/Cancel/Approve/Reject all go
+  // through postOrderAction -> POST /api/shopee/order-action, and Print AWB
+  // goes through /api/shopee/print-awb — both Shopee-only endpoints that
+  // don't know about TikTok shops or tokens at all. order.platform is the
+  // display label set in mapSupabaseOrder (PLATFORM_LABELS), so this compares
+  // against 'TikTok', not the raw 'tiktok' platform column value.
+  if (order.platform === 'TikTok') {
+    return null
+  }
+
   const tab = getOrderTab(order)
   const grow = fullWidth ? 'flex-1' : ''
   const printing = printingId === order.id
@@ -773,6 +826,12 @@ export default function Orders() {
   const syncInFlightRef = useRef(false)
   const autoSyncErrorShownRef = useRef(false)
   const selectionModeRef = useRef(selectionMode)
+  // Whether this account has at least one connected Shopee store. Defaults to
+  // true (fail open) so the very first render — before fetchOrders' stores
+  // query has resolved — doesn't skip a legitimate sync. performSync reads
+  // this via a ref (not state) since it's a useCallback with an empty dep
+  // array, same convention as the other auto-sync refs above.
+  const hasShopeeStoreRef = useRef(true)
 
   useEffect(() => {
     selectionModeRef.current = selectionMode
@@ -824,10 +883,13 @@ export default function Orders() {
             .range(from, to),
         { maxRows: ORDERS_CEILING }
       ),
-      supabase.from('stores').select('id, shop_id, shop_name'),
+      supabase.from('stores').select('id, shop_id, shop_name, platform'),
     ])
 
     setOrdersTruncated(ordersRes.truncated === true)
+
+    // Gates performSync below — see hasShopeeStoreRef.
+    hasShopeeStoreRef.current = (storesRes.data ?? []).some((store) => store.platform === 'shopee')
 
     const storeNames = {}
     ;(storesRes.data ?? []).forEach((store) => {
@@ -851,6 +913,15 @@ export default function Orders() {
   // tick. Does the network call only — no toasts, no spinner state — so each
   // caller can decide how loud to be about the result.
   const performSync = useCallback(async () => {
+    // Nothing to sync if this account has no connected Shopee store (e.g. a
+    // TikTok-only account) — calling the endpoint anyway would just come back
+    // "No matching Shopee store found", which would read as a sync failure
+    // rather than the no-op it actually is. This is a guard on an ALREADY
+    // Shopee-only endpoint, not TikTok sync logic.
+    if (!hasShopeeStoreRef.current) {
+      return { ok: true, skipped: true }
+    }
+
     const {
       data: { session },
     } = await supabase.auth.getSession()
@@ -900,6 +971,11 @@ export default function Orders() {
     try {
       const result = await performSync()
 
+      if (result.skipped) {
+        toast.info('No Shopee store connected — nothing to sync yet.')
+        return
+      }
+
       if (!result.ok) {
         toast.error(result.message || 'Failed to sync orders.')
         return
@@ -934,6 +1010,8 @@ export default function Orders() {
     syncInFlightRef.current = true
     try {
       const result = await performSync()
+
+      if (result.skipped) return
 
       if (!result.ok || result.partial) {
         console.error('[auto-sync] sync problem', result.message)

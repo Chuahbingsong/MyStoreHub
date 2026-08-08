@@ -220,3 +220,14 @@ create table if not exists tiktok_shops (
   is_sandbox boolean not null default false,
   created_at timestamptz default now()
 );
+
+-- tiktok_shops ownership + store mirror link. tiktok_shops previously had no
+-- owning user at all; user_id is stamped from the verified session carried
+-- through the OAuth round trip (see api/tiktok.js). store_id points at the
+-- identity-only mirror row api/tiktok.js writes into `stores` on connect, so
+-- anything that already FKs to stores(id) — orders, sync_logs, the ownership
+-- checks every Shopee endpoint does against `stores` — works for a TikTok
+-- shop without needing its own id space. tiktok_shops remains the only place
+-- TikTok access/refresh tokens are stored; `stores` never gets them.
+alter table tiktok_shops add column if not exists user_id uuid references auth.users(id) on delete cascade;
+alter table tiktok_shops add column if not exists store_id uuid references stores(id);

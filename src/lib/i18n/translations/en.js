@@ -115,6 +115,7 @@ export default {
         ordersError: 'Failed to sync orders.',
         productsSuccess: 'Synced {{count}} products!',
         productsError: 'Failed to sync products.',
+        notSupported: 'Syncing isn\'t available for this platform yet.',
       },
       nameUpdatedToast: 'Store name updated',
       nameErrorToast: 'Failed to update store name.',
@@ -125,6 +126,8 @@ export default {
       connect: 'Connect',
       connectedToast: 'Shopee store connected!',
       startErrorToast: 'Failed to start Shopee connection.',
+      tiktokLoginRequired: 'You must be logged in to connect TikTok Shop.',
+      tiktokStartErrorToast: 'Failed to start TikTok Shop connection.',
     },
     orders: {
       title: 'Orders',
