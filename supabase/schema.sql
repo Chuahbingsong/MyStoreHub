@@ -203,3 +203,20 @@ create table if not exists boost_slots (
   unique (store_id, item_id)
 );
 create index if not exists idx_boost_slots_store on boost_slots (store_id);
+
+-- tiktok_shops: separate from `stores` (which is Shopee-shaped) because
+-- TikTok Shop's business APIs need shop_cipher alongside the token pair on
+-- nearly every call, and is_sandbox distinguishes TikTok's sandbox app from
+-- production before this integration goes live.
+create table if not exists tiktok_shops (
+  id uuid primary key default gen_random_uuid(),
+  shop_id text not null unique,
+  shop_name text,
+  shop_cipher text,
+  access_token text,
+  refresh_token text,
+  access_token_expires_at timestamptz,
+  refresh_token_expires_at timestamptz,
+  is_sandbox boolean not null default false,
+  created_at timestamptz default now()
+);
