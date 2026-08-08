@@ -4,6 +4,7 @@ import { autoPackStore } from '../_lib/autoPack.js';
 import { autoBoostStore } from '../_lib/autoBoost.js';
 import { syncStoreFlashSales } from '../_lib/flashSaleSync.js';
 import { notifyStore } from '../_lib/pushNotify.js';
+import { getValidTikTokToken } from '../_lib/tiktok.js';
 import { withCors } from '../_lib/cors.js';
 
 // Cap the runtime. Vercel Hobby allows up to 60s.
@@ -49,6 +50,36 @@ async function handler(req, res) {
 
   const startedAt = Date.now();
 
+  // TikTok Shop token refresh: proactively keep every connected shop's access
+  // token fresh (getValidTikTokToken refreshes it when within 24h of expiry)
+  // so it doesn't go stale purely for lack of user-triggered activity. This
+  // runs before — and independently of — the Shopee sync below, since a
+  // future TikTok data sync step would need this to have already happened.
+  const tiktokErrors = [];
+  const { data: tiktokShops, error: tiktokShopsError } = await supabaseAdmin
+    .from('tiktok_shops')
+    .select('shop_id');
+
+  if (tiktokShopsError) {
+    console.error('[cron/sync-all] failed to load tiktok_shops', tiktokShopsError);
+    tiktokErrors.push({ storeId: null, type: 'tiktok_token_refresh', error: tiktokShopsError.message });
+  } else if (tiktokShops && tiktokShops.length > 0) {
+    console.log('[cron/sync-all] checking token freshness for', tiktokShops.length, 'TikTok shop(s)');
+    const tiktokResults = await Promise.allSettled(
+      tiktokShops.map((shop) => getValidTikTokToken(shop.shop_id))
+    );
+    tiktokResults.forEach((outcome, i) => {
+      if (outcome.status === 'rejected') {
+        console.error('[cron/sync-all] tiktok token refresh failed for shop', tiktokShops[i].shop_id, outcome.reason);
+        tiktokErrors.push({
+          storeId: tiktokShops[i].shop_id,
+          type: 'tiktok_token_refresh',
+          error: String(outcome.reason?.message ?? outcome.reason),
+        });
+      }
+    });
+  }
+
   // Service-role client: fetch every active Shopee store across ALL users.
   const { data: stores, error: storesError } = await supabaseAdmin
     .from('stores')
@@ -68,7 +99,7 @@ async function handler(req, res) {
       stores_synced: 0,
       total_orders: 0,
       total_products: 0,
-      errors: [],
+      errors: tiktokErrors,
     });
   }
 
@@ -187,7 +218,7 @@ async function handler(req, res) {
   let totalBoosted = 0;
   let totalNotified = 0;
   let totalFlashSessions = 0;
-  const errors = [];
+  const errors = [...tiktokErrors];
 
   for (let i = 0; i < settled.length; i += 1) {
     const outcome = settled[i];
