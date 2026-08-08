@@ -220,10 +220,3 @@ create table if not exists tiktok_shops (
   is_sandbox boolean not null default false,
   created_at timestamptz default now()
 );
-
--- sync_logs.store_id was FK'd to stores(id) back when it only ever logged
--- Shopee syncs. api/_lib/tiktok.js's token-refresh logging (sync_type
--- 'tiktok_token_refresh') writes tiktok_shops.shop_id into that same column,
--- which lives in a different id space — so the FK must go, or every TikTok
--- refresh log write fails a foreign-key check.
-alter table sync_logs drop constraint if exists sync_logs_store_id_fkey;

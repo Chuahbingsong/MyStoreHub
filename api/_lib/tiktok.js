@@ -40,6 +40,12 @@ export function generateSign(path, params = {}, body) {
 const REFRESH_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 const TOKEN_REFRESH_SYNC_TYPE = 'tiktok_token_refresh';
 
+// sync_logs only has: id, store_id (uuid), sync_type, status, message,
+// synced_at — no started_at/completed_at, and store_id is a uuid FK'd to
+// stores(id), which can't hold a TikTok shop_id (a text value from a
+// different table entirely). So store_id is left null here and the shop_id
+// travels in `message` instead, prefixed on every row so it's greppable.
+//
 // Mirrors shopeeSync.js's logSyncStart/logSyncComplete convention: a row
 // written BEFORE the refresh call, updated in place after. A row stuck at
 // 'started' with no completion is the signature of a hard Vercel timeout
@@ -47,24 +53,32 @@ const TOKEN_REFRESH_SYNC_TYPE = 'tiktok_token_refresh';
 async function logRefreshStart(shopId) {
   const { data, error } = await supabaseAdmin
     .from('sync_logs')
-    .insert({ store_id: shopId, sync_type: TOKEN_REFRESH_SYNC_TYPE, status: 'started' })
+    .insert({
+      store_id: null,
+      sync_type: TOKEN_REFRESH_SYNC_TYPE,
+      status: 'started',
+      message: `shop_id=${shopId}`,
+    })
     .select('id')
     .single();
 
   if (error) {
-    console.error('[tiktok] failed to write sync_logs start row', error);
+    console.warn('[tiktok] failed to write sync_logs start row for shop', shopId, error);
     return null;
   }
   return data.id;
 }
 
-async function logRefreshComplete(logId, status, message) {
+async function logRefreshComplete(logId, shopId, status, detail) {
   if (!logId) return;
 
-  const { error } = await supabaseAdmin.from('sync_logs').update({ status, message }).eq('id', logId);
+  const { error } = await supabaseAdmin
+    .from('sync_logs')
+    .update({ status, message: `shop_id=${shopId}: ${detail}` })
+    .eq('id', logId);
 
   if (error) {
-    console.error('[tiktok] failed to update sync_logs completion row', logId, error);
+    console.warn('[tiktok] failed to update sync_logs completion row', logId, 'for shop', shopId, error);
   }
 }
 
@@ -151,6 +165,7 @@ export async function refreshTikTokToken(shopId) {
 
     await logRefreshComplete(
       logId,
+      shopId,
       'success',
       `refreshed — access_token_expires_at=${accessTokenExpiresAt}`
     );
@@ -163,7 +178,7 @@ export async function refreshTikTokToken(shopId) {
     };
   } catch (err) {
     console.error('[tiktok] refreshTikTokToken failed for shop', shopId, err);
-    await logRefreshComplete(logId, 'error', err.message);
+    await logRefreshComplete(logId, shopId, 'error', err.message);
     throw err;
   }
 }
