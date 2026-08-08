@@ -123,6 +123,12 @@ async function handleCallback(req, res) {
     refreshToken = data.refresh_token;
     accessTokenExpireIn = data.access_token_expire_in;
     refreshTokenExpireIn = data.refresh_token_expire_in;
+    console.log(
+      '[tiktok/callback] raw expire_in values — access_token_expire_in:',
+      accessTokenExpireIn,
+      'refresh_token_expire_in:',
+      refreshTokenExpireIn
+    );
     result.tokenExchange.ok = true;
   } catch (err) {
     console.log('[tiktok/callback] token/get threw:', err);
@@ -130,8 +136,24 @@ async function handleCallback(req, res) {
     return res.status(200).send(renderDebugPage(result, 'Token exchange request threw an exception'));
   }
 
-  result.accessTokenExpiresAt = new Date(Date.now() + accessTokenExpireIn * 1000).toISOString();
-  result.refreshTokenExpiresAt = new Date(Date.now() + refreshTokenExpireIn * 1000).toISOString();
+  // TikTok's token/get returns these as absolute Unix timestamps (seconds),
+  // not durations — despite the `_expire_in` naming. Do not add to Date.now().
+  result.accessTokenExpiresAt = new Date(accessTokenExpireIn * 1000).toISOString();
+  result.refreshTokenExpiresAt = new Date(refreshTokenExpireIn * 1000).toISOString();
+
+  // Sanity check: a correctly-interpreted access token expiry should land
+  // within the next few days, never in the past. A value outside that range
+  // means TikTok's response format changed (e.g. back to a real duration).
+  const accessExpiryMs = accessTokenExpireIn * 1000;
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  if (accessExpiryMs < Date.now() || accessExpiryMs > Date.now() + sevenDaysMs) {
+    console.warn(
+      '[tiktok/callback] access token expiry outside expected range — raw access_token_expire_in:',
+      accessTokenExpireIn,
+      'resolved to:',
+      result.accessTokenExpiresAt
+    );
+  }
 
   // 2. Look up the authorized shop(s) — shop_cipher is required on nearly
   // every subsequent TikTok Shop business API call, so it must be captured now.
