@@ -5,6 +5,7 @@ import { autoBoostStore } from '../_lib/autoBoost.js';
 import { syncStoreFlashSales } from '../_lib/flashSaleSync.js';
 import { notifyStore } from '../_lib/pushNotify.js';
 import { getValidTikTokToken } from '../_lib/tiktok.js';
+import { syncTikTokShopOrders, getTikTokStoresToSync } from '../_lib/tiktokSync.js';
 import { withCors } from '../_lib/cors.js';
 
 // Cap the runtime. Vercel Hobby allows up to 60s.
@@ -80,6 +81,53 @@ async function handler(req, res) {
     });
   }
 
+  // Every store gets its OWN orders+products deadline computed from this
+  // run's start, not a budget shared across a sequential loop — see the note
+  // further down where this is used for the Shopee stores. Hoisted up here so
+  // the TikTok order sync below (which runs BEFORE the Shopee loop, but
+  // shares the same 60s wall) is bounded by the same anchor: a slow TikTok
+  // sync here naturally leaves less time for Shopee below, exactly like a
+  // slow token refresh above already narrows what's left for both.
+  const deadline = startedAt + TIME_BUDGET_MS;
+
+  // TikTok Shop order sync: runs after the token-refresh step above. Fully
+  // separate from the Shopee pipeline below — its own store query (platform
+  // = 'tiktok'), its own sync function (syncTikTokShopOrders). Deliberately
+  // NOT run through syncOneStore: autoPack/autoBoost/notifyStore and
+  // syncStoreOrders' tracking-number backfill are all written against
+  // Shopee's literal order_status strings (READY_TO_SHIP, IN_CANCEL, etc.),
+  // so they must never see a TikTok store. The `stores` query below is
+  // already filtered to platform = 'shopee', which is what keeps them out —
+  // this block never adds a TikTok store to that array.
+  let totalTikTokOrders = 0;
+  const { data: tiktokStoresToSync, error: tiktokStoresError } = await getTikTokStoresToSync();
+
+  if (tiktokStoresError) {
+    console.error('[cron/sync-all] failed to load TikTok stores for order sync', tiktokStoresError);
+    tiktokErrors.push({ storeId: null, type: 'tiktok_orders', error: tiktokStoresError.message });
+  } else if (tiktokStoresToSync && tiktokStoresToSync.length > 0) {
+    console.log('[cron/sync-all] syncing orders for', tiktokStoresToSync.length, 'TikTok store(s)');
+    const tiktokOrderResults = await Promise.allSettled(
+      tiktokStoresToSync.map((store) => syncTikTokShopOrders(store, { deadline }))
+    );
+    tiktokOrderResults.forEach((outcome, i) => {
+      if (outcome.status === 'rejected') {
+        console.error(
+          '[cron/sync-all] tiktok order sync failed for store',
+          tiktokStoresToSync[i].id,
+          outcome.reason
+        );
+        tiktokErrors.push({
+          storeId: tiktokStoresToSync[i].id,
+          type: 'tiktok_orders',
+          error: String(outcome.reason?.message ?? outcome.reason),
+        });
+      } else {
+        totalTikTokOrders += outcome.value.orders.length;
+      }
+    });
+  }
+
   // Service-role client: fetch every active Shopee store across ALL users.
   const { data: stores, error: storesError } = await supabaseAdmin
     .from('stores')
@@ -99,20 +147,20 @@ async function handler(req, res) {
       stores_synced: 0,
       total_orders: 0,
       total_products: 0,
+      total_tiktok_orders: totalTikTokOrders,
       errors: tiktokErrors,
     });
   }
 
   console.log('[cron/sync-all] syncing', stores.length, 'active Shopee store(s) in parallel');
 
-  // Every store gets its OWN orders+products deadline computed from this
-  // run's start, not a budget shared across a sequential loop. Because the
-  // stores below run concurrently (Promise.allSettled), the wall-clock time
-  // for this whole invocation is bounded by the slowest single store, not by
-  // N * per-store time — that's what keeps 4 stores inside one 60s cron tick.
-  // allSettled (not all) so one store's rejection can't cancel the others'
-  // in-flight work or their sync_logs bookkeeping.
-  const deadline = startedAt + TIME_BUDGET_MS;
+  // Because the stores below run concurrently (Promise.allSettled), the
+  // wall-clock time for this whole invocation is bounded by the slowest
+  // single store, not by N * per-store time — that's what keeps 4 stores
+  // inside one 60s cron tick. allSettled (not all) so one store's rejection
+  // can't cancel the others' in-flight work or their sync_logs bookkeeping.
+  // (`deadline` itself is computed earlier, above the TikTok order sync
+  // block, so both share the same anchor.)
 
   async function syncOneStore(store) {
     console.log('[cron/sync-all] syncing store', store.id, store.shop_id);
@@ -288,7 +336,7 @@ async function handler(req, res) {
 
   const elapsedMs = Date.now() - startedAt;
   console.log(
-    `[cron/sync-all] done in ${elapsedMs}ms — stores: ${storesSynced}/${stores.length}, orders: ${totalOrders}, products: ${totalProducts}, auto-packed: ${totalPacked}, auto-boosted: ${totalBoosted}, notified: ${totalNotified}, flash sessions: ${totalFlashSessions}, errors: ${errors.length}`
+    `[cron/sync-all] done in ${elapsedMs}ms — stores: ${storesSynced}/${stores.length}, orders: ${totalOrders}, products: ${totalProducts}, auto-packed: ${totalPacked}, auto-boosted: ${totalBoosted}, notified: ${totalNotified}, flash sessions: ${totalFlashSessions}, tiktok orders: ${totalTikTokOrders}, errors: ${errors.length}`
   );
 
   return res.status(200).json({
@@ -301,6 +349,7 @@ async function handler(req, res) {
     total_boosted: totalBoosted,
     total_notified: totalNotified,
     total_flash_sessions: totalFlashSessions,
+    total_tiktok_orders: totalTikTokOrders,
     elapsed_ms: elapsedMs,
     errors,
   });

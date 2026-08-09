@@ -9,6 +9,7 @@ import {
 } from './_lib/tiktok.js';
 import { supabaseAdmin } from './_lib/supabaseAdmin.js';
 import { withCors } from './_lib/cors.js';
+import { syncTikTokShopOrders, getTikTokStoresToSync, SYNC_TIME_BUDGET_MS } from './_lib/tiktokSync.js';
 
 // Combines what used to be api/tiktok/auth.js and api/tiktok/callback.js into
 // one Vercel function (dispatched on ?action=) to stay under the Hobby plan's
@@ -17,6 +18,11 @@ import { withCors } from './_lib/cors.js';
 // signOAuthUser below) — the ?action=auth response is JSON, not a redirect,
 // so the frontend calling it needs to fetch() with an Authorization header
 // and then do window.location.href = data.authUrl itself.
+// ?action=sync exposes tiktokSync.js's order sync the same way — kept behind
+// this existing function rather than a new one (api/shopee/sync.js mirrors
+// this same "sync logic lives in _lib, function just dispatches" shape).
+export const config = { maxDuration: 60 };
+
 export default withCors(handler);
 
 function handler(req, res) {
@@ -24,8 +30,100 @@ function handler(req, res) {
 
   if (action === 'auth') return handleAuth(req, res);
   if (action === 'callback') return handleCallback(req, res);
+  if (action === 'sync') return handleSync(req, res);
 
-  return res.status(400).json({ error: 'Unknown or missing action. Use ?action=auth or ?action=callback' });
+  return res.status(400).json({ error: 'Unknown or missing action. Use ?action=auth, ?action=callback or ?action=sync' });
+}
+
+async function handleSync(req, res) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ success: false, error: 'Method not allowed' });
+  }
+
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabaseAdmin.auth.getUser(token);
+
+  if (authError || !user) {
+    console.error('[tiktok/sync] auth verification failed', authError);
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  const { store_id, days: daysRaw } = req.body ?? {};
+  const days = Number.isFinite(Number(daysRaw)) && Number(daysRaw) > 0 ? Number(daysRaw) : undefined;
+
+  if (store_id) {
+    const { data: requestedStore, error: storeLookupError } = await supabaseAdmin
+      .from('stores')
+      .select('*')
+      .eq('id', store_id)
+      .eq('platform', 'tiktok')
+      .maybeSingle();
+
+    if (storeLookupError) {
+      console.error('[tiktok/sync] failed to load store', storeLookupError);
+      return res.status(500).json({ success: false, error: 'Failed to load store from Supabase' });
+    }
+    if (!requestedStore) {
+      return res.status(404).json({ success: false, error: 'No matching TikTok store found' });
+    }
+    if (requestedStore.user_id !== user.id) {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
+  }
+
+  const { data: stores, error: storesError } = await getTikTokStoresToSync({ userId: user.id, storeId: store_id });
+
+  if (storesError) {
+    console.error('[tiktok/sync] failed to load stores', storesError);
+    return res.status(500).json({ success: false, error: 'Failed to load stores from Supabase' });
+  }
+
+  if (!stores || stores.length === 0) {
+    return res.status(404).json({ success: false, error: 'No matching TikTok store found' });
+  }
+
+  const results = [];
+  const errors = [];
+  // Shared across every store synced in this request, same convention as
+  // api/shopee/sync.js — N stores in one call still respect one 60s wall.
+  const deadline = Date.now() + SYNC_TIME_BUDGET_MS;
+
+  for (const store of stores) {
+    try {
+      console.log('[tiktok/sync] syncing store', store.id, store.shop_id);
+      const result = await syncTikTokShopOrders(store, { days, deadline });
+      results.push(result);
+    } catch (err) {
+      // syncTikTokShopOrders already records this in sync_logs itself (a
+      // started-but-uncompleted row if it was killed by a hard timeout, or an
+      // explicit 'error' row otherwise) — this catch only needs to keep the
+      // per-store loop going and surface the failure in the HTTP response.
+      console.error('[tiktok/sync] sync failed for store', store.id, err);
+      errors.push({ storeId: store.id, error: err.message });
+    }
+  }
+
+  const allOrders = results.flatMap((r) => r.orders);
+  const hasMore = results.some((r) => r.hasMore);
+
+  if (errors.length > 0 && results.length === 0) {
+    return res.status(502).json({ success: false, errors });
+  }
+
+  return res.status(200).json({
+    success: true,
+    synced: allOrders.length,
+    hasMore,
+    orders: allOrders,
+    errors: errors.length > 0 ? errors : undefined,
+  });
 }
 
 // HMACs a user id together with the CSRF state value using the (already
@@ -111,6 +209,32 @@ function esc(value) {
     .replace(/"/g, '&quot;');
 }
 
+// Prefers whatever shop-type/environment signal the authorized-shops response
+// itself carries — checked across a few plausibly-named fields since TikTok's
+// exact field name for this isn't confirmed against a live response (same
+// defensive ?? chaining as shop.id/shop.name/shop.cipher above). Falls back to
+// the documented SANDBOX_ name prefix only when none of those fields say
+// anything sandbox-shaped. Returns which field decided it, so the raw log
+// line below makes the detection method verifiable rather than a black box.
+function detectIsSandbox(shop, shopName) {
+  const candidateFields = ['seller_type', 'shop_type', 'type', 'code'];
+
+  for (const field of candidateFields) {
+    const value = shop[field];
+    if (typeof value === 'string' && value.toUpperCase().includes('SANDBOX')) {
+      return { isSandbox: true, source: `shop.${field}="${value}"` };
+    }
+  }
+
+  const isSandboxByName = typeof shopName === 'string' && shopName.toUpperCase().startsWith('SANDBOX_');
+  return {
+    isSandbox: isSandboxByName,
+    source: isSandboxByName
+      ? `shop.name prefix ("${shopName}" starts with SANDBOX_)`
+      : `no sandbox signal found (checked ${candidateFields.map((f) => `shop.${f}`).join(', ')}, and name prefix)`,
+  };
+}
+
 async function handleCallback(req, res) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
@@ -153,6 +277,8 @@ async function handleCallback(req, res) {
     accessTokenExpiresAt: null,
     refreshTokenExpiresAt: null,
     store_id: null,
+    isSandbox: null,
+    sandboxSource: null,
   };
 
   if (!authCode) {
@@ -236,6 +362,7 @@ async function handleCallback(req, res) {
   let shopId;
   let shopName;
   let shopCipher;
+  let isSandbox;
   try {
     const path = '/authorization/202309/shops';
     const timestamp = Math.floor(Date.now() / 1000);
@@ -265,10 +392,19 @@ async function handleCallback(req, res) {
     shopId = shop.id ?? shop.shop_id;
     shopName = shop.name ?? shop.shop_name;
     shopCipher = shop.cipher ?? shop.shop_cipher;
+
+    const sandboxDetection = detectIsSandbox(shop, shopName);
+    isSandbox = sandboxDetection.isSandbox;
+    console.log(
+      `[tiktok/callback] sandbox detection: isSandbox=${isSandbox}, decided by ${sandboxDetection.source}`
+    );
+
     result.authorizedShops.ok = true;
     result.shop_id = shopId;
     result.shop_name = shopName;
     result.hasShopCipher = shopCipher != null;
+    result.isSandbox = isSandbox;
+    result.sandboxSource = sandboxDetection.source;
 
     if (!shopId || !shopCipher) {
       return res.status(200).send(renderDebugPage(result, 'Authorized-shops response missing shop_id or shop_cipher'));
@@ -292,7 +428,7 @@ async function handleCallback(req, res) {
         refresh_token: refreshToken,
         access_token_expires_at: result.accessTokenExpiresAt,
         refresh_token_expires_at: result.refreshTokenExpiresAt,
-        is_sandbox: true,
+        is_sandbox: isSandbox,
         user_id: userId,
       },
       { onConflict: 'shop_id' }
@@ -405,6 +541,8 @@ ${rows.map(([label, ok]) => `<tr><td>${esc(label)}</td><td class="${ok ? 'ok' : 
 <tr><td>shop_cipher present</td><td class="${result.hasShopCipher ? 'ok' : 'fail'}">${result.hasShopCipher}</td></tr>
 <tr><td>access_token_expires_at</td><td>${esc(result.accessTokenExpiresAt)}</td></tr>
 <tr><td>refresh_token_expires_at</td><td>${esc(result.refreshTokenExpiresAt)}</td></tr>
+<tr><td>is_sandbox</td><td>${esc(result.isSandbox)}</td></tr>
+<tr><td>is_sandbox decided by</td><td>${esc(result.sandboxSource)}</td></tr>
 <tr><td>stores.id (mirror row)</td><td>${esc(result.store_id)}</td></tr>
 </table>
 ${failedRaw.map(([name, step]) => `<h2>Raw response — ${esc(name)}</h2><pre>${esc(JSON.stringify(step.raw, null, 2))}</pre>`).join('\n')}
