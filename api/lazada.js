@@ -84,6 +84,8 @@ async function handleAuth(req, res) {
     `&redirect_uri=${encodeURIComponent(LAZADA_REDIRECT_URI)}` +
     `&state=${state}`;
 
+  console.log('[lazada/auth] constructed authUrl:', authUrl);
+
   // JSON, not a redirect — see api/tiktok.js's handleAuth for why: verifying
   // the session above needs a fetch() call with an Authorization header,
   // which a top-level navigation can't send.
