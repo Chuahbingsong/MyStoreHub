@@ -6,6 +6,7 @@ import { syncStoreFlashSales } from '../_lib/flashSaleSync.js';
 import { notifyStore } from '../_lib/pushNotify.js';
 import { getValidTikTokToken } from '../_lib/tiktok.js';
 import { syncTikTokShopOrders, getTikTokStoresToSync } from '../_lib/tiktokSync.js';
+import { getValidLazadaToken } from '../_lib/lazada.js';
 import { withCors } from '../_lib/cors.js';
 
 // Cap the runtime. Vercel Hobby allows up to 60s.
@@ -56,14 +57,14 @@ async function handler(req, res) {
   // so it doesn't go stale purely for lack of user-triggered activity. This
   // runs before — and independently of — the Shopee sync below, since a
   // future TikTok data sync step would need this to have already happened.
-  const tiktokErrors = [];
+  const preSyncErrors = [];
   const { data: tiktokShops, error: tiktokShopsError } = await supabaseAdmin
     .from('tiktok_shops')
     .select('shop_id');
 
   if (tiktokShopsError) {
     console.error('[cron/sync-all] failed to load tiktok_shops', tiktokShopsError);
-    tiktokErrors.push({ storeId: null, type: 'tiktok_token_refresh', error: tiktokShopsError.message });
+    preSyncErrors.push({ storeId: null, type: 'tiktok_token_refresh', error: tiktokShopsError.message });
   } else if (tiktokShops && tiktokShops.length > 0) {
     console.log('[cron/sync-all] checking token freshness for', tiktokShops.length, 'TikTok shop(s)');
     const tiktokResults = await Promise.allSettled(
@@ -72,9 +73,38 @@ async function handler(req, res) {
     tiktokResults.forEach((outcome, i) => {
       if (outcome.status === 'rejected') {
         console.error('[cron/sync-all] tiktok token refresh failed for shop', tiktokShops[i].shop_id, outcome.reason);
-        tiktokErrors.push({
+        preSyncErrors.push({
           storeId: tiktokShops[i].shop_id,
           type: 'tiktok_token_refresh',
+          error: String(outcome.reason?.message ?? outcome.reason),
+        });
+      }
+    });
+  }
+
+  // Lazada token refresh: proactively keep every connected shop's access
+  // token fresh (getValidLazadaToken refreshes it when within 24h of expiry)
+  // the same way the TikTok block above does. Runs before the deadline below
+  // is computed, for the same reason: a slow refresh here narrows what's left
+  // for the Shopee loop that follows.
+  const { data: lazadaShops, error: lazadaShopsError } = await supabaseAdmin
+    .from('lazada_shops')
+    .select('seller_id');
+
+  if (lazadaShopsError) {
+    console.error('[cron/sync-all] failed to load lazada_shops', lazadaShopsError);
+    preSyncErrors.push({ storeId: null, type: 'lazada_token_refresh', error: lazadaShopsError.message });
+  } else if (lazadaShops && lazadaShops.length > 0) {
+    console.log('[cron/sync-all] checking token freshness for', lazadaShops.length, 'Lazada shop(s)');
+    const lazadaResults = await Promise.allSettled(
+      lazadaShops.map((shop) => getValidLazadaToken(shop.seller_id))
+    );
+    lazadaResults.forEach((outcome, i) => {
+      if (outcome.status === 'rejected') {
+        console.error('[cron/sync-all] lazada token refresh failed for seller', lazadaShops[i].seller_id, outcome.reason);
+        preSyncErrors.push({
+          storeId: lazadaShops[i].seller_id,
+          type: 'lazada_token_refresh',
           error: String(outcome.reason?.message ?? outcome.reason),
         });
       }
@@ -104,7 +134,7 @@ async function handler(req, res) {
 
   if (tiktokStoresError) {
     console.error('[cron/sync-all] failed to load TikTok stores for order sync', tiktokStoresError);
-    tiktokErrors.push({ storeId: null, type: 'tiktok_orders', error: tiktokStoresError.message });
+    preSyncErrors.push({ storeId: null, type: 'tiktok_orders', error: tiktokStoresError.message });
   } else if (tiktokStoresToSync && tiktokStoresToSync.length > 0) {
     console.log('[cron/sync-all] syncing orders for', tiktokStoresToSync.length, 'TikTok store(s)');
     const tiktokOrderResults = await Promise.allSettled(
@@ -117,7 +147,7 @@ async function handler(req, res) {
           tiktokStoresToSync[i].id,
           outcome.reason
         );
-        tiktokErrors.push({
+        preSyncErrors.push({
           storeId: tiktokStoresToSync[i].id,
           type: 'tiktok_orders',
           error: String(outcome.reason?.message ?? outcome.reason),
@@ -148,7 +178,7 @@ async function handler(req, res) {
       total_orders: 0,
       total_products: 0,
       total_tiktok_orders: totalTikTokOrders,
-      errors: tiktokErrors,
+      errors: preSyncErrors,
     });
   }
 
@@ -266,7 +296,7 @@ async function handler(req, res) {
   let totalBoosted = 0;
   let totalNotified = 0;
   let totalFlashSessions = 0;
-  const errors = [...tiktokErrors];
+  const errors = [...preSyncErrors];
 
   for (let i = 0; i < settled.length; i += 1) {
     const outcome = settled[i];

@@ -125,6 +125,8 @@ export default {
       startErrorToast: '启动 Shopee 连接失败。',
       tiktokLoginRequired: '请先登录后再连接 TikTok Shop。',
       tiktokStartErrorToast: '启动 TikTok Shop 连接失败。',
+      lazadaLoginRequired: '请先登录后再连接 Lazada。',
+      lazadaStartErrorToast: '启动 Lazada 连接失败。',
     },
     orders: {
       title: '订单',

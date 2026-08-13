@@ -39,7 +39,7 @@ const PLATFORMS = [
     key: 'lazada',
     name: 'Lazada',
     dotClass: 'bg-blue-500',
-    enabled: false,
+    enabled: true,
   },
   {
     key: 'tiktok',
@@ -64,6 +64,7 @@ export default function Settings() {
   const [loadingStores, setLoadingStores] = useState(true)
   const [connectingShopee, setConnectingShopee] = useState(false)
   const [connectingTikTok, setConnectingTikTok] = useState(false)
+  const [connectingLazada, setConnectingLazada] = useState(false)
   const [syncingStoreId, setSyncingStoreId] = useState(null)
   const [syncingProductsStoreId, setSyncingProductsStoreId] = useState(null)
   const [editingStoreId, setEditingStoreId] = useState(null)
@@ -175,6 +176,45 @@ export default function Settings() {
       console.error('[settings] connect tiktok failed', err)
       toast.error(describeRequestError(err, t('settings.connectStore.tiktokStartErrorToast')))
       setConnectingTikTok(false)
+    }
+  }
+
+  // Same shape as handleConnectTikTok: Lazada's ?action=auth also requires a
+  // verified session (see api/lazada.js), and its callback renders a raw
+  // debug page rather than redirecting back into the app, so there's no
+  // ?connected=lazada toast here either — the user navigates back to
+  // Settings manually after reviewing the debug page.
+  async function handleConnectLazada() {
+    setConnectingLazada(true)
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
+      if (!session) {
+        toast.error(t('settings.connectStore.lazadaLoginRequired'))
+        setConnectingLazada(false)
+        return
+      }
+
+      const res = await fetch(apiUrl('/api/lazada?action=auth'), {
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      })
+      const data = await res.json()
+
+      if (!res.ok || !data.authUrl) {
+        toast.error(t('settings.connectStore.lazadaStartErrorToast'))
+        setConnectingLazada(false)
+        return
+      }
+
+      window.location.href = data.authUrl
+    } catch (err) {
+      console.error('[settings] connect lazada failed', err)
+      toast.error(describeRequestError(err, t('settings.connectStore.lazadaStartErrorToast')))
+      setConnectingLazada(false)
     }
   }
 
@@ -452,10 +492,11 @@ export default function Settings() {
             {stores.map((store) => {
               const platform = PLATFORMS.find((p) => p.key === store.platform)
               // Auto-pack and the Sync buttons below both drive Shopee-only
-              // endpoints/columns — showing them for a TikTok mirror row
-              // (store.platform === 'tiktok') would either no-op misleadingly
-              // (auto_pack_enabled) or 404 against /api/shopee/sync?type=...
-              // ("No matching Shopee store found") when clicked.
+              // endpoints/columns — showing them for a TikTok or Lazada mirror
+              // row (store.platform !== 'shopee') would either no-op
+              // misleadingly (auto_pack_enabled) or 404 against
+              // /api/shopee/sync?type=... ("No matching Shopee store found")
+              // when clicked.
               const isShopee = store.platform === 'shopee'
               const isEditing = editingStoreId === store.id
               const isSaving = savingStoreId === store.id
@@ -655,6 +696,19 @@ export default function Settings() {
                   className="bg-gray-800 text-white hover:bg-gray-800/90"
                 >
                   {connectingTikTok ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    t('settings.connectStore.connect')
+                  )}
+                </Button>
+              ) : platform.key === 'lazada' ? (
+                <Button
+                  size="sm"
+                  onClick={handleConnectLazada}
+                  disabled={connectingLazada}
+                  className="bg-blue-500 text-white hover:bg-blue-500/90"
+                >
+                  {connectingLazada ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
                     t('settings.connectStore.connect')

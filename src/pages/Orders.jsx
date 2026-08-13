@@ -430,13 +430,14 @@ function ItemThumb({ image, alt, tint, className }) {
 }
 
 function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId } = {}) {
-  // TikTok orders are read-only for now: Pack/Cancel/Approve/Reject all go
-  // through postOrderAction -> POST /api/shopee/order-action, and Print AWB
-  // goes through /api/shopee/print-awb — both Shopee-only endpoints that
-  // don't know about TikTok shops or tokens at all. order.platform is the
-  // display label set in mapSupabaseOrder (PLATFORM_LABELS), so this compares
-  // against 'TikTok', not the raw 'tiktok' platform column value.
-  if (order.platform === 'TikTok') {
+  // TikTok and Lazada orders are read-only for now: Pack/Cancel/Approve/
+  // Reject all go through postOrderAction -> POST /api/shopee/order-action,
+  // and Print AWB goes through /api/shopee/print-awb — both Shopee-only
+  // endpoints that don't know about TikTok/Lazada shops or tokens at all.
+  // order.platform is the display label set in mapSupabaseOrder
+  // (PLATFORM_LABELS), so this compares against 'TikTok'/'Lazada', not the
+  // raw 'tiktok'/'lazada' platform column values.
+  if (order.platform === 'TikTok' || order.platform === 'Lazada') {
     return null
   }
 

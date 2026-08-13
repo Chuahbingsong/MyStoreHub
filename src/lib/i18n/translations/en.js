@@ -128,6 +128,8 @@ export default {
       startErrorToast: 'Failed to start Shopee connection.',
       tiktokLoginRequired: 'You must be logged in to connect TikTok Shop.',
       tiktokStartErrorToast: 'Failed to start TikTok Shop connection.',
+      lazadaLoginRequired: 'You must be logged in to connect Lazada.',
+      lazadaStartErrorToast: 'Failed to start Lazada connection.',
     },
     orders: {
       title: 'Orders',
