@@ -8,6 +8,14 @@ const STATUS_RETRY_DELAY_MS = 2000;
 // Used when Shopee doesn't tell us which document type an order supports.
 const DEFAULT_SHIPPING_DOCUMENT_TYPE = 'NORMAL_AIR_WAYBILL';
 
+// Tried first, without asking get_shipping_document_parameter what the order
+// supports. Every logged call has come back with this as both the suggested
+// AND the only selectable type, while costing 828–2080ms — so the lookup is
+// now paid for only when this assumption actually turns out to be wrong.
+// If the fallback below ever fires for a real courier, its logged raw Shopee
+// error is the evidence for revisiting this.
+const OPTIMISTIC_SHIPPING_DOCUMENT_TYPE = 'THERMAL_AIR_WAYBILL';
+
 function nowUnix() {
   return Math.floor(Date.now() / 1000);
 }
@@ -491,6 +499,122 @@ async function createShippingDocument(store, orderSnList, typeByOrderSn = {}, tr
   return { created, failed };
 }
 
+/**
+ * Creates shipping documents, skipping get_shipping_document_parameter on the
+ * assumption that every order takes OPTIMISTIC_SHIPPING_DOCUMENT_TYPE.
+ *
+ * Any order the optimistic attempt did not create — whether the whole call
+ * threw or only some orders came back failed — triggers the lookup, and those
+ * orders alone are retried with whatever type Shopee names. Retrying only the
+ * unresolved ones matters: an order that already has a document must not be
+ * sent through create a second time (see downloadOnePerOrder's note on why
+ * re-creating risks losing a usable label).
+ *
+ * Returns the same { created, failed } shape as createShippingDocument plus
+ * typeByOrderSn, which records the type ACTUALLY used per order — the
+ * readiness poll has to match it or Shopee reports nothing for that order.
+ */
+async function createShippingDocumentsWithTypeFallback(store, orderSnList, trackingByOrderSn, perf) {
+  const typeByOrderSn = Object.fromEntries(
+    orderSnList.map((orderSn) => [orderSn, OPTIMISTIC_SHIPPING_DOCUMENT_TYPE])
+  );
+
+  let created = [];
+  let failed = [];
+  let optimisticError = null;
+
+  const optimisticDone = perf.start('create_shipping_document[optimistic]');
+  try {
+    const result = await createShippingDocument(store, orderSnList, typeByOrderSn, trackingByOrderSn);
+    created = result.created;
+    failed = result.failed;
+  } catch (err) {
+    // Total rejection. Not fatal yet — the fallback below may still succeed
+    // with the type Shopee actually wants.
+    optimisticError = err;
+  }
+  optimisticDone();
+
+  const unresolved = orderSnList.filter((orderSn) => !created.includes(orderSn));
+
+  if (unresolved.length === 0) {
+    console.log(
+      `[print-awb][path] RESULT=doc_type_optimistic orders=${created.length} type=${OPTIMISTIC_SHIPPING_DOCUMENT_TYPE} (skipped get_shipping_document_parameter)`
+    );
+    return { created, failed, typeByOrderSn };
+  }
+
+  console.log(
+    `[print-awb][path] RESULT=doc_type_fallback unresolved=${unresolved.length}/${orderSnList.length} assumed=${OPTIMISTIC_SHIPPING_DOCUMENT_TYPE}`
+  );
+  console.error(
+    `[print-awb] ${OPTIMISTIC_SHIPPING_DOCUMENT_TYPE} not accepted for: ${unresolved.join(', ')} — falling back to get_shipping_document_parameter`
+  );
+  // The raw reason, so a courier that genuinely needs another type is
+  // identifiable from the logs rather than inferred.
+  if (optimisticError) {
+    console.error('[print-awb] optimistic create_shipping_document threw:', optimisticError.message);
+    console.error(
+      '[print-awb] raw Shopee response:',
+      JSON.stringify(optimisticError.shopeeResponse ?? { message: optimisticError.message }, null, 2)
+    );
+  }
+  if (failed.length > 0) {
+    console.error('[print-awb] optimistic create per-order failures:');
+    console.error(JSON.stringify(failed, null, 2));
+  }
+
+  const typesDone = perf.start('get_shipping_document_parameter[fallback]');
+  const lookedUpTypes = await getShippingDocumentTypes(store, unresolved);
+  typesDone();
+
+  // Record what the retry will actually send, including the default for any
+  // order the lookup had nothing to say about.
+  for (const orderSn of unresolved) {
+    typeByOrderSn[orderSn] = lookedUpTypes[orderSn] ?? DEFAULT_SHIPPING_DOCUMENT_TYPE;
+  }
+  console.log(
+    '[print-awb] retrying create with looked-up types:',
+    unresolved.map((orderSn) => `${orderSn}=${typeByOrderSn[orderSn]}`).join(', ')
+  );
+
+  const retryDone = perf.start('create_shipping_document[retry]');
+  let retryResult = null;
+  let retryError = null;
+  try {
+    retryResult = await createShippingDocument(store, unresolved, lookedUpTypes, trackingByOrderSn);
+  } catch (err) {
+    retryError = err;
+  }
+  retryDone();
+
+  if (retryError) {
+    // Nothing survived either attempt: surface the retry's error, since it
+    // carries the rejection reason for the type Shopee itself suggested.
+    if (created.length === 0) throw retryError;
+
+    // Some orders did create optimistically — keep them rather than sinking
+    // the whole batch, and report the rest as failed exactly as before.
+    return {
+      created,
+      failed: unresolved.map((orderSn) => ({
+        order_sn: orderSn,
+        fail_error: null,
+        fail_message: retryError.message,
+      })),
+      typeByOrderSn,
+    };
+  }
+
+  // Every order in `failed` from the optimistic pass is by definition in
+  // `unresolved`, so the retry's outcome supersedes it wholesale.
+  return {
+    created: [...created, ...retryResult.created],
+    failed: retryResult.failed,
+    typeByOrderSn,
+  };
+}
+
 async function waitForDocumentReady(store, orderSnList, typeByOrderSn = {}, perf) {
   const path = '/api/v2/logistics/get_shipping_document_result';
 
@@ -929,19 +1053,18 @@ async function handler(req, res) {
     }
 
     // 2. The caller sends one store + one logistics channel per request, so
-    //    this is a single create -> poll -> download run.
-    const typesDone = perf.start('get_shipping_document_parameter');
-    const typeByOrderSn = await getShippingDocumentTypes(freshStore, printableOrderSns);
-    typesDone();
-
-    const createDone = perf.start('create_shipping_document');
-    const { created, failed: createFailed } = await createShippingDocument(
+    //    this is a single create -> poll -> download run. The document-type
+    //    lookup is skipped unless Shopee rejects the assumed type.
+    const {
+      created,
+      failed: createFailed,
+      typeByOrderSn,
+    } = await createShippingDocumentsWithTypeFallback(
       freshStore,
       printableOrderSns,
-      typeByOrderSn,
-      trackingByOrderSn
+      trackingByOrderSn,
+      perf
     );
-    createDone();
 
     const waitDone = perf.start('waitForDocumentReady[total]');
     const { ready, failed: resultFailed } = await waitForDocumentReady(
