@@ -12,24 +12,30 @@ import {
 export const AWB_BUCKET = 'awb-documents';
 
 // Hard ceiling on orders touched per store per run. The real limiter is the
-// deadline check inside the loop — this just stops a large backlog from even
-// trying to fan out in one tick.
-export const MAX_PREFETCH_PER_RUN = 10;
+// deadline check inside the loop — this just bounds the candidate query so a
+// large backlog can't pull an enormous page it has no hope of working
+// through. Raised from 10 once prefetch moved out of the main cron: it now
+// owns a whole 60s invocation instead of competing with order sync for the
+// tail end of one.
+export const MAX_PREFETCH_PER_RUN = 25;
 
-// Prefetch is the LAST thing in syncOneStore and the most droppable. Below
-// this much remaining budget it does nothing at all rather than start work it
-// cannot finish — a create call with no time left to download still costs a
-// Shopee document and an attempt stamp.
-export const PREFETCH_MIN_REMAINING_MS = 15_000;
+// Below this much remaining budget, do nothing at all rather than start work
+// that cannot finish — a create call with no time left to download still
+// costs a Shopee document and an attempt stamp. Needs to cover create + poll
+// + at least one download (~3.5s measured) with margin. Lowered from 15s
+// alongside the move: with a dedicated function this gate is about spending
+// the tail of the window sensibly, not about yielding to other work.
+export const PREFETCH_MIN_REMAINING_MS = 8_000;
 
 // A stamped-but-uncached order is retried no sooner than this. Long enough
 // that a persistently failing order can't burn the cap every tick, short
 // enough that a transient Shopee failure recovers within the hour.
 export const PREFETCH_RETRY_COOLDOWN_MS = 30 * 60 * 1000;
 
-// 2 instead of the print path's 5. Each extra attempt costs a fixed 2s sleep,
-// which cron cannot afford. Measured data has the document READY on the first
-// poll, so this mainly bounds the pathological case.
+// 2 instead of the print path's 5. Each extra attempt costs a fixed 2s sleep.
+// Measured data has the document READY on the first poll, so this mainly
+// bounds the pathological case — kept low even with the roomier budget, since
+// a stuck document is better retried next run than waited on for 8s here.
 export const PREFETCH_POLL_RETRIES = 2;
 
 // Rough per-order download cost, used to decide whether there is time for one
@@ -151,15 +157,16 @@ function groupByCourier(orders) {
  * deliberate addition to the stated candidate rules: create_shipping_document
  * validates tracking_number and fails without one, so including those orders
  * would spend Shopee calls and an attempt stamp to achieve nothing. The
- * existing backfillTrackingNumbers pass in shopeeSync.js fills them in on an
- * earlier cron stage, after which they become prefetch candidates naturally.
+ * backfillTrackingNumbers pass in shopeeSync.js (main cron) fills them in,
+ * after which they become prefetch candidates on a later prefetch run.
  *
  * Documents are created and polled per courier batch (cheap, one call each)
  * but downloaded per order, because the cache is keyed per order SN — a
  * combined PDF would hand someone printing one order everyone else's labels.
  *
- * options.deadline: shares the caller's per-store budget. Never gets a fresh
- * window of its own.
+ * options.deadline: the absolute cutoff for starting new work, shared across
+ * every store in the invocation (see api/cron/prefetch-awb.js). Stores run
+ * concurrently, so this bounds wall-clock time, not the sum of their work.
  */
 export async function prefetchStoreAwbs(store, options = {}) {
   const deadline = options.deadline ?? Date.now() + 45_000;
