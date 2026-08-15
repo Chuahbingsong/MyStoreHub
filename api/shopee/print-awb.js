@@ -685,6 +685,133 @@ async function downloadOnePerOrder(store, orderSnList) {
   return { documents, failed };
 }
 
+// --- TEMPORARY DEBUG — remove once the reprint-shortcut question is settled ---
+//
+// Answers exactly one question: does a shipping document Shopee has ALREADY
+// created stay downloadable later without re-calling create_shipping_document?
+// If it does, a reprint can skip get_shipping_document_parameter, create, and
+// the readiness poll, and go straight to download.
+//
+// Deliberately duplicates the download call instead of reusing
+// downloadShippingDocument() below: this experiment must not be able to alter
+// the normal print path in any way, and it needs to log raw diagnostics
+// (headers, magic bytes, timing) that the production path has no use for.
+//
+// Runs only for a caller who already passed the auth + store-ownership checks
+// in handler(), so it exposes nothing an owner couldn't already print.
+//
+// Invoke against an order printed EARLIER (not one printed just now):
+//   POST /api/shopee/print-awb
+//   { "store_id": "<uuid>", "order_sn_list": ["<order printed earlier>"],
+//     "debug_download_only": true }
+async function debugDownloadOnly(store, orderSnList) {
+  const path = '/api/v2/logistics/download_shipping_document';
+  const url = buildSignedUrl(path, store);
+  const body = { order_list: orderSnList.map((order_sn) => ({ order_sn })) };
+
+  console.log(
+    '[print-awb][debug] DOWNLOAD-ONLY: skipping get_shipping_document_parameter, create_shipping_document, waitForDocumentReady'
+  );
+  console.log('[print-awb][debug] order_sn_list:', orderSnList.join(', '));
+  console.log('[print-awb][debug] request body:', JSON.stringify(body));
+
+  const startedAt = Date.now();
+  let response;
+  let arrayBuffer;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    arrayBuffer = await response.arrayBuffer();
+  } catch (err) {
+    const elapsedMs = Date.now() - startedAt;
+    console.error(`[print-awb][debug] network error after ${elapsedMs}ms:`, err.message);
+    return {
+      debug: 'download_only',
+      ok: false,
+      verdict: 'NETWORK_ERROR',
+      elapsed_ms: elapsedMs,
+      error: err.message,
+    };
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  const buffer = Buffer.from(arrayBuffer);
+  const contentType = response.headers.get('content-type') || '';
+
+  console.log(
+    `[print-awb][debug] HTTP ${response.status} | content-type "${contentType}" | ${buffer.length} bytes | ${elapsedMs}ms`
+  );
+  console.log(
+    '[print-awb][debug] response headers:',
+    JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2)
+  );
+
+  // Shopee answers with JSON, not a PDF, when it refuses the download.
+  if (contentType.includes('application/json') || !buffer.length) {
+    const bodyText = buffer.toString('utf8');
+    let data;
+    try {
+      data = JSON.parse(bodyText);
+    } catch {
+      data = { _unparsed_body: bodyText };
+    }
+    console.error('[print-awb][debug] Shopee refused — full raw response:');
+    console.error(JSON.stringify(data, null, 2));
+    return {
+      debug: 'download_only',
+      ok: false,
+      verdict: 'REFUSED_BY_SHOPEE',
+      http_status: response.status,
+      content_type: contentType,
+      bytes: buffer.length,
+      elapsed_ms: elapsedMs,
+      shopee_response: data,
+    };
+  }
+
+  // Structural sanity check: a real PDF opens with %PDF- and ends with %%EOF.
+  // Byte count alone would not catch an error page served as octet-stream.
+  const header = buffer.subarray(0, 5).toString('latin1');
+  const tail = buffer.subarray(-1024).toString('latin1');
+  const hasPdfHeader = header === '%PDF-';
+  const hasPdfEof = tail.includes('%%EOF');
+  const version = hasPdfHeader ? buffer.subarray(0, 8).toString('latin1') : null;
+
+  console.log(
+    `[print-awb][debug] PDF header ${hasPdfHeader ? 'OK' : 'MISSING'} (${JSON.stringify(header)})` +
+      ` | %%EOF ${hasPdfEof ? 'present' : 'MISSING'}` +
+      (version ? ` | version "${version}"` : '')
+  );
+  if (!hasPdfHeader) {
+    console.error('[print-awb][debug] first 500 bytes of non-PDF body:', buffer.toString('utf8').slice(0, 500));
+  }
+
+  const valid = hasPdfHeader && hasPdfEof;
+  console.log(
+    `[print-awb][debug] VERDICT: ${valid ? 'reprint shortcut VIABLE — download succeeded with no create call' : 'download returned bytes but they are not a well-formed PDF'}`
+  );
+
+  return {
+    debug: 'download_only',
+    ok: valid,
+    verdict: valid ? 'PDF_OK' : 'NOT_A_VALID_PDF',
+    http_status: response.status,
+    content_type: contentType,
+    bytes: buffer.length,
+    elapsed_ms: elapsedMs,
+    pdf_header: header,
+    pdf_version: version,
+    has_pdf_eof: hasPdfEof,
+    // Returned so the caller can actually open the file and confirm it renders
+    // the right label — structural checks above can't verify content.
+    pdf_base64: buffer.toString('base64'),
+  };
+}
+// --- end TEMPORARY DEBUG ---
+
 export default withCors(handler);
 
 async function handler(req, res) {
@@ -710,7 +837,7 @@ async function handler(req, res) {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
 
-  const { store_id, order_sn_list } = req.body ?? {};
+  const { store_id, order_sn_list, debug_download_only: debugDownloadOnlyFlag } = req.body ?? {};
 
   if (!store_id) {
     return res.status(400).json({ success: false, error: 'store_id is required' });
@@ -741,6 +868,26 @@ async function handler(req, res) {
   if (store.user_id !== user.id) {
     return res.status(403).json({ success: false, error: 'Forbidden' });
   }
+
+  // --- TEMPORARY DEBUG — remove with debugDownloadOnly() above. Returns
+  // before any of the normal print pipeline runs, so the flow below is
+  // untouched by this experiment. ---
+  if (debugDownloadOnlyFlag) {
+    try {
+      const freshStore = await ensureFreshToken(store);
+      const result = await debugDownloadOnly(freshStore, order_sn_list);
+      return res.status(result.ok ? 200 : 502).json(result);
+    } catch (err) {
+      console.error('[print-awb][debug] download-only probe threw:', err.message);
+      return res.status(500).json({
+        debug: 'download_only',
+        ok: false,
+        verdict: 'THREW',
+        error: err.message,
+      });
+    }
+  }
+  // --- end TEMPORARY DEBUG ---
 
   const requestStart = Date.now();
   const perf = makePerfTracker();
