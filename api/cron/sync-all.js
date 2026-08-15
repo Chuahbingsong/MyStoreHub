@@ -3,6 +3,7 @@ import { syncStoreOrders, syncStoreProducts } from '../_lib/shopeeSync.js';
 import { autoPackStore } from '../_lib/autoPack.js';
 import { autoBoostStore } from '../_lib/autoBoost.js';
 import { syncStoreFlashSales } from '../_lib/flashSaleSync.js';
+import { prefetchStoreAwbs } from '../_lib/awbPrefetch.js';
 import { notifyStore } from '../_lib/pushNotify.js';
 import { getValidTikTokToken } from '../_lib/tiktok.js';
 import { syncTikTokShopOrders, getTikTokStoresToSync } from '../_lib/tiktokSync.js';
@@ -284,7 +285,35 @@ async function handler(req, res) {
       }
     }
 
-    return { storeId: store.id, touched, orders, products, packed, boosted, notified, flashSessions, errors };
+    // AWB prefetch, READ-MOSTLY (it creates Shopee documents and writes to
+    // Storage, but changes nothing a buyer or the Shopee UI sees). Runs dead
+    // last and is the first thing to be dropped: it applies its own, stricter
+    // remaining-time floor on top of this deadline, so on a tight tick it does
+    // nothing rather than eat into the response margin. Never opt-in — it only
+    // touches orders already PROCESSED with a tracking number on file.
+    let awbCached = 0;
+    if (Date.now() < deadline) {
+      try {
+        const prefetchResult = await prefetchStoreAwbs(store, { deadline });
+        awbCached = prefetchResult.cached ?? 0;
+      } catch (err) {
+        console.error('[cron/sync-all] awb prefetch failed for store', store.id, err);
+        errors.push({ storeId: store.id, type: 'awb_prefetch', error: err.message });
+      }
+    }
+
+    return {
+      storeId: store.id,
+      touched,
+      orders,
+      products,
+      packed,
+      boosted,
+      notified,
+      flashSessions,
+      awbCached,
+      errors,
+    };
   }
 
   const settled = await Promise.allSettled(stores.map(syncOneStore));
@@ -296,6 +325,7 @@ async function handler(req, res) {
   let totalBoosted = 0;
   let totalNotified = 0;
   let totalFlashSessions = 0;
+  let totalAwbCached = 0;
   const errors = [...preSyncErrors];
 
   for (let i = 0; i < settled.length; i += 1) {
@@ -310,13 +340,24 @@ async function handler(req, res) {
       continue;
     }
 
-    const { touched, orders, products, packed, boosted, notified, flashSessions, errors: storeErrors } = outcome.value;
+    const {
+      touched,
+      orders,
+      products,
+      packed,
+      boosted,
+      notified,
+      flashSessions,
+      awbCached,
+      errors: storeErrors,
+    } = outcome.value;
     totalOrders += orders;
     totalProducts += products;
     totalPacked += packed;
     totalBoosted += boosted;
     totalNotified += notified;
     totalFlashSessions += flashSessions;
+    totalAwbCached += awbCached;
     errors.push(...storeErrors);
     if (touched) storesSynced += 1;
   }
@@ -366,7 +407,7 @@ async function handler(req, res) {
 
   const elapsedMs = Date.now() - startedAt;
   console.log(
-    `[cron/sync-all] done in ${elapsedMs}ms — stores: ${storesSynced}/${stores.length}, orders: ${totalOrders}, products: ${totalProducts}, auto-packed: ${totalPacked}, auto-boosted: ${totalBoosted}, notified: ${totalNotified}, flash sessions: ${totalFlashSessions}, tiktok orders: ${totalTikTokOrders}, errors: ${errors.length}`
+    `[cron/sync-all] done in ${elapsedMs}ms — stores: ${storesSynced}/${stores.length}, orders: ${totalOrders}, products: ${totalProducts}, auto-packed: ${totalPacked}, auto-boosted: ${totalBoosted}, notified: ${totalNotified}, flash sessions: ${totalFlashSessions}, awb cached: ${totalAwbCached}, tiktok orders: ${totalTikTokOrders}, errors: ${errors.length}`
   );
 
   return res.status(200).json({
@@ -379,6 +420,7 @@ async function handler(req, res) {
     total_boosted: totalBoosted,
     total_notified: totalNotified,
     total_flash_sessions: totalFlashSessions,
+    total_awb_cached: totalAwbCached,
     total_tiktok_orders: totalTikTokOrders,
     elapsed_ms: elapsedMs,
     errors,
