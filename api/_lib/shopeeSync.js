@@ -7,9 +7,29 @@ import { selectAllPaged, warnIfAtCap } from './supabaseSelect.js';
 
 const ORDER_LIST_PAGE_SIZE = 50;
 const ORDER_DETAIL_BATCH_SIZE = 50; // Shopee's max order_sn per get_order_detail call
+
+// =============================================================================
+// TEMP BACKFILL — buyer_message (added 2026-08-15, remove when done).
+//
+// Widens the order sync window and forces already-terminal orders to be
+// re-fetched, so the regular sync (cron + foreground) backfills the new
+// buyer_message column onto existing orders and lets the message_to_seller
+// field-name mapping (see mapOrderToRow's raw-value log) be checked against
+// real data instead of only new orders going forward.
+//
+// Only reaches orders whose Shopee-side update_time falls inside the
+// widened window (see fetchOrderSnList's time_range_field: 'update_time') —
+// an order that hasn't changed status in longer than that won't be re-listed
+// no matter how wide the window is set here.
+//
+// TO REVERT: set this back to `false`. That alone restores both effects
+// below (7-day window, normal terminal-skip) — nothing else needs to change.
+// =============================================================================
+const TEMP_BACKFILL_BUYER_MESSAGE = true;
+
 // Default to a short window so a single sync stays under the Vercel timeout.
 // Callers may override via { days }.
-const DEFAULT_ORDER_TIME_RANGE_DAYS = 7;
+const DEFAULT_ORDER_TIME_RANGE_DAYS = TEMP_BACKFILL_BUYER_MESSAGE ? 14 : 7;
 // Wall-clock budget for a sync call, replacing the old order-count cap. A
 // count cap silently truncates however Shopee happens to order its results;
 // a time budget instead keeps working — list pages, then detail batches —
@@ -440,6 +460,11 @@ function mapItemsToRows(orderId, shopeeOrder, productImages) {
 // row makes terminal-skip self-healing instead of a permanent hiding place
 // for that bug (or any future one shaped like it).
 async function fetchTerminalOrderSns(storeId, orderSnList) {
+  // TEMP BACKFILL (see flag above): terminal orders are exactly the
+  // historical orders this backfill needs to re-fetch, so none get skipped
+  // while it's active. Revert removes this early return along with the flag.
+  if (TEMP_BACKFILL_BUYER_MESSAGE) return new Set();
+
   if (orderSnList.length === 0) return new Set();
 
   const { data, error } = await supabaseAdmin
@@ -884,6 +909,16 @@ export async function syncStoreOrders(store, options = {}) {
     const detailHasMore = batchesProcessed < batches.length;
     const hasMore = listHasMore || detailHasMore;
 
+    // TEMP BACKFILL (see flag near the top of this file): logged distinctly
+    // and folded into the persisted sync_logs summary below (not just
+    // console output, which Vercel rolls off) so how many orders got
+    // re-synced under the widened window is checkable after the fact.
+    if (TEMP_BACKFILL_BUYER_MESSAGE) {
+      console.log(
+        `[shopee-sync] [TEMP BACKFILL] [${store.id}] re-synced ${savedOrders.length} order(s) in the widened ${days}-day window (terminal-skip bypassed)`,
+      );
+    }
+
     await supabaseAdmin
       .from('stores')
       .update({ last_synced_at: new Date().toISOString() })
@@ -896,7 +931,8 @@ export async function syncStoreOrders(store, options = {}) {
       `[shopee-sync] [${store.id}] tracking backfill: ${backfill.filled}/${backfill.attempted} filled at ${elapsed()}`,
     );
 
-    const summary = `Synced ${savedOrders.length} orders (${terminalSns.size} already-terminal skipped)${hasMore ? ', more pending' : ''}, tracking backfill ${backfill.filled}/${backfill.attempted} in ${Date.now() - t0}ms`;
+    const backfillTag = TEMP_BACKFILL_BUYER_MESSAGE ? ` [TEMP BACKFILL: ${savedOrders.length} re-synced, ${days}d window]` : '';
+    const summary = `Synced ${savedOrders.length} orders (${terminalSns.size} already-terminal skipped)${hasMore ? ', more pending' : ''}, tracking backfill ${backfill.filled}/${backfill.attempted} in ${Date.now() - t0}ms${backfillTag}`;
     await logSyncComplete(logId, 'success', summary);
 
     console.log(
