@@ -237,26 +237,40 @@ async function mapWithConcurrency(items, limit, fn) {
 }
 
 /**
- * Looks up whatever tracking numbers these orders already have on file, so a
- * reprint doesn't re-ask Shopee for a value we already stored last time.
+ * One read of local order state, used for both decisions this request makes:
+ *   - trackingByOrderSn: tracking numbers already on file, so a reprint
+ *     doesn't re-ask Shopee for a value we stored last time.
+ *   - allPrinted: whether EVERY requested order has been printed before,
+ *     which is the reprint fast path's eligibility gate.
+ * Deliberately one query rather than two — the fast path would otherwise add
+ * a round trip to first-time prints, which get no benefit from it.
+ * On error, degrades to "nothing cached, not eligible": the full pipeline
+ * then runs exactly as it did before any of this existed.
  */
-async function getStoredTrackingNumbers(storeId, orderSnList) {
+async function loadOrderPrintState(storeId, orderSnList) {
   const { data, error } = await supabaseAdmin
     .from('orders')
-    .select('platform_order_id, tracking_number')
+    .select('platform_order_id, tracking_number, awb_printed')
     .eq('store_id', storeId)
     .in('platform_order_id', orderSnList);
 
   if (error) {
-    console.error('[print-awb] failed to load stored tracking numbers, will fetch all from Shopee', error);
-    return {};
+    console.error('[print-awb] failed to load local order state, will fetch all from Shopee', error);
+    return { trackingByOrderSn: {}, allPrinted: false };
   }
 
-  const stored = {};
+  const trackingByOrderSn = {};
+  const printed = new Set();
   for (const row of data ?? []) {
-    if (row.tracking_number) stored[row.platform_order_id] = row.tracking_number;
+    if (row.tracking_number) trackingByOrderSn[row.platform_order_id] = row.tracking_number;
+    if (row.awb_printed) printed.add(row.platform_order_id);
   }
-  return stored;
+
+  return {
+    trackingByOrderSn,
+    // An order missing from the result set is, correctly, not printed.
+    allPrinted: orderSnList.every((orderSn) => printed.has(orderSn)),
+  };
 }
 
 /**
@@ -268,8 +282,7 @@ async function getStoredTrackingNumbers(storeId, orderSnList) {
  * Returns freshlyFetchedOrderSns separately so the caller only writes back
  * to the orders table what actually changed.
  */
-async function resolveTrackingNumbers(store, storeId, orderSnList, perf) {
-  const storedByOrderSn = await getStoredTrackingNumbers(storeId, orderSnList);
+async function resolveTrackingNumbers(store, storedByOrderSn, orderSnList, perf) {
   const cachedOrderSns = orderSnList.filter((orderSn) => storedByOrderSn[orderSn]);
   const toFetch = orderSnList.filter((orderSn) => !storedByOrderSn[orderSn]);
 
@@ -685,132 +698,96 @@ async function downloadOnePerOrder(store, orderSnList) {
   return { documents, failed };
 }
 
-// --- TEMPORARY DEBUG — remove once the reprint-shortcut question is settled ---
+// --- Reprint fast path -------------------------------------------------------
 //
-// Answers exactly one question: does a shipping document Shopee has ALREADY
-// created stay downloadable later without re-calling create_shipping_document?
-// If it does, a reprint can skip get_shipping_document_parameter, create, and
-// the readiness poll, and go straight to download.
+// Shopee keeps a created shipping document downloadable for a while, so a
+// REPRINT can skip get_shipping_document_parameter, create_shipping_document
+// and the readiness poll and just re-download. Measured: 1609ms vs 3679ms for
+// the full pipeline on a same-day reprint.
 //
-// Deliberately duplicates the download call instead of reusing
-// downloadShippingDocument() below: this experiment must not be able to alter
-// the normal print path in any way, and it needs to log raw diagnostics
-// (headers, magic bytes, timing) that the production path has no use for.
-//
-// Runs only for a caller who already passed the auth + store-ownership checks
-// in handler(), so it exposes nothing an owner couldn't already print.
-//
-// Invoke against an order printed EARLIER (not one printed just now):
-//   POST /api/shopee/print-awb
-//   { "store_id": "<uuid>", "order_sn_list": ["<order printed earlier>"],
-//     "debug_download_only": true }
-async function debugDownloadOnly(store, orderSnList) {
+// Documents do expire — a month-old COMPLETED order came back as a 234-byte
+// error body, not a PDF. So the shortcut is strictly best-effort: anything
+// that isn't a genuine PDF falls through to the full pipeline, and the user
+// sees today's normal speed rather than an error.
+
+// A PDF always begins with these bytes. Checked instead of HTTP status or
+// byte count alone because Shopee's refusals come back as a 200 with a short
+// JSON/text body, which both of those would happily wave through.
+const PDF_MAGIC = '%PDF-';
+
+function looksLikePdf(buffer) {
+  return buffer.subarray(0, PDF_MAGIC.length).toString('latin1') === PDF_MAGIC;
+}
+
+/**
+ * Re-downloads an existing shipping document with no create/poll first.
+ * Returns a Buffer only when the response is genuinely a PDF; returns null on
+ * every other outcome (expired document, Shopee refusal, network error,
+ * non-PDF body). Never throws — a failed shortcut must be invisible to the
+ * caller, which then runs the full pipeline as normal.
+ *
+ * Separate from downloadShippingDocument() above on purpose: that one throws
+ * ShopeeStepError to surface a real failure to the user, which is exactly the
+ * wrong behaviour here, where a failure is an expected, silent miss.
+ */
+async function tryReprintDownload(store, orderSnList) {
   const path = '/api/v2/logistics/download_shipping_document';
   const url = buildSignedUrl(path, store);
   const body = { order_list: orderSnList.map((order_sn) => ({ order_sn })) };
 
-  console.log(
-    '[print-awb][debug] DOWNLOAD-ONLY: skipping get_shipping_document_parameter, create_shipping_document, waitForDocumentReady'
-  );
-  console.log('[print-awb][debug] order_sn_list:', orderSnList.join(', '));
-  console.log('[print-awb][debug] request body:', JSON.stringify(body));
-
-  const startedAt = Date.now();
-  let response;
-  let arrayBuffer;
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    arrayBuffer = await response.arrayBuffer();
-  } catch (err) {
-    const elapsedMs = Date.now() - startedAt;
-    console.error(`[print-awb][debug] network error after ${elapsedMs}ms:`, err.message);
-    return {
-      debug: 'download_only',
-      ok: false,
-      verdict: 'NETWORK_ERROR',
-      elapsed_ms: elapsedMs,
-      error: err.message,
-    };
-  }
 
-  const elapsedMs = Date.now() - startedAt;
-  const buffer = Buffer.from(arrayBuffer);
-  const contentType = response.headers.get('content-type') || '';
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers.get('content-type') || '';
 
-  console.log(
-    `[print-awb][debug] HTTP ${response.status} | content-type "${contentType}" | ${buffer.length} bytes | ${elapsedMs}ms`
-  );
-  console.log(
-    '[print-awb][debug] response headers:',
-    JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2)
-  );
-
-  // Shopee answers with JSON, not a PDF, when it refuses the download.
-  if (contentType.includes('application/json') || !buffer.length) {
-    const bodyText = buffer.toString('utf8');
-    let data;
-    try {
-      data = JSON.parse(bodyText);
-    } catch {
-      data = { _unparsed_body: bodyText };
+    if (!looksLikePdf(buffer)) {
+      // Expected outcome once a document has expired — logged at log level,
+      // not error: the full pipeline is about to handle this correctly.
+      console.log(
+        `[print-awb] reprint download not usable: HTTP ${response.status}, content-type "${contentType}", ${buffer.length} bytes, no %PDF- header`
+      );
+      console.log('[print-awb] reprint response preview:', buffer.toString('utf8').slice(0, 300) || '(empty)');
+      return null;
     }
-    console.error('[print-awb][debug] Shopee refused — full raw response:');
-    console.error(JSON.stringify(data, null, 2));
-    return {
-      debug: 'download_only',
-      ok: false,
-      verdict: 'REFUSED_BY_SHOPEE',
-      http_status: response.status,
-      content_type: contentType,
-      bytes: buffer.length,
-      elapsed_ms: elapsedMs,
-      shopee_response: data,
-    };
+
+    if (!response.ok) {
+      console.log(`[print-awb] reprint download looked like a PDF but HTTP was ${response.status}; ignoring`);
+      return null;
+    }
+
+    return buffer;
+  } catch (err) {
+    console.log('[print-awb] reprint download failed, falling back to full pipeline:', err.message);
+    return null;
   }
-
-  // Structural sanity check: a real PDF opens with %PDF- and ends with %%EOF.
-  // Byte count alone would not catch an error page served as octet-stream.
-  const header = buffer.subarray(0, 5).toString('latin1');
-  const tail = buffer.subarray(-1024).toString('latin1');
-  const hasPdfHeader = header === '%PDF-';
-  const hasPdfEof = tail.includes('%%EOF');
-  const version = hasPdfHeader ? buffer.subarray(0, 8).toString('latin1') : null;
-
-  console.log(
-    `[print-awb][debug] PDF header ${hasPdfHeader ? 'OK' : 'MISSING'} (${JSON.stringify(header)})` +
-      ` | %%EOF ${hasPdfEof ? 'present' : 'MISSING'}` +
-      (version ? ` | version "${version}"` : '')
-  );
-  if (!hasPdfHeader) {
-    console.error('[print-awb][debug] first 500 bytes of non-PDF body:', buffer.toString('utf8').slice(0, 500));
-  }
-
-  const valid = hasPdfHeader && hasPdfEof;
-  console.log(
-    `[print-awb][debug] VERDICT: ${valid ? 'reprint shortcut VIABLE — download succeeded with no create call' : 'download returned bytes but they are not a well-formed PDF'}`
-  );
-
-  return {
-    debug: 'download_only',
-    ok: valid,
-    verdict: valid ? 'PDF_OK' : 'NOT_A_VALID_PDF',
-    http_status: response.status,
-    content_type: contentType,
-    bytes: buffer.length,
-    elapsed_ms: elapsedMs,
-    pdf_header: header,
-    pdf_version: version,
-    has_pdf_eof: hasPdfEof,
-    // Returned so the caller can actually open the file and confirm it renders
-    // the right label — structural checks above can't verify content.
-    pdf_base64: buffer.toString('base64'),
-  };
 }
-// --- end TEMPORARY DEBUG ---
+
+/**
+ * Sends a PDF using the same two response shapes the full pipeline uses, so
+ * the client needs no knowledge of which path produced it: a lone order comes
+ * back as inline PDF bytes, anything else as base64 JSON.
+ */
+function sendAwbPdf(res, pdfBuffer, orderSnList) {
+  if (orderSnList.length === 1) {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="awb-${orderSnList[0]}.pdf"`);
+    return res.status(200).send(pdfBuffer);
+  }
+
+  return res.status(200).json({
+    success: true,
+    printed_order_sn_list: orderSnList,
+    pdf_base64: pdfBuffer.toString('base64'),
+    failed: [],
+    skipped_orders: [],
+  });
+}
+// --- end reprint fast path ---
 
 export default withCors(handler);
 
@@ -837,7 +814,7 @@ async function handler(req, res) {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
 
-  const { store_id, order_sn_list, debug_download_only: debugDownloadOnlyFlag } = req.body ?? {};
+  const { store_id, order_sn_list } = req.body ?? {};
 
   if (!store_id) {
     return res.status(400).json({ success: false, error: 'store_id is required' });
@@ -869,26 +846,6 @@ async function handler(req, res) {
     return res.status(403).json({ success: false, error: 'Forbidden' });
   }
 
-  // --- TEMPORARY DEBUG — remove with debugDownloadOnly() above. Returns
-  // before any of the normal print pipeline runs, so the flow below is
-  // untouched by this experiment. ---
-  if (debugDownloadOnlyFlag) {
-    try {
-      const freshStore = await ensureFreshToken(store);
-      const result = await debugDownloadOnly(freshStore, order_sn_list);
-      return res.status(result.ok ? 200 : 502).json(result);
-    } catch (err) {
-      console.error('[print-awb][debug] download-only probe threw:', err.message);
-      return res.status(500).json({
-        debug: 'download_only',
-        ok: false,
-        verdict: 'THREW',
-        error: err.message,
-      });
-    }
-  }
-  // --- end TEMPORARY DEBUG ---
-
   const requestStart = Date.now();
   const perf = makePerfTracker();
   try {
@@ -898,6 +855,44 @@ async function handler(req, res) {
 
     console.log('[print-awb] printing AWB for store', store.id, 'orders:', order_sn_list.join(', '));
 
+    // One local read serving both the fast-path gate and the tracking-number
+    // cache below, so the fast path costs first-time prints nothing.
+    const stateDone = perf.start('loadOrderPrintState');
+    const { trackingByOrderSn: storedTracking, allPrinted } = await loadOrderPrintState(
+      store.id,
+      order_sn_list
+    );
+    stateDone();
+
+    // Reprint fast path. Best-effort only: any miss falls through to the full
+    // pipeline below with no visible difference to the user beyond latency.
+    // The [path] lines are the hit-rate instrumentation — grep RESULT= to
+    // count fast_path_hit vs fast_path_miss vs full_pipeline.
+    let fastPathAttempted = false;
+    if (allPrinted) {
+      fastPathAttempted = true;
+      const attemptStart = Date.now();
+      const reprintBuffer = await tryReprintDownload(freshStore, order_sn_list);
+      const attemptMs = Date.now() - attemptStart;
+
+      if (reprintBuffer) {
+        console.log(
+          `[print-awb][path] RESULT=fast_path_hit orders=${order_sn_list.length} download_ms=${attemptMs} total_ms=${Date.now() - requestStart} bytes=${reprintBuffer.length}`
+        );
+        return sendAwbPdf(res, reprintBuffer, order_sn_list);
+      }
+
+      console.log(
+        `[print-awb][path] RESULT=fast_path_miss orders=${order_sn_list.length} wasted_ms=${attemptMs} — falling back to full pipeline`
+      );
+    } else {
+      console.log(
+        `[print-awb][path] fast path not eligible (not all ${order_sn_list.length} order(s) previously printed)`
+      );
+    }
+
+    const fullPipelineStart = Date.now();
+
     // 1. Resolve a tracking number per order; create_shipping_document
     //    validates it, so orders without one cannot be printed. Orders
     //    already carrying a tracking_number (e.g. a reprint) reuse it rather
@@ -905,7 +900,7 @@ async function handler(req, res) {
     const trackingDone = perf.start(`resolveTrackingNumbers[${order_sn_list.length} order(s)]`);
     const { trackingByOrderSn, skipped, freshlyFetchedOrderSns } = await resolveTrackingNumbers(
       freshStore,
-      store.id,
+      storedTracking,
       order_sn_list,
       perf
     );
@@ -988,6 +983,9 @@ async function handler(req, res) {
       failed.push(...perOrder.failed);
     }
 
+    console.log(
+      `[print-awb][path] RESULT=full_pipeline orders=${order_sn_list.length} pipeline_ms=${Date.now() - fullPipelineStart} total_ms=${Date.now() - requestStart} fast_path_attempted=${fastPathAttempted}`
+    );
     console.log(`[print-awb][perf] REQUEST TOTAL: ${Date.now() - requestStart}ms`);
     perf.summary();
 
