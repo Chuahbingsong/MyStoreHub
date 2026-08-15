@@ -1,6 +1,12 @@
 import { supabaseAdmin } from './supabaseAdmin.js';
 import { acquireSyncLock, logSyncStart, logSyncComplete } from './shopeeSync.js';
-import { ensureFreshToken, shipOrder, ShopeeStepError, IncompleteShippingInfoError } from './shopeeShip.js';
+import {
+  ensureFreshToken,
+  shipOrder,
+  ShopeeStepError,
+  IncompleteShippingInfoError,
+  PickupRequiresManualError,
+} from './shopeeShip.js';
 
 // A buyer who cancels an order BEFORE shipment is arranged gets an automatic,
 // no-penalty cancellation on Shopee's side. Arranging shipment closes that
@@ -73,7 +79,7 @@ export async function autoPackStore(store, options = {}) {
   // survive the age filter below anyway.
   const { data: candidates, error: queryError } = await supabaseAdmin
     .from('orders')
-    .select('id, platform_order_id, paid_at, order_created_at')
+    .select('id, platform_order_id, paid_at, order_created_at, buyer_message')
     .eq('store_id', store.id)
     .eq('order_status', 'READY_TO_SHIP')
     .is('auto_pack_status', null)
@@ -85,8 +91,26 @@ export async function autoPackStore(store, options = {}) {
     return { storeId: store.id, attempted: 0, packed: 0, error: queryError.message };
   }
 
+  // A buyer who left a checkout note may be asking for something packing
+  // can't decide on its own (a substitution, a gift wrap, a delivery
+  // instruction) — those need a human to actually read the note. Stamped
+  // terminal immediately, same as any other permanent skip reason, rather
+  // than waiting out the age filter below: there's nothing time-dependent
+  // about needing a human to read a message.
+  const hasBuyerMessage = (order) =>
+    typeof order.buyer_message === 'string' && order.buyer_message.trim().length > 0;
+
+  const withBuyerMessage = (candidates ?? []).filter(hasBuyerMessage);
+  if (withBuyerMessage.length > 0) {
+    console.log(`[auto-pack] [${store.id}] ${withBuyerMessage.length} order(s) skipped: buyer left a message`);
+    for (const order of withBuyerMessage) {
+      await markAttempt(order.id, { auto_pack_status: 'skipped', auto_pack_error: 'has_buyer_message' });
+    }
+  }
+
   const now = Date.now();
   const eligible = (candidates ?? [])
+    .filter((order) => !hasBuyerMessage(order))
     .map((order) => ({
       order,
       effectiveTime: new Date(order.paid_at ?? order.order_created_at).getTime(),
@@ -140,14 +164,18 @@ export async function autoPackStore(store, options = {}) {
       await logSyncComplete(logId, 'success', `Auto-packed ${orderSn} via ${method ?? '(unknown method)'}`);
       packed += 1;
     } catch (err) {
-      const skipped = err instanceof IncompleteShippingInfoError;
+      const isPickupBlock = err instanceof PickupRequiresManualError;
+      const skipped = err instanceof IncompleteShippingInfoError || isPickupBlock;
       const status = skipped ? 'skipped' : 'failed';
       const shopeeResponse = err instanceof ShopeeStepError ? err.shopeeResponse : null;
 
       console.error(`[auto-pack] [${store.id}] ${status} for ${orderSn}:`, err.message);
       if (shopeeResponse) console.error(JSON.stringify(shopeeResponse, null, 2));
 
-      await markAttempt(order.id, { auto_pack_status: status, auto_pack_error: err.message });
+      // Distinct auto_pack_error prefix so pickup-needs-a-human skips are
+      // greppable/filterable separately from incomplete-shipping-info skips.
+      const autoPackError = isPickupBlock ? `pickup_requires_manual: ${err.message}` : err.message;
+      await markAttempt(order.id, { auto_pack_status: status, auto_pack_error: autoPackError });
       await logSyncComplete(
         logId,
         status === 'skipped' ? 'success' : 'error',

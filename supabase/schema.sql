@@ -231,3 +231,44 @@ create table if not exists tiktok_shops (
 -- TikTok access/refresh tokens are stored; `stores` never gets them.
 alter table tiktok_shops add column if not exists user_id uuid references auth.users(id) on delete cascade;
 alter table tiktok_shops add column if not exists store_id uuid references stores(id);
+
+-- lazada_shops: Lazada's equivalent of tiktok_shops — separate from `stores`
+-- for the same reason (see tiktok_shops above): Lazada credentials/expiry
+-- live here, `stores` gets only an identity/ownership mirror row (platform
+-- 'lazada', shop_id = seller_id) written by api/lazada.js on connect, linked
+-- back via store_id so orders/sync_logs and every existing per-store
+-- ownership check keep working unmodified. Unique key is (seller_id,
+-- country), not seller_id alone — see api/lazada.js's upsert onConflict.
+-- This table definition existed live in Supabase without a checked-in
+-- migration; added here so schema.sql matches reality (see api/_lib/lazada.js
+-- and api/lazada.js for every column this backs).
+create table if not exists lazada_shops (
+  id uuid primary key default gen_random_uuid(),
+  seller_id text not null,
+  shop_name text,
+  country text default 'MY',
+  access_token text,
+  refresh_token text,
+  access_token_expires_at timestamptz,
+  refresh_token_expires_at timestamptz,
+  user_id uuid references auth.users(id) on delete cascade,
+  store_id uuid references stores(id),
+  created_at timestamptz default now(),
+  updated_at timestamptz,
+  unique (seller_id, country)
+);
+
+-- orders: buyer_cancel_reason / cancel_by / cancel_reason (mapOrderToRow in
+-- api/_lib/shopeeSync.js) and buyer_message (this change — the buyer's own
+-- checkout note, see fetchOrderDetails's response_optional_fields comment)
+-- all existed live in Supabase without a checked-in migration; added here so
+-- schema.sql matches reality.
+alter table orders add column if not exists buyer_cancel_reason text;
+alter table orders add column if not exists cancel_by text;
+alter table orders add column if not exists cancel_reason text;
+alter table orders add column if not exists buyer_message text;
+
+-- Auto-pack (api/_lib/autoPack.js) excludes any order with a non-empty
+-- buyer_message from the eligible set, stamping auto_pack_status: 'skipped'
+-- immediately rather than waiting out the age filter.
+create index if not exists idx_orders_store_id_buyer_message on orders (store_id) where buyer_message is not null;

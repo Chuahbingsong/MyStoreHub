@@ -280,8 +280,16 @@ async function fetchOrderDetails(store, orderSnBatch) {
     // surface: an IN_CANCEL order needs the buyer's reason shown so the seller
     // can decide. cancel_by distinguishes a buyer-initiated request (the case
     // we act on) from a seller cancel.
+    //
+    // message_to_seller is the buyer's own checkout note (distinct from
+    // Shopee's `note`/`note_update_time`, which is the SELLER's own
+    // free-text note on the order — not what we want here). Field name
+    // confirmed against third-party Shopee Open API v2 SDKs (not Shopee's
+    // own docs directly, which weren't reachable from here) — mapOrderToRow
+    // below logs the raw value on every sync so the mapping stays verifiable
+    // against real orders instead of resting on that alone.
     response_optional_fields:
-      'buyer_username,recipient_address,item_list,total_amount,order_status,create_time,pay_time,payment_method,shipping_carrier,package_list,buyer_cancel_reason,cancel_by,cancel_reason',
+      'buyer_username,recipient_address,item_list,total_amount,order_status,create_time,pay_time,payment_method,shipping_carrier,package_list,buyer_cancel_reason,cancel_by,cancel_reason,message_to_seller',
   });
 
   const url = `${SHOPEE_API_BASE}${path}?${params.toString()}`;
@@ -316,6 +324,14 @@ async function fetchOrderDetails(store, orderSnBatch) {
 function mapOrderToRow(storeId, shopeeOrder) {
   const recipientAddress = shopeeOrder.recipient_address ?? {};
 
+  // Logged unconditionally (not just when truthy) so an empty/missing value
+  // is just as verifiable as a populated one while the message_to_seller
+  // field-name mapping above is unconfirmed against Shopee's own docs.
+  console.log(
+    `[shopee-sync] raw message_to_seller for ${shopeeOrder.order_sn}:`,
+    JSON.stringify(shopeeOrder.message_to_seller ?? null)
+  );
+
   return {
     store_id: storeId,
     platform: 'shopee',
@@ -334,6 +350,9 @@ function mapOrderToRow(storeId, shopeeOrder) {
     buyer_cancel_reason: shopeeOrder.buyer_cancel_reason ?? null,
     cancel_by: shopeeOrder.cancel_by ?? null,
     cancel_reason: shopeeOrder.cancel_reason ?? null,
+    // The buyer's own checkout note — see response_optional_fields comment
+    // above for why this is message_to_seller and not `note`.
+    buyer_message: shopeeOrder.message_to_seller ?? null,
     // Free from get_order_detail's package_list (requested via
     // response_optional_fields above) — unlike tracking_number, no extra API
     // call needed. An order can in principle have multiple packages (split

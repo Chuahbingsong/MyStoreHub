@@ -120,6 +120,25 @@ export class IncompleteShippingInfoError extends Error {
   }
 }
 
+/**
+ * Thrown instead of auto-filling pickup_time_id (previously always
+ * time_slot_list[0]) when info_needed resolves to 'pickup' and the caller
+ * has not opted into best-effort defaults. Choosing a pickup slot is a call
+ * a human should make, not a silent first-slot default — see
+ * IncompleteShippingInfoError above for the identical reasoning applied to
+ * missing fields. Gated on the same `allowIncomplete` flag: auto-pack
+ * (allowIncomplete: false) never picks a slot on a seller's behalf; the
+ * manual Pack button (allowIncomplete: true) keeps today's first-slot
+ * default untouched.
+ */
+export class PickupRequiresManualError extends Error {
+  constructor(orderSn) {
+    super(`Order ${orderSn} requires choosing a pickup time slot — needs manual packing`);
+    this.name = 'PickupRequiresManualError';
+    this.orderSn = orderSn;
+  }
+}
+
 async function shopeeJsonCall(step, url, init) {
   let response;
   let bodyText;
@@ -192,14 +211,24 @@ function selectPickupAddress(shippingParam) {
  * we could not fill from get_shipping_parameter alone. Building and
  * evaluating are kept separate from sending so a caller (auto-pack) can
  * decide not to send at all when something's missing.
+ *
+ * options.blockPickup: when true, a resolved method of 'pickup' throws
+ * PickupRequiresManualError immediately — before selectPickupAddress or any
+ * other auto-fill runs — instead of picking time_slot_list[0] on the
+ * seller's behalf.
  */
-function buildShipOrderBody(orderSn, shippingParam) {
+function buildShipOrderBody(orderSn, shippingParam, { blockPickup = false } = {}) {
   const { method, fields } = selectShippingMethod(shippingParam);
   const body = { order_sn: orderSn };
 
   console.log(`[shopee-ship] info_needed selects method "${method ?? '(none)'}", fields: ${fields.join(', ') || '(none)'}`);
 
   if (method === 'pickup') {
+    if (blockPickup) {
+      console.log(`[shopee-ship] pickup blocked for ${orderSn} — needs manual packing (no auto-fill attempted)`);
+      throw new PickupRequiresManualError(orderSn);
+    }
+
     const address = selectPickupAddress(shippingParam);
     const timeSlot = address?.time_slot_list?.[0];
 
@@ -259,9 +288,13 @@ function buildShipOrderBody(orderSn, shippingParam) {
  *
  * options.allowIncomplete: when false (the default — auto-pack's case),
  * throws IncompleteShippingInfoError instead of calling Shopee at all if
- * info_needed requires a field we can't fill. When true (the manual Pack
- * button's case, a human is present), sends the best-effort body anyway and
- * lets Shopee's own validation be the final word, matching prior behavior.
+ * info_needed requires a field we can't fill, and ALSO throws
+ * PickupRequiresManualError instead of auto-filling a pickup time slot. When
+ * true (the manual Pack button's case, a human is present), sends the
+ * best-effort body anyway — including the time_slot_list[0] pickup default —
+ * and lets Shopee's own validation be the final word, matching prior
+ * behavior exactly. Both errors are gated on this one flag so a human using
+ * the manual button never sees new behavior.
  *
  * Returns { data, method } — `method` is whichever of pickup/dropoff/
  * non_integrated info_needed selected (see selectShippingMethod), so callers
@@ -269,7 +302,9 @@ function buildShipOrderBody(orderSn, shippingParam) {
  */
 export async function shipOrder(store, orderSn, { allowIncomplete = false } = {}) {
   const shippingParam = await getShippingParameter(store, orderSn);
-  const { body, method, missing } = buildShipOrderBody(orderSn, shippingParam);
+  const { body, method, missing } = buildShipOrderBody(orderSn, shippingParam, {
+    blockPickup: !allowIncomplete,
+  });
 
   if (missing.length > 0) {
     console.error(`[shopee-ship] ${method ?? '(none)'} is missing required field(s): ${missing.join(', ')}`);

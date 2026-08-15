@@ -34,6 +34,7 @@ import {
   finalizeAwbDelivery,
   usePendingAwbPrint,
 } from '@/lib/awbPrintPrompt'
+import { useTranslation } from '@/lib/i18n/I18nContext'
 
 const AUTO_SYNC_INTERVAL_MS = 60_000
 
@@ -400,6 +401,10 @@ function mapSupabaseOrder(row, storeNames) {
     buyerCancelReason: row.buyer_cancel_reason || undefined,
     cancelReason: row.cancel_reason || undefined,
     cancelBy: row.cancel_by || undefined,
+    // Buyer's own checkout note. Auto-pack skips any order with one (see
+    // api/_lib/autoPack.js) — surfaced prominently here since it's the reason
+    // a human needs to pack the order instead.
+    buyerMessage: row.buyer_message || undefined,
     awbPrinted: row.awb_printed === true,
     awbPrintedAt: formatDateLabel(row.awb_printed_at),
   }
@@ -646,12 +651,18 @@ function OrderCard({
   onBuyerCancel,
   actingId,
 }) {
+  const { t } = useTranslation()
   const meta = PLATFORM_META[order.platform]
   const actions = !selectionMode
     ? renderActions(order, { fullWidth: true, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId })
     : null
 
   const flagBadges = [
+    order.buyerMessage && (
+      <span key="buyer-message" className={cn(BADGE_CLS, 'bg-blue-500/15 text-blue-700')}>
+        {t('orders.buyerMessage.badge')}
+      </span>
+    ),
     order.status === 'Unpaid' && (
       <span key="unpaid" className={cn(BADGE_CLS, 'bg-gray-200 text-gray-600')}>
         Waiting for payment
@@ -732,6 +743,13 @@ function OrderCard({
           </div>
         )}
 
+        {order.buyerMessage && (
+          <div className="mt-2.5 rounded-lg bg-blue-500/10 px-2.5 py-2 text-[11px] leading-snug text-blue-800">
+            <p className="font-semibold">{t('orders.buyerMessage.title')}</p>
+            <p className="mt-0.5 whitespace-pre-wrap">{order.buyerMessage}</p>
+          </div>
+        )}
+
         <div className="mt-3 flex items-center gap-2.5">
           {order.items.slice(0, 3).map((item, i) => (
             <ItemThumb
@@ -792,6 +810,7 @@ function OrderCard({
 }
 
 export default function Orders() {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [activeTab, setActiveTabState] = useState(() => getInitialTab(searchParams))
@@ -1894,6 +1913,14 @@ export default function Orders() {
                       Respond within ~2 days or Shopee automatically accepts the cancellation and
                       refunds the buyer. Read the reason, then Approve or Reject below.
                     </p>
+                  </div>
+                )}
+
+                {selectedOrder.buyerMessage && (
+                  <div className="mt-4 rounded-xl bg-blue-500/10 px-3 py-3 text-xs leading-snug text-blue-800">
+                    <p className="text-sm font-semibold">{t('orders.buyerMessage.title')}</p>
+                    <p className="mt-1.5 whitespace-pre-wrap">{selectedOrder.buyerMessage}</p>
+                    <p className="mt-1.5 text-blue-700">{t('orders.buyerMessage.hint')}</p>
                   </div>
                 )}
 

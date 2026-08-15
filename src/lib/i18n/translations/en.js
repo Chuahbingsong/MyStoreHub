@@ -189,6 +189,13 @@ export default {
       'Counts processed, shipped, to-confirm, completed and retry-ship orders. Excludes unpaid, cancelled and returns. Days run 00:00–24:00 Malaysia time.',
     error: 'Could not load the sales report. The database function may not be installed yet.',
   },
+  orders: {
+    buyerMessage: {
+      badge: '💬 Buyer left a message',
+      title: 'Buyer left a message',
+      hint: 'Read this before packing — it may need a substitution, gift wrap, or delivery instruction a human has to decide on.',
+    },
+  },
   shipping: {
     title: 'Shipping Methods',
     subtitle: 'Couriers offered at checkout, per store',
