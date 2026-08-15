@@ -51,15 +51,26 @@ function blobToBase64(blob) {
  * permission and is exposed to other apps via FileOpener's FileProvider.
  */
 async function openPdfNative(blob, filename) {
+  const t0 = performance.now()
   const base64 = await blobToBase64(blob)
+  const t1 = performance.now()
+  console.log(`[awb][perf] blobToBase64: ${(t1 - t0).toFixed(0)}ms`)
+
   const { uri } = await Filesystem.writeFile({
     path: filename,
     data: base64,
     directory: Directory.Cache,
   })
+  const t2 = performance.now()
+  console.log(`[awb][perf] Filesystem.writeFile: ${(t2 - t1).toFixed(0)}ms`)
+
   try {
     await FileOpener.open({ filePath: uri, contentType: 'application/pdf' })
+    const t3 = performance.now()
+    console.log(`[awb][perf] FileOpener.open: ${(t3 - t2).toFixed(0)}ms`)
   } catch (err) {
+    const t3 = performance.now()
+    console.log(`[awb][perf] FileOpener.open (rejected): ${(t3 - t2).toFixed(0)}ms`)
     // The PDF is already saved at this point; the user declining or having no
     // matching app in the chooser isn't a delivery failure, just a UI outcome.
     console.warn('[awb] FileOpener could not open the saved PDF', err)

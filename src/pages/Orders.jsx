@@ -1107,10 +1107,13 @@ export default function Orders() {
       toast.error('Print AWB works with real connected orders only.')
       return
     }
-    setPrintConfirm({ count: 1, run: () => handlePrintAWB(order) })
+    // eslint-disable-next-line react-hooks/purity -- perf instrumentation, event-handler only
+    const tapAt = Date.now()
+    setPrintConfirm({ count: 1, run: () => handlePrintAWB(order, tapAt) })
   }
 
-  async function handlePrintAWB(order) {
+  // tapAt: Date.now() at the button tap, from requestPrintAWB above — the only caller.
+  async function handlePrintAWB(order, tapAt) {
     setPrintingId(order.id)
     try {
       const {
@@ -1143,7 +1146,11 @@ export default function Orders() {
         return
       }
 
+      // eslint-disable-next-line react-hooks/purity -- perf instrumentation, event-handler only
+      const blobStart = Date.now()
       const blob = await res.blob()
+      // eslint-disable-next-line react-hooks/purity -- perf instrumentation, event-handler only
+      console.log(`[awb][perf] res.blob(): ${Date.now() - blobStart}ms`)
       try {
         await deliverPdf(blob, `AWB-${order.platform_order_id}.pdf`)
       } catch (err) {
@@ -1151,6 +1158,10 @@ export default function Orders() {
         toast.error('Label generated but could not be saved/opened on this device.')
         return
       }
+      // Includes time spent on the confirm dialog, not just system latency —
+      // see requestPrintAWB, where tapAt is captured at the button tap.
+      // eslint-disable-next-line react-hooks/purity -- perf instrumentation, event-handler only
+      console.log(`[awb][perf] tap-to-FileOpener total: ${Date.now() - tapAt}ms`)
 
       await finalizeAwbDelivery({
         storeId: order.store_id,
@@ -1186,7 +1197,9 @@ export default function Orders() {
       toast.error('Print AWB works with real connected orders only.')
       return
     }
-    setPrintConfirm({ count: selection.sameStoreOrders.length, run: () => handleBulkPrintAWB() })
+    // eslint-disable-next-line react-hooks/purity -- perf instrumentation, event-handler only
+    const tapAt = Date.now()
+    setPrintConfirm({ count: selection.sameStoreOrders.length, run: () => handleBulkPrintAWB(tapAt) })
   }
 
   function confirmPendingPrint() {
@@ -1200,7 +1213,8 @@ export default function Orders() {
     await fetchOrders()
   }
 
-  async function handleBulkPrintAWB() {
+  // tapAt: Date.now() at the button tap, from requestBulkPrintAWB above — the only caller.
+  async function handleBulkPrintAWB(tapAt) {
     const selection = getBulkPrintSelection()
     if (!selection) {
       toast.error('Print AWB works with real connected orders only.')
@@ -1234,7 +1248,9 @@ export default function Orders() {
       // A single clean order comes back as an inline PDF; anything else returns
       // one document per logistics channel as base64 JSON.
       if (res.ok && contentType.includes('application/pdf')) {
+        const blobStart = Date.now()
         const blob = await res.blob()
+        console.log(`[awb][perf] res.blob(): ${Date.now() - blobStart}ms`)
         try {
           await deliverPdf(blob, awbFilename(orderSnList))
         } catch (err) {
@@ -1242,6 +1258,9 @@ export default function Orders() {
           toast.error('Labels generated but could not be saved/opened on this device.')
           return
         }
+        // Includes time spent on the confirm dialog, not just system latency —
+        // see requestBulkPrintAWB, where tapAt is captured at the button tap.
+        console.log(`[awb][perf] tap-to-FileOpener total: ${Date.now() - tapAt}ms`)
         await finalizeAwbDelivery({ storeId, accessToken: session.access_token, orderSnList })
       } else {
         const data = await res.json().catch(() => ({}))
@@ -1260,6 +1279,10 @@ export default function Orders() {
           toast.error('Labels generated but could not be saved/opened on this device.')
           return
         }
+        // documents.length PDFs deliver sequentially inside downloadAwbResponse
+        // (DOWNLOAD_STAGGER_MS apart), so this total covers all of them, not
+        // just the last one.
+        console.log(`[awb][perf] tap-to-FileOpener total (${fileCount} file(s)): ${Date.now() - tapAt}ms`)
 
         await finalizeAwbDelivery({ storeId, accessToken: session.access_token, orderSnList: deliveredOrderSns })
 

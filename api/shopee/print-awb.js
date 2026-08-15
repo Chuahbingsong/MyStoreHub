@@ -214,31 +214,97 @@ async function getTrackingNumber(store, orderSn) {
 
 const NO_TRACKING_REASON = 'Order not ready for shipping label yet (no tracking number)';
 
+// Caps how many get_tracking_number calls run at once so a large bulk print
+// doesn't fan out one Shopee request per order simultaneously.
+const TRACKING_NUMBER_CONCURRENCY = 5;
+
+/**
+ * Runs fn over items with at most `limit` in flight at once.
+ */
+async function mapWithConcurrency(items, limit, fn) {
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const i = nextIndex;
+      nextIndex += 1;
+      await fn(items[i], i);
+    }
+  }
+
+  const workerCount = Math.min(limit, items.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
+}
+
+/**
+ * Looks up whatever tracking numbers these orders already have on file, so a
+ * reprint doesn't re-ask Shopee for a value we already stored last time.
+ */
+async function getStoredTrackingNumbers(storeId, orderSnList) {
+  const { data, error } = await supabaseAdmin
+    .from('orders')
+    .select('platform_order_id, tracking_number')
+    .eq('store_id', storeId)
+    .in('platform_order_id', orderSnList);
+
+  if (error) {
+    console.error('[print-awb] failed to load stored tracking numbers, will fetch all from Shopee', error);
+    return {};
+  }
+
+  const stored = {};
+  for (const row of data ?? []) {
+    if (row.tracking_number) stored[row.platform_order_id] = row.tracking_number;
+  }
+  return stored;
+}
+
 /**
  * Resolves a tracking number for each order. Orders without one can't have a
  * label created, so they're reported as skipped rather than poisoning the
- * whole batch.
+ * whole batch. Orders that already have a tracking_number stored from a
+ * previous print reuse it instead of re-calling Shopee; only the remainder
+ * are fetched, with up to TRACKING_NUMBER_CONCURRENCY in flight at once.
+ * Returns freshlyFetchedOrderSns separately so the caller only writes back
+ * to the orders table what actually changed.
  */
-async function resolveTrackingNumbers(store, orderSnList, perf) {
-  const trackingByOrderSn = {};
-  const skipped = [];
+async function resolveTrackingNumbers(store, storeId, orderSnList, perf) {
+  const storedByOrderSn = await getStoredTrackingNumbers(storeId, orderSnList);
+  const cachedOrderSns = orderSnList.filter((orderSn) => storedByOrderSn[orderSn]);
+  const toFetch = orderSnList.filter((orderSn) => !storedByOrderSn[orderSn]);
 
-  for (const orderSn of orderSnList) {
+  console.log(
+    `[print-awb] tracking numbers: ${cachedOrderSns.length} reused from orders table, ${toFetch.length} to fetch from Shopee (concurrency ${TRACKING_NUMBER_CONCURRENCY})`
+  );
+
+  const trackingByOrderSn = {};
+  for (const orderSn of cachedOrderSns) {
+    trackingByOrderSn[orderSn] = storedByOrderSn[orderSn];
+  }
+
+  const skipped = [];
+  const freshlyFetchedOrderSns = [];
+
+  // Per-order marks below overlap in wall-clock time (they run concurrently),
+  // so their sum will exceed this step's actual elapsed time — expected, not
+  // a bug in the numbers.
+  await mapWithConcurrency(toFetch, TRACKING_NUMBER_CONCURRENCY, async (orderSn) => {
     const done = perf.start(`get_tracking_number[${orderSn}]`);
     const trackingNumber = await getTrackingNumber(store, orderSn);
     done();
     if (trackingNumber) {
       trackingByOrderSn[orderSn] = trackingNumber;
+      freshlyFetchedOrderSns.push(orderSn);
     } else {
       console.error(`[print-awb] ${orderSn}: ${NO_TRACKING_REASON} — skipping`);
       skipped.push({ order_sn: orderSn, reason: NO_TRACKING_REASON });
     }
-  }
+  });
 
   console.log('[print-awb] tracking numbers resolved:');
   console.log(JSON.stringify({ tracking: trackingByOrderSn, skipped }, null, 2));
 
-  return { trackingByOrderSn, skipped };
+  return { trackingByOrderSn, skipped, freshlyFetchedOrderSns };
 }
 
 /**
@@ -686,13 +752,27 @@ async function handler(req, res) {
     console.log('[print-awb] printing AWB for store', store.id, 'orders:', order_sn_list.join(', '));
 
     // 1. Resolve a tracking number per order; create_shipping_document
-    //    validates it, so orders without one cannot be printed.
-    const trackingDone = perf.start(`resolveTrackingNumbers[${order_sn_list.length} order(s), sequential]`);
-    const { trackingByOrderSn, skipped } = await resolveTrackingNumbers(freshStore, order_sn_list, perf);
+    //    validates it, so orders without one cannot be printed. Orders
+    //    already carrying a tracking_number (e.g. a reprint) reuse it rather
+    //    than re-asking Shopee; the rest are fetched with bounded concurrency.
+    const trackingDone = perf.start(`resolveTrackingNumbers[${order_sn_list.length} order(s)]`);
+    const { trackingByOrderSn, skipped, freshlyFetchedOrderSns } = await resolveTrackingNumbers(
+      freshStore,
+      store.id,
+      order_sn_list,
+      perf
+    );
     trackingDone();
-    const persistDone = perf.start('persistTrackingNumbers');
-    await persistTrackingNumbers(store.id, trackingByOrderSn);
-    persistDone();
+    // Only orders whose tracking number just came from Shopee need writing
+    // back — anything reused from the cache is already correct in the table.
+    if (freshlyFetchedOrderSns.length > 0) {
+      const persistDone = perf.start('persistTrackingNumbers');
+      await persistTrackingNumbers(
+        store.id,
+        Object.fromEntries(freshlyFetchedOrderSns.map((orderSn) => [orderSn, trackingByOrderSn[orderSn]]))
+      );
+      persistDone();
+    }
     const printableOrderSns = order_sn_list.filter((orderSn) => trackingByOrderSn[orderSn]);
 
     if (printableOrderSns.length === 0) {
