@@ -25,7 +25,7 @@ const ORDER_DETAIL_BATCH_SIZE = 50; // Shopee's max order_sn per get_order_detai
 // TO REVERT: set this back to `false`. That alone restores both effects
 // below (7-day window, normal terminal-skip) — nothing else needs to change.
 // =============================================================================
-const TEMP_BACKFILL_BUYER_MESSAGE = true;
+const TEMP_BACKFILL_BUYER_MESSAGE = false;
 
 // Default to a short window so a single sync stays under the Vercel timeout.
 // Callers may override via { days }.
