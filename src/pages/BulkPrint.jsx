@@ -11,6 +11,7 @@ import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
 import {
+  base64ToPdfBlob,
   deliverPdf,
   downloadAwbResponse,
   describeFailedOrders,
@@ -161,6 +162,7 @@ export default function BulkPrint() {
   const [sections, setSections] = useState([])
   const [loading, setLoading] = useState(true)
   const [printingKey, setPrintingKey] = useState(null)
+  const [printingAll, setPrintingAll] = useState(false)
   const [printedKeys, setPrintedKeys] = useState(new Set())
   const [expandedKeys, setExpandedKeys] = useState(new Set())
   // Groups printed in this session are kept on screen with a ✓ state even
@@ -246,8 +248,95 @@ export default function BulkPrint() {
   async function handleConfirmPendingAwbPrint() {
     const meta = pendingAwbPrint?.meta
     await confirmPendingAwbPrint()
-    if (meta) markGroupPrintedInUI(meta.section, meta.group, meta.printedCount)
+    // The merged run has no single section/group to tick off — its cards just
+    // disappear on refetch once the orders are marked printed.
+    if (meta && !meta.mergedAll) markGroupPrintedInUI(meta.section, meta.group, meta.printedCount)
     await fetchData()
+  }
+
+  /**
+   * One merged PDF for the whole Shopee backlog, across every store and
+   * courier. Distinct from the per-group buttons below: those ask Shopee for
+   * one document per logistics channel, which is what Shopee itself supports.
+   * This one stitches the labels together server-side instead, so the operator
+   * gets a single file to send to the printer.
+   */
+  async function handlePrintAllMerged() {
+    setPrintingAll(true)
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
+      if (!session) {
+        toast.error('You must be logged in to print.')
+        return
+      }
+
+      const res = await fetch(apiUrl('/api/shopee/print-awb'), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ print_all_unprinted: true }),
+      })
+
+      const data = await res.json().catch(() => ({}))
+
+      if (!res.ok || !data.success) {
+        logPrintAwbFailure('print all unprinted', data)
+        toast.error(printAwbErrorMessage(data, 'Failed to print labels.'))
+        return
+      }
+
+      if (!data.pdf_base64) {
+        toast.info(data.message || 'Nothing to print.')
+        await fetchData()
+        return
+      }
+
+      const printedCount = data.printed_order_sn_list?.length ?? 0
+      const filename = `AWB-all-${printedCount}orders.pdf`
+
+      try {
+        await deliverPdf(base64ToPdfBlob(data.pdf_base64), filename)
+      } catch (err) {
+        console.error('[bulk-print] merged PDF did not reach the device', err)
+        toast.error('Labels generated but could not be saved/opened on this device.')
+        return
+      }
+
+      await finalizeAwbDelivery({
+        accessToken: session.access_token,
+        groups: (data.printed_by_store ?? []).map((entry) => ({
+          storeId: entry.store_id,
+          orderSnList: entry.order_sn_list,
+        })),
+        meta: { mergedAll: true, printedCount },
+      })
+
+      toast.success(
+        `Printed ${printedCount} label${printedCount === 1 ? '' : 's'} in one file`
+      )
+
+      if (data.remaining_unprinted > 0) {
+        toast.info(
+          `${data.remaining_unprinted} more order${data.remaining_unprinted === 1 ? '' : 's'} left — print again to continue.`
+        )
+      }
+
+      if (data.skipped_orders?.length) {
+        toast.info(`${data.skipped_orders.length} order(s) skipped — ${describeFailedOrders(data.skipped_orders)}`)
+      }
+
+      await fetchData()
+    } catch (err) {
+      console.error('[bulk-print] print all request failed', err)
+      toast.error(describeRequestError(err, 'Failed to print labels.'))
+    } finally {
+      setPrintingAll(false)
+    }
   }
 
   async function handlePrintGroup(section, group) {
@@ -370,6 +459,16 @@ export default function BulkPrint() {
     0
   )
 
+  // What the merged print would actually cover. Narrower than pendingOrders:
+  // Shopee only, and only PROCESSED — a READY_TO_SHIP order cannot have a
+  // shipping document created yet, so it is not printable in any form.
+  const mergeableOrders = sections
+    .filter((s) => s.platform === 'shopee')
+    .flatMap((s) => s.groups)
+    .flatMap((g) => g.orders)
+    .filter((o) => o.order_status === 'PROCESSED')
+  const mergeableCount = mergeableOrders.length
+
   return (
     <div className="pb-24">
       <div className="sticky top-0 z-10 border-b border-[#ECECEC] bg-[#FAF9F6] px-4 pt-4 pb-3">
@@ -428,6 +527,29 @@ export default function BulkPrint() {
               <p className="mt-1 text-[11px] text-gray-500">
                 Shopee prints one file per logistics channel, so each group is printed separately.
               </p>
+
+              <div className="mt-3 border-t border-[#F3F4F6] pt-3">
+                <Button
+                  size="sm"
+                  onClick={handlePrintAllMerged}
+                  disabled={printingAll || printingKey !== null || mergeableCount === 0}
+                  className="h-9 w-full rounded-lg bg-[#2563EB] text-[13px] font-medium text-white hover:bg-[#2563EB]/90"
+                >
+                  {printingAll ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Printer className="h-4 w-4" />
+                  )}
+                  {printingAll
+                    ? 'Preparing one file...'
+                    : `Print all unprinted as one file${mergeableCount > 0 ? ` (${mergeableCount})` : ''}`}
+                </Button>
+                <p className="mt-1.5 text-[11px] text-gray-500">
+                  {mergeableCount === 0
+                    ? 'Nothing here can be merged yet — orders must be processed by Shopee before a label exists.'
+                    : 'Every Shopee label above, merged into a single PDF, sorted by courier so the printed stack is already grouped.'}
+                </p>
+              </div>
             </div>
           </div>
 

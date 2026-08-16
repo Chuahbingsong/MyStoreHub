@@ -1,6 +1,12 @@
 import { supabaseAdmin } from '../_lib/supabaseAdmin.js';
 import { withCors } from '../_lib/cors.js';
-import { cacheEligibility, readCachedAwbPdf } from '../_lib/awbCache.js';
+import { cacheEligibility } from '../_lib/awbCache.js';
+import { fetchCachedPdfs, mergePdfBuffers, sortForMerge } from '../_lib/awbMerge.js';
+import { printAllUnprinted } from '../_lib/awbPrintAll.js';
+
+// Merging a large backlog is far heavier than a single label, and Hobby's
+// default function ceiling would cut it off mid-run. 60s is the Hobby max.
+export const config = { maxDuration: 60 };
 import {
   CANNOT_DOWNLOAD_TOGETHER,
   NO_TRACKING_REASON,
@@ -20,58 +26,74 @@ import {
 } from '../_lib/shopeeAwb.js';
 
 /**
- * Serves a prefetched label out of Supabase Storage, or null to generate live.
+ * Serves prefetched labels out of Supabase Storage, or null to generate live.
  *
- * SINGLE-ORDER REQUESTS ONLY, deliberately. The cache stores one PDF per
- * order SN, but a bulk print expects ONE combined document. Returning the N
- * cached files instead would take the `documents` response shape, which the
- * client delivers as N separate files — meaning N native "Open with" dialogs
- * for what is today a single tap. Combining them server-side needs a PDF
- * library we cannot add. So a multi-order request always generates live: it
- * is no slower than before the cache existed, and the batch stays one file.
- * Making bulk cacheable means having prefetch also store per-courier-group
- * documents, which is a prefetch change and out of scope here.
+ * Works for one order or many. A multi-order request is merged server-side
+ * into a single document with pdf-lib, so it comes back in exactly the shape
+ * a live batch would and the client cannot tell the difference.
  *
- * Never throws, and never partially serves: a request is either fully served
- * from cache or fully generated live, so cached and freshly-generated PDFs
- * are never stitched together.
+ * ALL-OR-NOTHING: if any requested order fails its cache check, this returns
+ * null and the whole batch is generated live. Cached and freshly-generated
+ * labels are never stitched together in this path — a batch is entirely one
+ * or entirely the other. (The Print All Unprinted sweep below is the
+ * deliberate exception, and says so.)
+ *
+ * A single order is passed through unmerged, so that path stays byte-for-byte
+ * what it was before merging existed.
+ *
+ * Never throws.
  */
-async function tryServeFromCache(storeId, orderSnList, ordersByOrderSn) {
-  if (orderSnList.length !== 1) {
-    console.log(
-      `[print-awb][path] RESULT=cache_skip reason=multi_order orders=${orderSnList.length} (cache holds per-order PDFs; batch needs one combined document)`
-    );
-    return null;
-  }
+async function tryServeFromCache(orderSnList, ordersByOrderSn) {
+  const orders = [];
 
-  const orderSn = orderSnList[0];
-  const order = ordersByOrderSn?.[orderSn];
-  const eligibility = cacheEligibility(order);
+  for (const orderSn of orderSnList) {
+    const order = ordersByOrderSn?.[orderSn];
+    const eligibility = cacheEligibility(order);
 
-  if (!eligibility.ok) {
-    // fingerprint_mismatch carries the current field values; the field that
-    // actually changed is not recoverable from a composite hash.
-    console.log(
-      `[print-awb][path] RESULT=cache_miss reason=${eligibility.reason} order=${orderSn}` +
-        (eligibility.detail ? ` detail=${eligibility.detail}` : '')
-    );
-    if (eligibility.reason === 'fingerprint_mismatch') {
+    if (!eligibility.ok) {
+      // fingerprint_mismatch carries the current field values; the field that
+      // actually changed is not recoverable from a composite hash.
       console.log(
-        `[print-awb] cached fingerprint ${eligibility.expected} != current ${eligibility.actual} — regenerating`
+        `[print-awb][path] RESULT=cache_miss reason=${eligibility.reason} order=${orderSn} of=${orderSnList.length}` +
+          (eligibility.detail ? ` detail=${eligibility.detail}` : '')
       );
+      if (eligibility.reason === 'fingerprint_mismatch') {
+        console.log(
+          `[print-awb] cached fingerprint ${eligibility.expected} != current ${eligibility.actual} — regenerating`
+        );
+      }
+      return null;
     }
-    return null;
+
+    orders.push(order);
   }
 
-  const pdfBuffer = await readCachedAwbPdf(order.awb_cached_path);
-  if (!pdfBuffer) {
+  const sorted = sortForMerge(orders);
+  const buffers = await fetchCachedPdfs(sorted);
+
+  // One unreadable object means the batch is not fully cached, and mixing is
+  // not allowed here — regenerate the lot.
+  if (buffers.size !== sorted.length) {
     console.log(
-      `[print-awb][path] RESULT=cache_miss reason=unreadable order=${orderSn} path=${order.awb_cached_path}`
+      `[print-awb][path] RESULT=cache_miss reason=unreadable got=${buffers.size}/${sorted.length}`
     );
     return null;
   }
 
-  return pdfBuffer;
+  const mergeStart = Date.now();
+  const merged = await mergePdfBuffers(sorted.map((order) => buffers.get(order.platform_order_id)));
+  if (!merged) {
+    console.log('[print-awb][path] RESULT=cache_miss reason=merge_failed');
+    return null;
+  }
+
+  if (sorted.length > 1) {
+    console.log(
+      `[print-awb][path] RESULT=merge source=cache orders=${sorted.length} merge_ms=${Date.now() - mergeStart} bytes=${merged.length}`
+    );
+  }
+
+  return merged;
 }
 
 /**
@@ -120,7 +142,15 @@ async function handler(req, res) {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
 
-  const { store_id, order_sn_list } = req.body ?? {};
+  const { store_id, order_sn_list, print_all_unprinted } = req.body ?? {};
+
+  // Cross-store sweep: resolves its own order list rather than taking one,
+  // so it validates ownership per store below instead of up front. Branches
+  // before every check the per-store paths do, leaving them untouched.
+  if (print_all_unprinted) {
+    const { httpStatus, body } = await printAllUnprinted(user);
+    return res.status(httpStatus).json(body);
+  }
 
   if (!store_id) {
     return res.status(400).json({ success: false, error: 'store_id is required' });
@@ -170,7 +200,7 @@ async function handler(req, res) {
     // best-effort — every rejection falls through to live generation, so the
     // worst case is the speed we had before the cache existed.
     const cacheStart = Date.now();
-    const cachedBuffer = await tryServeFromCache(store.id, order_sn_list, ordersByOrderSn);
+    const cachedBuffer = await tryServeFromCache(order_sn_list, ordersByOrderSn);
     if (cachedBuffer) {
       console.log(
         `[print-awb][path] RESULT=cache_hit orders=${order_sn_list.length} cache_ms=${Date.now() - cacheStart} total_ms=${Date.now() - requestStart} bytes=${cachedBuffer.length}`
