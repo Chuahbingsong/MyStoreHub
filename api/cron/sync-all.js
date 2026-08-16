@@ -7,6 +7,7 @@ import { notifyStore } from '../_lib/pushNotify.js';
 import { getValidTikTokToken } from '../_lib/tiktok.js';
 import { syncTikTokShopOrders, getTikTokStoresToSync } from '../_lib/tiktokSync.js';
 import { getValidLazadaToken } from '../_lib/lazada.js';
+import { syncLazadaShopOrders, getLazadaStoresToSync } from '../_lib/lazadaSync.js';
 import { withCors } from '../_lib/cors.js';
 
 // Cap the runtime. Vercel Hobby allows up to 60s.
@@ -114,49 +115,100 @@ async function handler(req, res) {
   // Every store gets its OWN orders+products deadline computed from this
   // run's start, not a budget shared across a sequential loop — see the note
   // further down where this is used for the Shopee stores. Hoisted up here so
-  // the TikTok order sync below (which runs BEFORE the Shopee loop, but
-  // shares the same 60s wall) is bounded by the same anchor: a slow TikTok
-  // sync here naturally leaves less time for Shopee below, exactly like a
-  // slow token refresh above already narrows what's left for both.
+  // the TikTok and Lazada order syncs below (which run BEFORE the Shopee loop,
+  // but share the same 60s wall) are bounded by the same anchor: a slow
+  // marketplace sync here naturally leaves less time for Shopee below, exactly
+  // like a slow token refresh above already narrows what's left for all three.
   const deadline = startedAt + TIME_BUDGET_MS;
 
-  // TikTok Shop order sync: runs after the token-refresh step above. Fully
-  // separate from the Shopee pipeline below — its own store query (platform
-  // = 'tiktok'), its own sync function (syncTikTokShopOrders). Deliberately
-  // NOT run through syncOneStore: autoPack/autoBoost/notifyStore and
-  // syncStoreOrders' tracking-number backfill are all written against
-  // Shopee's literal order_status strings (READY_TO_SHIP, IN_CANCEL, etc.),
-  // so they must never see a TikTok store. The `stores` query below is
-  // already filtered to platform = 'shopee', which is what keeps them out —
-  // this block never adds a TikTok store to that array.
+  // TikTok Shop and Lazada order sync. Both are fully separate from the Shopee
+  // pipeline below — their own store queries (platform = 'tiktok' / 'lazada'),
+  // their own sync functions. Deliberately NOT run through syncOneStore:
+  // autoPack/autoBoost/notifyStore and syncStoreOrders' tracking-number
+  // backfill are all written against Shopee's literal order_status strings
+  // (READY_TO_SHIP, IN_CANCEL, etc.), so they must never see a TikTok or Lazada
+  // store. The `stores` query below is already filtered to platform = 'shopee',
+  // which is what keeps them out — neither block adds to that array.
+  //
+  // The two stages run CONCURRENTLY with each other. They hit different APIs
+  // and share no rate limit, so the marginal wall-clock cost of having both is
+  // max(tiktok, lazada) rather than tiktok + lazada — which is what keeps the
+  // Shopee loop that follows inside the same 60s tick. They share the one
+  // `deadline` computed above, so neither can push past the budget.
   let totalTikTokOrders = 0;
-  const { data: tiktokStoresToSync, error: tiktokStoresError } = await getTikTokStoresToSync();
+  let totalLazadaOrders = 0;
 
-  if (tiktokStoresError) {
-    console.error('[cron/sync-all] failed to load TikTok stores for order sync', tiktokStoresError);
-    preSyncErrors.push({ storeId: null, type: 'tiktok_orders', error: tiktokStoresError.message });
-  } else if (tiktokStoresToSync && tiktokStoresToSync.length > 0) {
-    console.log('[cron/sync-all] syncing orders for', tiktokStoresToSync.length, 'TikTok store(s)');
-    const tiktokOrderResults = await Promise.allSettled(
-      tiktokStoresToSync.map((store) => syncTikTokShopOrders(store, { deadline }))
-    );
-    tiktokOrderResults.forEach((outcome, i) => {
-      if (outcome.status === 'rejected') {
-        console.error(
-          '[cron/sync-all] tiktok order sync failed for store',
-          tiktokStoresToSync[i].id,
-          outcome.reason
-        );
-        preSyncErrors.push({
-          storeId: tiktokStoresToSync[i].id,
-          type: 'tiktok_orders',
-          error: String(outcome.reason?.message ?? outcome.reason),
-        });
-      } else {
-        totalTikTokOrders += outcome.value.orders.length;
+  // Each stage swallows its own failures into preSyncErrors and never rejects,
+  // so the Promise.all below can't lose one platform's work to the other's
+  // failure. (Array.prototype.push from two concurrent async stages is safe —
+  // JS runs them on one thread.)
+  async function syncTikTokOrderStage() {
+    try {
+      const { data: storesToSync, error: storesQueryError } = await getTikTokStoresToSync();
+
+      if (storesQueryError) {
+        console.error('[cron/sync-all] failed to load TikTok stores for order sync', storesQueryError);
+        preSyncErrors.push({ storeId: null, type: 'tiktok_orders', error: storesQueryError.message });
+        return;
       }
-    });
+      if (!storesToSync || storesToSync.length === 0) return;
+
+      console.log('[cron/sync-all] syncing orders for', storesToSync.length, 'TikTok store(s)');
+      const outcomes = await Promise.allSettled(
+        storesToSync.map((store) => syncTikTokShopOrders(store, { deadline }))
+      );
+      outcomes.forEach((outcome, i) => {
+        if (outcome.status === 'rejected') {
+          console.error('[cron/sync-all] tiktok order sync failed for store', storesToSync[i].id, outcome.reason);
+          preSyncErrors.push({
+            storeId: storesToSync[i].id,
+            type: 'tiktok_orders',
+            error: String(outcome.reason?.message ?? outcome.reason),
+          });
+        } else {
+          totalTikTokOrders += outcome.value.orders.length;
+        }
+      });
+    } catch (err) {
+      console.error('[cron/sync-all] tiktok order stage threw', err);
+      preSyncErrors.push({ storeId: null, type: 'tiktok_orders', error: String(err?.message ?? err) });
+    }
   }
+
+  async function syncLazadaOrderStage() {
+    try {
+      const { data: storesToSync, error: storesQueryError } = await getLazadaStoresToSync();
+
+      if (storesQueryError) {
+        console.error('[cron/sync-all] failed to load Lazada stores for order sync', storesQueryError);
+        preSyncErrors.push({ storeId: null, type: 'lazada_orders', error: storesQueryError.message });
+        return;
+      }
+      if (!storesToSync || storesToSync.length === 0) return;
+
+      console.log('[cron/sync-all] syncing orders for', storesToSync.length, 'Lazada store(s)');
+      const outcomes = await Promise.allSettled(
+        storesToSync.map((store) => syncLazadaShopOrders(store, { deadline }))
+      );
+      outcomes.forEach((outcome, i) => {
+        if (outcome.status === 'rejected') {
+          console.error('[cron/sync-all] lazada order sync failed for store', storesToSync[i].id, outcome.reason);
+          preSyncErrors.push({
+            storeId: storesToSync[i].id,
+            type: 'lazada_orders',
+            error: String(outcome.reason?.message ?? outcome.reason),
+          });
+        } else {
+          totalLazadaOrders += outcome.value.orders.length;
+        }
+      });
+    } catch (err) {
+      console.error('[cron/sync-all] lazada order stage threw', err);
+      preSyncErrors.push({ storeId: null, type: 'lazada_orders', error: String(err?.message ?? err) });
+    }
+  }
+
+  await Promise.all([syncTikTokOrderStage(), syncLazadaOrderStage()]);
 
   // Service-role client: fetch every active Shopee store across ALL users.
   const { data: stores, error: storesError } = await supabaseAdmin
@@ -178,6 +230,7 @@ async function handler(req, res) {
       total_orders: 0,
       total_products: 0,
       total_tiktok_orders: totalTikTokOrders,
+      total_lazada_orders: totalLazadaOrders,
       errors: preSyncErrors,
     });
   }
@@ -189,8 +242,8 @@ async function handler(req, res) {
   // single store, not by N * per-store time — that's what keeps 4 stores
   // inside one 60s cron tick. allSettled (not all) so one store's rejection
   // can't cancel the others' in-flight work or their sync_logs bookkeeping.
-  // (`deadline` itself is computed earlier, above the TikTok order sync
-  // block, so both share the same anchor.)
+  // (`deadline` itself is computed earlier, above the TikTok/Lazada order sync
+  // stages, so all three share the same anchor.)
 
   async function syncOneStore(store) {
     console.log('[cron/sync-all] syncing store', store.id, store.shop_id);
@@ -366,7 +419,7 @@ async function handler(req, res) {
 
   const elapsedMs = Date.now() - startedAt;
   console.log(
-    `[cron/sync-all] done in ${elapsedMs}ms — stores: ${storesSynced}/${stores.length}, orders: ${totalOrders}, products: ${totalProducts}, auto-packed: ${totalPacked}, auto-boosted: ${totalBoosted}, notified: ${totalNotified}, flash sessions: ${totalFlashSessions}, tiktok orders: ${totalTikTokOrders}, errors: ${errors.length}`
+    `[cron/sync-all] done in ${elapsedMs}ms — stores: ${storesSynced}/${stores.length}, orders: ${totalOrders}, products: ${totalProducts}, auto-packed: ${totalPacked}, auto-boosted: ${totalBoosted}, notified: ${totalNotified}, flash sessions: ${totalFlashSessions}, tiktok orders: ${totalTikTokOrders}, lazada orders: ${totalLazadaOrders}, errors: ${errors.length}`
   );
 
   return res.status(200).json({
@@ -380,6 +433,7 @@ async function handler(req, res) {
     total_notified: totalNotified,
     total_flash_sessions: totalFlashSessions,
     total_tiktok_orders: totalTikTokOrders,
+    total_lazada_orders: totalLazadaOrders,
     elapsed_ms: elapsedMs,
     errors,
   });

@@ -161,10 +161,28 @@ const MARKETPLACE_STATUS = {
     'Return Requested': 'To Return/Refund',
     Cancelled: 'Cancelled',
   },
-  // Lazada/Shopify aren't connected yet — only the statuses already reachable
-  // through their (currently unused) integrations are mapped here. Anything
-  // else falls back to the raw status via getMarketplaceStatus().
-  Lazada: { Unpaid: 'Pending', 'To Pack': 'Ready to Ship', Packed: 'Ready to Ship', Shipped: 'Shipped', Cancelled: 'Cancelled' },
+  // Corrected against LAZADA_STATUS_MAP below and live Lazada data. The old
+  // values here were a placeholder written before Lazada was connected and were
+  // simply wrong — they claimed Lazada's word for canonical Unpaid was
+  // "Pending", when Lazada's `pending` actually means paid-and-awaiting-pack
+  // (canonical 'To Pack'), and its `unpaid` is the awaiting-payment state.
+  //
+  // Keyed on the canonical label, so where LAZADA_STATUS_MAP is many-to-one
+  // this names only one of the collapsed statuses — the same lossiness Shopee
+  // has ('To Pack' and 'Packed' both showing "Processed"). Here that means a
+  // `confirmed` order reads "Pending", a `packed` one reads "Ready to Ship",
+  // and a `returned`/`failed` one reads "Canceled".
+  //
+  // "Canceled" is spelled with one 'l' on purpose: that is Lazada's own
+  // spelling, and this table shows the marketplace's wording, not the app's.
+  Lazada: {
+    Unpaid: 'Unpaid',
+    'To Pack': 'Pending',
+    Packed: 'Ready to Ship',
+    Shipped: 'Shipped',
+    Completed: 'Delivered',
+    Cancelled: 'Canceled',
+  },
   // Audited against TIKTOK_STATUS_MAP / TikTok Shop's documented order_status
   // enum and Seller Center's own status vocabulary — replaces the earlier
   // placeholder guess (the previous values here were never checked against
@@ -187,6 +205,10 @@ const MARKETPLACE_STATUS = {
     Completed: 'Completed',
     Cancelled: 'Cancelled',
   },
+  // Shopify isn't connected yet — this is still an unverified placeholder, and
+  // there is no shopify entry in RAW_STATUS_MAP_BY_PLATFORM to feed it. It is
+  // the last remaining table in this file of the kind Lazada and TikTok have
+  // both now been corrected out of.
   Shopify: { Unpaid: 'Unfulfilled', 'To Pack': 'Unfulfilled', Packed: 'Unfulfilled', Shipped: 'Fulfilled', Cancelled: 'Cancelled' },
 }
 
@@ -362,9 +384,56 @@ async function postOrderAction(session, order, action) {
   return { ok: res.ok && data.success, error: data.error, data }
 }
 
+// Lazada's raw status vocabulary, mapped to the same shared canonical labels
+// SHOPEE_STATUS_MAP uses. api/_lib/lazadaSync.js writes Lazada's raw status
+// straight into orders.order_status — this is the single translation layer, the
+// same arrangement Shopee has and the one TikTok was fixed to use.
+//
+// Lazada's `statuses` field is an ARRAY (a part-shipped order can carry
+// ["shipped","pending"]); lazadaSync.js collapses it least-progressed-wins
+// BEFORE writing, so the values arriving here are always scalar.
+//
+// Every value below was seen in, or confirmed against, live data — `confirmed`
+// in particular is absent from Lazada's published status list but appeared in
+// the live sample.
+//
+// Three mappings are lossy, because Lazada simply has no equivalent state:
+//   delivered -> 'Completed'. Lazada has NO status after delivered — it is the
+//     end state for a fulfilled order. (TikTok maps DELIVERED to 'To Confirm
+//     Receipt' instead, and that asymmetry is correct: TikTok has a real
+//     COMPLETED status afterwards, Lazada does not. Mapping this to 'To Confirm
+//     Receipt' would leave the Completed tab permanently empty for Lazada.)
+//   returned -> 'Cancelled'. Lazada's `returned` means the return has ALREADY
+//     COMPLETED, unlike Shopee's TO_RETURN which is a request awaiting the
+//     seller. Routing it to the Returns tab would imply action that no longer
+//     exists, so it goes to Cancelled — terminal, money returned, nothing to do.
+//     The cancelled-vs-returned distinction is lost in the UI as a result.
+//   failed -> 'Cancelled'. ⚠️ The weakest mapping here. Lazada's `failed` may
+//     mean a failed DELIVERY (parcel coming back, arguably still actionable) or
+//     a failed ORDER (payment/fraud, genuinely dead). Treated as terminal for
+//     now; re-check this one against live data before trusting it.
+//
+// Anything outside this table — shipped_back, lost_by_3pl, damaged_by_3pl,
+// package_returned and friends — is deliberately left unmapped so it lands in
+// the "Other" tab with the warning below, rather than being silently forced
+// into a bucket it doesn't belong in.
+const LAZADA_STATUS_MAP = {
+  unpaid: 'Unpaid',
+  pending: 'To Pack',
+  confirmed: 'To Pack',
+  packed: 'Packed',
+  ready_to_ship: 'Packed',
+  shipped: 'Shipped',
+  delivered: 'Completed',
+  canceled: 'Cancelled',
+  returned: 'Cancelled',
+  failed: 'Cancelled',
+}
+
 const RAW_STATUS_MAP_BY_PLATFORM = {
   shopee: SHOPEE_STATUS_MAP,
   tiktok: TIKTOK_STATUS_MAP,
+  lazada: LAZADA_STATUS_MAP,
 }
 
 function mapSupabaseOrder(row, storeNames) {
