@@ -25,25 +25,39 @@ const DEFAULT_ORDER_TIME_RANGE_DAYS = 7;
 // syncTikTokShopOrders() call, so the budget is shared across stores.
 export const SYNC_TIME_BUDGET_MS = 45_000;
 
-// Written from TikTok Shop API documentation, NOT verified against a live
-// account yet. syncTikTokShopOrders logs every raw order_status it sees
-// alongside what this maps it to, and console.warns on anything missing
-// here — that's how a wrong guess in this table gets caught.
-const TIKTOK_STATUS_MAP = {
-  UNPAID: 'UNPAID',
-  ON_HOLD: 'UNPAID',
-  AWAITING_SHIPMENT: 'READY_TO_SHIP',
-  PARTIALLY_SHIPPING: 'PROCESSED',
-  AWAITING_COLLECTION: 'PROCESSED',
-  IN_TRANSIT: 'SHIPPED',
-  DELIVERED: 'SHIPPED',
-  COMPLETED: 'COMPLETED',
-  CANCELLED: 'CANCELLED',
-};
+// TikTok Shop's raw order_status enum (Orders API v202309). These values are
+// written to orders.order_status VERBATIM — this module deliberately does NOT
+// translate them into Shopee's vocabulary.
+//
+// It used to. That split the mapping across two tables — here, and
+// TIKTOK_STATUS_MAP in src/pages/Orders.jsx, which is keyed on the RAW enum —
+// and the two drifted: this file wrote READY_TO_SHIP/PROCESSED/SHIPPED, none
+// of which the UI's table has keys for, so every TikTok order in those states
+// fell through to the "Other" tab. The two also disagreed on ON_HOLD and
+// DELIVERED. Shopee's sync stores the platform's raw status and maps exactly
+// once, in the UI; TikTok now follows that same pattern.
+//
+// This set is therefore diagnostics ONLY — it never rewrites a value. It
+// exists because the enum below was taken from TikTok's docs and has still
+// not been confirmed against a live account, so a status the docs missed
+// needs to surface loudly in the cron logs (the UI's own warning only fires
+// when someone actually opens the Orders page).
+const KNOWN_TIKTOK_STATUSES = new Set([
+  'UNPAID',
+  'ON_HOLD',
+  'AWAITING_SHIPMENT',
+  'PARTIALLY_SHIPPING',
+  'AWAITING_COLLECTION',
+  'IN_TRANSIT',
+  'DELIVERED',
+  'COMPLETED',
+  'CANCELLED',
+]);
 
-// Mapped-status terminal set — the same vocabulary Shopee orders use, since
-// mapOrderToRow below normalizes TikTok's raw status through
-// TIKTOK_STATUS_MAP before it's ever written to orders.order_status.
+// Terminal set, in TikTok's OWN vocabulary. These two statuses happen to be
+// spelled identically in Shopee's enum, which is why storing raw values
+// (above) left this set unchanged — and why existing COMPLETED/CANCELLED rows
+// needed no migration.
 const TERMINAL_ORDER_STATUSES = new Set(['COMPLETED', 'CANCELLED']);
 
 function nowUnix() {
@@ -58,16 +72,16 @@ function chunk(array, size) {
   return chunks;
 }
 
-function mapOrderStatus(rawStatus, orderId) {
-  const mapped = TIKTOK_STATUS_MAP[rawStatus];
-  if (mapped) {
-    console.log(`[tiktok-sync] order ${orderId} status "${rawStatus}" -> "${mapped}"`);
-    return mapped;
-  }
+// Diagnostics only — the raw status is stored either way. A hit here means
+// TikTok returned something KNOWN_TIKTOK_STATUSES doesn't list, in which case
+// TIKTOK_STATUS_MAP in src/pages/Orders.jsx won't have a key for it either and
+// the order will show up under the UI's "Other" tab until both are updated.
+function warnIfUnknownStatus(rawStatus, orderId) {
+  if (KNOWN_TIKTOK_STATUSES.has(rawStatus)) return;
+
   console.warn(
-    `[tiktok-sync] order ${orderId} has an UNMAPPED TikTok order_status "${rawStatus}" — TIKTOK_STATUS_MAP needs updating. Storing the raw value as-is.`
+    `[tiktok-sync] order ${orderId} has an UNRECOGNISED TikTok order_status "${rawStatus}" — add it to KNOWN_TIKTOK_STATUSES here AND to TIKTOK_STATUS_MAP in src/pages/Orders.jsx. Storing it as-is; it will sit in the UI's "Other" tab until then.`
   );
-  return rawStatus;
 }
 
 /* ------------------------------- Shop context ------------------------------- */
@@ -201,14 +215,16 @@ async function fetchOrderDetails(shopCipher, accessToken, orderIdBatch) {
 }
 
 // Fields below are mapped defensively (?? chains across plausibly-named
-// fields) because, like TIKTOK_STATUS_MAP, this was written from TikTok's
+// fields) because, like KNOWN_TIKTOK_STATUSES, this was written from TikTok's
 // documentation without a live response to verify field names against.
 function mapOrderToRow(storeId, tiktokOrder) {
   const recipient = tiktokOrder.recipient_address ?? {};
   const payment = tiktokOrder.payment ?? {};
 
+  // Stored verbatim — see KNOWN_TIKTOK_STATUSES. src/pages/Orders.jsx owns the
+  // single translation into the shared status labels.
   const rawStatus = tiktokOrder.status ?? null;
-  const orderStatus = rawStatus ? mapOrderStatus(rawStatus, tiktokOrder.id) : null;
+  if (rawStatus) warnIfUnknownStatus(rawStatus, tiktokOrder.id);
 
   const paidTimeRaw = tiktokOrder.paid_time ?? payment.paid_time ?? null;
 
@@ -216,7 +232,7 @@ function mapOrderToRow(storeId, tiktokOrder) {
     store_id: storeId,
     platform: 'tiktok',
     platform_order_id: String(tiktokOrder.id),
-    order_status: orderStatus,
+    order_status: rawStatus,
     buyer_name: recipient.name ?? tiktokOrder.buyer_email ?? null,
     shipping_address: recipient.full_address ?? null,
     region: recipient.region_code ?? recipient.district_info?.[0]?.address_name ?? null,
@@ -252,8 +268,9 @@ function mapItemsToRows(orderId, tiktokOrder) {
   }));
 }
 
-// Orders already terminal (COMPLETED/CANCELLED, post-mapping) never change on
-// TikTok's side again, so skip the order-detail round-trip for them — UNLESS
+// Orders already terminal (COMPLETED/CANCELLED, TikTok's own spelling) never
+// change on TikTok's side again, so skip the order-detail round-trip for them
+// — UNLESS
 // the order has zero order_items rows (self-healing against the same
 // order_items concurrency shape shopeeSync.js guards against).
 async function fetchTerminalOrderIds(storeId, platformOrderIds) {

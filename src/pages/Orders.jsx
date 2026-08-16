@@ -170,9 +170,16 @@ const MARKETPLACE_STATUS = {
   // placeholder guess (the previous values here were never checked against
   // TikTok's real vocabulary at all). Still not verified against a live
   // sandbox order — confirm before relying on it for real decisions.
+  //
+  // Keyed on the canonical label, so where TIKTOK_STATUS_MAP is many-to-one
+  // this can only name one of the collapsed statuses — the same lossiness
+  // Shopee already has ('To Pack' and 'Packed' both showing "Processed").
+  // Here that means an ON_HOLD order reads "Unpaid" and an AWAITING_COLLECTION
+  // one reads "Awaiting Collection" even if it was PARTIALLY_SHIPPING. There
+  // is deliberately no 'Invoice Pending' entry: no TikTok status maps to that
+  // label any more, so one here would be dead.
   TikTok: {
     Unpaid: 'Unpaid',
-    'Invoice Pending': 'On Hold',
     'To Pack': 'Awaiting Shipment',
     Packed: 'Awaiting Collection',
     Shipped: 'In Transit',
@@ -250,20 +257,41 @@ const SHOPEE_STATUS_MAP = {
   CANCELLED: 'Cancelled',
 }
 
-// TikTok Shop Orders API (v202309) order_status enum, mapped to the same
-// shared canonical labels SHOPEE_STATUS_MAP uses so tab bucketing and badge
-// styling work identically across platforms. This is best-effort from
-// TikTok's documented status enum — unlike SHOPEE_STATUS_MAP above, it has
-// NOT been audited against a live sandbox order yet, so verify it against
-// real TikTok order data before depending on it for fulfilment decisions.
-// TikTok exposes cancellations/returns through a separate Return/Refund
-// object rather than a top-level order_status value, so there's no TikTok
-// analogue for Shopee's IN_CANCEL/TO_RETURN buckets here — an order in one of
-// those states just falls through to the "Other" tab via the same unmapped-
-// status fallback below until that's wired up.
+// TikTok Shop Orders API (v202309) order_status enum — all nine documented
+// values — mapped to the same shared canonical labels SHOPEE_STATUS_MAP uses,
+// so tab bucketing and badge styling work identically across platforms.
+//
+// This is the ONLY place a TikTok status is translated. api/_lib/tiktokSync.js
+// writes TikTok's raw value straight into orders.order_status, exactly as the
+// Shopee sync does with Shopee's. It used to convert into Shopee's vocabulary
+// first, which meant two tables mapped the same thing and disagreed: the sync
+// wrote READY_TO_SHIP/PROCESSED/SHIPPED, this table has no keys for those, and
+// so every TikTok order in those states silently fell through to "Other".
+// If a status ever needs remapping, it changes here and nowhere else.
+//
+// Two values were resolved when the duplicate table was removed:
+//   ON_HOLD  -> 'Unpaid' (was 'Invoice Pending' here). ON_HOLD means TikTok
+//     has suspended the order — payment/risk review — and the seller CANNOT
+//     ship it. 'Invoice Pending' buckets into "New Orders" with a red,
+//     act-now badge, which is exactly wrong. The Unpaid tab is the one whose
+//     stated meaning is "nothing the seller can do until the platform moves
+//     it", so ON_HOLD belongs there.
+//   DELIVERED -> 'To Confirm Receipt' (the sync said 'Shipped'). The parcel
+//     has arrived but the buyer hasn't confirmed and the order hasn't settled
+//     — that is precisely Shopee's TO_CONFIRM_RECEIVE. Both labels bucket
+//     into the Shipped tab anyway, so this is a display-precision win only.
+//
+// Still best-effort from TikTok's documented enum — unlike SHOPEE_STATUS_MAP
+// above, it has NOT been audited against a live sandbox order, so verify it
+// against real TikTok order data before depending on it for fulfilment
+// decisions. TikTok exposes cancellations/returns through a separate
+// Return/Refund object rather than a top-level order_status value, so there's
+// no TikTok analogue for Shopee's IN_CANCEL/TO_RETURN buckets here — an order
+// in one of those states falls through to the "Other" tab via the same
+// unmapped-status fallback below until that's wired up.
 const TIKTOK_STATUS_MAP = {
   UNPAID: 'Unpaid',
-  ON_HOLD: 'Invoice Pending',
+  ON_HOLD: 'Unpaid',
   AWAITING_SHIPMENT: 'To Pack',
   PARTIALLY_SHIPPING: 'Packed',
   AWAITING_COLLECTION: 'Packed',
