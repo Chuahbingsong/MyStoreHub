@@ -244,39 +244,47 @@ async function mapWithConcurrency(items, limit, fn) {
 }
 
 /**
- * One read of local order state, used for both decisions this request makes:
+ * One read of local order state, serving every local decision this request
+ * makes:
  *   - trackingByOrderSn: tracking numbers already on file, so a reprint
  *     doesn't re-ask Shopee for a value we stored last time.
  *   - allPrinted: whether EVERY requested order has been printed before,
  *     which is the reprint fast path's eligibility gate.
- * Deliberately one query rather than two — the fast path would otherwise add
- * a round trip to first-time prints, which get no benefit from it.
+ *   - ordersByOrderSn: the raw rows, carrying the awb_cache_* columns and the
+ *     fields the cache fingerprint is computed from.
+ * Deliberately one query rather than three — each extra check would otherwise
+ * add a round trip to first-time prints, which benefit from none of them.
  * On error, degrades to "nothing cached, not eligible": the full pipeline
  * then runs exactly as it did before any of this existed.
  */
 async function loadOrderPrintState(storeId, orderSnList) {
   const { data, error } = await supabaseAdmin
     .from('orders')
-    .select('platform_order_id, tracking_number, awb_printed')
+    .select(
+      'platform_order_id, tracking_number, awb_printed, order_status, courier_name, shipping_address, awb_cached_path, awb_cache_fingerprint, awb_cached_at'
+    )
     .eq('store_id', storeId)
     .in('platform_order_id', orderSnList);
 
   if (error) {
     console.error('[print-awb] failed to load local order state, will fetch all from Shopee', error);
-    return { trackingByOrderSn: {}, allPrinted: false };
+    return { trackingByOrderSn: {}, allPrinted: false, ordersByOrderSn: {} };
   }
 
   const trackingByOrderSn = {};
+  const ordersByOrderSn = {};
   const printed = new Set();
   for (const row of data ?? []) {
     if (row.tracking_number) trackingByOrderSn[row.platform_order_id] = row.tracking_number;
     if (row.awb_printed) printed.add(row.platform_order_id);
+    ordersByOrderSn[row.platform_order_id] = row;
   }
 
   return {
     trackingByOrderSn,
     // An order missing from the result set is, correctly, not printed.
     allPrinted: orderSnList.every((orderSn) => printed.has(orderSn)),
+    ordersByOrderSn,
   };
 }
 

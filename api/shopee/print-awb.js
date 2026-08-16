@@ -1,5 +1,6 @@
 import { supabaseAdmin } from '../_lib/supabaseAdmin.js';
 import { withCors } from '../_lib/cors.js';
+import { cacheEligibility, readCachedAwbPdf } from '../_lib/awbCache.js';
 import {
   CANNOT_DOWNLOAD_TOGETHER,
   NO_TRACKING_REASON,
@@ -17,6 +18,61 @@ import {
   tryReprintDownload,
   waitForDocumentReady,
 } from '../_lib/shopeeAwb.js';
+
+/**
+ * Serves a prefetched label out of Supabase Storage, or null to generate live.
+ *
+ * SINGLE-ORDER REQUESTS ONLY, deliberately. The cache stores one PDF per
+ * order SN, but a bulk print expects ONE combined document. Returning the N
+ * cached files instead would take the `documents` response shape, which the
+ * client delivers as N separate files — meaning N native "Open with" dialogs
+ * for what is today a single tap. Combining them server-side needs a PDF
+ * library we cannot add. So a multi-order request always generates live: it
+ * is no slower than before the cache existed, and the batch stays one file.
+ * Making bulk cacheable means having prefetch also store per-courier-group
+ * documents, which is a prefetch change and out of scope here.
+ *
+ * Never throws, and never partially serves: a request is either fully served
+ * from cache or fully generated live, so cached and freshly-generated PDFs
+ * are never stitched together.
+ */
+async function tryServeFromCache(storeId, orderSnList, ordersByOrderSn) {
+  if (orderSnList.length !== 1) {
+    console.log(
+      `[print-awb][path] RESULT=cache_skip reason=multi_order orders=${orderSnList.length} (cache holds per-order PDFs; batch needs one combined document)`
+    );
+    return null;
+  }
+
+  const orderSn = orderSnList[0];
+  const order = ordersByOrderSn?.[orderSn];
+  const eligibility = cacheEligibility(order);
+
+  if (!eligibility.ok) {
+    // fingerprint_mismatch carries the current field values; the field that
+    // actually changed is not recoverable from a composite hash.
+    console.log(
+      `[print-awb][path] RESULT=cache_miss reason=${eligibility.reason} order=${orderSn}` +
+        (eligibility.detail ? ` detail=${eligibility.detail}` : '')
+    );
+    if (eligibility.reason === 'fingerprint_mismatch') {
+      console.log(
+        `[print-awb] cached fingerprint ${eligibility.expected} != current ${eligibility.actual} — regenerating`
+      );
+    }
+    return null;
+  }
+
+  const pdfBuffer = await readCachedAwbPdf(order.awb_cached_path);
+  if (!pdfBuffer) {
+    console.log(
+      `[print-awb][path] RESULT=cache_miss reason=unreadable order=${orderSn} path=${order.awb_cached_path}`
+    );
+    return null;
+  }
+
+  return pdfBuffer;
+}
 
 /**
  * Sends a PDF using the same two response shapes the full pipeline uses, so
@@ -99,20 +155,32 @@ async function handler(req, res) {
   const requestStart = Date.now();
   const perf = makePerfTracker();
   try {
+    console.log('[print-awb] printing AWB for store', store.id, 'orders:', order_sn_list.join(', '));
+
+    // One local read serving the Storage-cache check, the fast-path gate and
+    // the tracking-number cache, so none of them costs a first-time print an
+    // extra round trip. Runs before ensureFreshToken because a cache hit
+    // needs no Shopee token at all.
+    const stateDone = perf.start('loadOrderPrintState');
+    const { trackingByOrderSn: storedTracking, allPrinted, ordersByOrderSn } =
+      await loadOrderPrintState(store.id, order_sn_list);
+    stateDone();
+
+    // Storage cache: the only path that touches Shopee zero times. Strictly
+    // best-effort — every rejection falls through to live generation, so the
+    // worst case is the speed we had before the cache existed.
+    const cacheStart = Date.now();
+    const cachedBuffer = await tryServeFromCache(store.id, order_sn_list, ordersByOrderSn);
+    if (cachedBuffer) {
+      console.log(
+        `[print-awb][path] RESULT=cache_hit orders=${order_sn_list.length} cache_ms=${Date.now() - cacheStart} total_ms=${Date.now() - requestStart} bytes=${cachedBuffer.length}`
+      );
+      return sendAwbPdf(res, cachedBuffer, order_sn_list);
+    }
+
     const tokenDone = perf.start('ensureFreshToken');
     const freshStore = await ensureFreshToken(store);
     tokenDone();
-
-    console.log('[print-awb] printing AWB for store', store.id, 'orders:', order_sn_list.join(', '));
-
-    // One local read serving both the fast-path gate and the tracking-number
-    // cache below, so the fast path costs first-time prints nothing.
-    const stateDone = perf.start('loadOrderPrintState');
-    const { trackingByOrderSn: storedTracking, allPrinted } = await loadOrderPrintState(
-      store.id,
-      order_sn_list
-    );
-    stateDone();
 
     // Reprint fast path. Best-effort only: any miss falls through to the full
     // pipeline below with no visible difference to the user beyond latency.

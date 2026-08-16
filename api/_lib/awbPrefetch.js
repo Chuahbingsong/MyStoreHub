@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { supabaseAdmin } from './supabaseAdmin.js';
 import { acquireSyncLock, logSyncStart, logSyncComplete } from './shopeeSync.js';
 import {
@@ -7,9 +6,12 @@ import {
   ensureFreshToken,
   waitForDocumentReady,
 } from './shopeeAwb.js';
+// Fingerprint, bucket and path now live in awbCache.js so the print path
+// reads the cache with exactly the definitions prefetch wrote it with.
+// Re-exported here so this module's existing public surface is unchanged.
+import { AWB_BUCKET, awbCacheFingerprint, awbStoragePath } from './awbCache.js';
 
-// Private bucket; nothing here is ever served directly to a browser.
-export const AWB_BUCKET = 'awb-documents';
+export { AWB_BUCKET, awbCacheFingerprint, awbStoragePath };
 
 // Hard ceiling on orders touched per store per run. The real limiter is the
 // deadline check inside the loop — this just bounds the candidate query so a
@@ -41,25 +43,6 @@ export const PREFETCH_POLL_RETRIES = 2;
 // Rough per-order download cost, used to decide whether there is time for one
 // more order before the deadline. Deliberately pessimistic.
 const ESTIMATED_DOWNLOAD_MS = 2500;
-
-/**
- * Identifies the order state a cached label was generated from. If any of
- * these change the stored PDF may show the wrong barcode or address, so the
- * reader (not yet built) compares this before trusting the cache.
- */
-export function awbCacheFingerprint(order) {
-  const parts = [
-    order.tracking_number ?? '',
-    order.order_status ?? '',
-    order.courier_name ?? '',
-    order.shipping_address ?? '',
-  ];
-  return createHash('sha256').update(parts.join('|')).digest('hex');
-}
-
-export function awbStoragePath(storeId, orderSn) {
-  return `${storeId}/${orderSn}.pdf`;
-}
 
 // Same shape as makePerfTracker in shopeeAwb.js, but logged under the
 // prefetch's own prefix so cron output stays readable.
