@@ -180,8 +180,13 @@ const MARKETPLACE_STATUS = {
   // Keyed on the canonical label, so where LAZADA_STATUS_MAP is many-to-one
   // this names only one of the collapsed statuses — the same lossiness Shopee
   // has ('To Pack' and 'Packed' both showing "Processed"). Here that means a
-  // `confirmed` order reads "Pending", a `packed` one reads "Ready to Ship",
-  // and a `returned`/`failed` one reads "Canceled".
+  // `ready_to_ship` order reads "Ready to Ship", and a `returned`/`failed` one
+  // reads "Canceled".
+  //
+  // A `confirmed` order now reads "Delivered" (it maps to canonical 'Completed'
+  // — see LAZADA_STATUS_MAP below for why). That is the least-bad wording: the
+  // order IS settled, and Seller Centre's own word for the state is not exposed
+  // in any list this app can see.
   //
   // "Canceled" is spelled with one 'l' on purpose: that is Lazada's own
   // spelling, and this table shows the marketplace's wording, not the app's.
@@ -438,8 +443,8 @@ async function postOrderAction(session, order, action) {
 // The four are collapsed into one label deliberately: `shipped_back` is in
 // transit back while the other three are complete, so calling all four
 // 'Returned' runs slightly ahead of reality for that one. That is the same
-// many-to-one lossiness this table already carries elsewhere (pending and
-// confirmed both -> 'To Pack'), and it keeps a canonical label from existing
+// many-to-one lossiness this table already carries elsewhere (packed and
+// ready_to_ship both -> 'Packed'), and it keeps a canonical label from existing
 // for a single platform's single status. Split it if the in-transit-back case
 // ever needs its own handling.
 //
@@ -449,7 +454,28 @@ async function postOrderAction(session, order, action) {
 const LAZADA_STATUS_MAP = {
   unpaid: 'Unpaid',
   pending: 'To Pack',
-  confirmed: 'To Pack',
+  // 'Completed', NOT 'To Pack' — do not "fix" this back without new evidence.
+  //
+  // `confirmed` is an order/payment-level state, not a fulfilment state. It is
+  // absent from Lazada's published item-status vocabulary, and it never
+  // advances: an order that ships and is delivered keeps reporting `confirmed`
+  // at order level forever, while the real progress shows up only in per-item
+  // status (which api/_lib/lazadaSync.js now reads instead — see
+  // deriveOrderStatus there).
+  //
+  // EVIDENCE (2026-08-17): 146 orders were stored as `confirmed`, spanning May
+  // to August, nearly all carrying tracking numbers. Lazada Seller Centre showed
+  // exactly ONE order actually needing seller action over that whole period, and
+  // that one was stored as `ready_to_ship`, not `confirmed`. So `confirmed`
+  // reliably means settled business, and mapping it to 'To Pack' flooded the New
+  // Orders tab with months of finished orders — burying the single order that
+  // did need packing.
+  //
+  // 'Completed' is the honest bucket for a settled order whose fulfilment detail
+  // is unavailable. It is deliberately the QUIET choice: the failure mode of
+  // over-reporting completion is a finished order sitting in the wrong tab,
+  // whereas the failure mode of 'To Pack' was hiding real work in the noise.
+  confirmed: 'Completed',
   packed: 'Packed',
   ready_to_ship: 'Packed',
   shipped: 'Shipped',

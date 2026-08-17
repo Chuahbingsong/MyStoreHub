@@ -69,18 +69,34 @@ const COUNTRY_CURRENCIES = {
 // Progress ranks drive the least-progressed-wins collapse below. Lower rank =
 // earlier in the lifecycle = more likely to still need seller action.
 //
-// `confirmed` is UNDER REVIEW and is very likely dead weight here. It was
-// observed in the ORDER-LEVEL `statuses` array (the source deriveOrderStatus no
-// longer reads) and is not in Lazada's published item-status list, which points
-// to it being an order/payment-level state that item status never uses. Ranking
-// it below `packed` is what let it beat shipped/delivered siblings under
-// least-progressed-wins. It is kept for now because the fallback path can still
-// feed order-level values in, and because removing it before the temporary
-// [lazada-sync][DIAG] log has proved it absent from item status would only swap
-// one unverified assumption for another. Once a run confirms that, delete it
-// here and delete `confirmed: 'To Pack'` from LAZADA_STATUS_MAP in
-// src/pages/Orders.jsx together — dropping it here alone would make any
-// straggler land in the UI's "Other" tab.
+// `confirmed` is RANKED LAST ON PURPOSE — do not "restore" it to 2.
+//
+// Its rank is NOT a claim about lifecycle position; it is a deprioritisation.
+// `confirmed` is an order/payment-level state absent from Lazada's item-status
+// vocabulary, and it never advances — a shipped, delivered order still reports
+// `confirmed` at order level. It therefore carries no fulfilment information,
+// and the one thing it must never do is speak for an order that has a real
+// status available.
+//
+// At rank 2 it did exactly that. Under least-progressed-wins, LOWER rank wins,
+// so `confirmed` beat packed / ready_to_ship / shipped / delivered on every
+// multi-item order it appeared next to, pinning genuinely shipped orders to a
+// status that implies pending seller action. Ranked highest it can only
+// represent an order when NOTHING else does, which is the correct behaviour for
+// a value meaning "settled, no fulfilment detail available".
+//
+// EVIDENCE (2026-08-17): 146 orders stored as `confirmed`, spanning May to
+// August, nearly all with tracking numbers, while Lazada Seller Centre showed
+// exactly ONE order needing seller action — and that one was `ready_to_ship`,
+// not `confirmed`. The matching note on LAZADA_STATUS_MAP in
+// src/pages/Orders.jsx maps `confirmed` to 'Completed' on the same evidence.
+// Keep the two in step: this rank and that label both encode "settled, not
+// actionable".
+//
+// It stays in this table rather than being deleted because deriveOrderStatus'
+// fallback path can still feed order-level values in when per-item status is
+// unavailable, and an unranked live status would trip the UNRECOGNISED warning
+// and land the order in the UI's "Other" tab.
 //
 // LIVE statuses only. A terminal status goes in COLLAPSE_TERMINAL_STATUSES
 // instead and needs no rank — the collapse filters those out before it ever
@@ -88,11 +104,13 @@ const COUNTRY_CURRENCIES = {
 const STATUS_PROGRESS_RANK = {
   unpaid: 0,
   pending: 1,
-  confirmed: 2,
-  packed: 3,
-  ready_to_ship: 4,
-  shipped: 5,
-  delivered: 6,
+  packed: 2,
+  ready_to_ship: 3,
+  shipped: 4,
+  delivered: 5,
+  // Ranked above `delivered` deliberately — see the note above. This is the
+  // "no fulfilment information" slot, not a lifecycle position.
+  confirmed: 6,
 };
 
 // Statuses meaning "this line is finished and needs nothing further". Used ONLY
@@ -299,46 +317,6 @@ function deriveOrderStatus(lazadaOrder, items) {
   }
 
   return collapsed;
-}
-
-/* ==========================================================================
- * ⚠️  TEMPORARY DIAGNOSTIC — DELETE AFTER ONE SYNC RUN HAS BEEN INSPECTED  ⚠️
- * ==========================================================================
- *
- * Confirms the per-item-vs-order-level diagnosis in live data across the full
- * order set, rather than the 5 orders the original ?action=probe sampled. That
- * probe asked whether `statuses` was multi-valued but never compared it against
- * item status, which is exactly how the wrong field got shipped.
- *
- * TO REMOVE: delete this function and its single call in mapOrderToRow.
- *
- * Logs STATUS FIELDS ONLY — no buyer name, phone or address, unlike the
- * ?action=probe endpoint this replaces. tracking_code is reported as a boolean,
- * never the number itself.
- *
- * Grep a run for `[lazada-sync][DIAG]`. The two things to read off it:
- *   - order_level vs item_statuses: if order_level is ["confirmed"] while
- *     item_statuses holds shipped/delivered, the diagnosis holds and `confirmed`
- *     never appears at item level at all.
- *   - any `confirmed` inside item_statuses: if it DOES appear there, it is a
- *     real item status and its STATUS_PROGRESS_RANK entry has to stay (and its
- *     rank needs establishing from observation, not assumption).
- */
-function logStatusDiagnostic(lazadaOrder, items, derived) {
-  console.log(
-    '[lazada-sync][DIAG]',
-    JSON.stringify({
-      order_id: String(lazadaOrder.order_id),
-      order_level_statuses: lazadaOrder.statuses ?? null,
-      item_statuses: items.map((i) => i.status ?? null),
-      distinct_item_statuses: [...new Set(items.map((i) => i.status ?? null))],
-      items_seen: items.length,
-      items_count_field: lazadaOrder.items_count ?? null,
-      any_tracking_code: items.some((i) => i.tracking_code != null && String(i.tracking_code).trim() !== ''),
-      derived_status: derived,
-      order_level_would_have_been: collapseStatuses(lazadaOrder.statuses, lazadaOrder.order_id),
-    })
-  );
 }
 
 /* --------------------------------- Requests --------------------------------- */
@@ -588,7 +566,6 @@ function mapOrderToRow(storeId, currency, lazadaOrder, items) {
   const firstItem = items[0] ?? {};
 
   const orderStatus = deriveOrderStatus(lazadaOrder, items);
-  logStatusDiagnostic(lazadaOrder, items, orderStatus); // TEMPORARY — see logStatusDiagnostic
 
   return {
     store_id: storeId,
