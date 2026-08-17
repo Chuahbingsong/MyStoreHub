@@ -26,6 +26,7 @@ import {
   disablePush,
 } from '@/lib/push'
 import { useTranslation } from '@/lib/i18n/I18nContext'
+import { useDateTime } from '@/lib/i18n/datetime'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
 
 const PLATFORMS = [
@@ -59,6 +60,7 @@ export default function Settings() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const { t, locale, setLocale } = useTranslation()
+  const { formatTimestamp } = useDateTime()
   const [user, setUser] = useState(null)
   const [stores, setStores] = useState([])
   const [loadingStores, setLoadingStores] = useState(true)
@@ -575,7 +577,7 @@ export default function Settings() {
                   {store.last_synced_at && (
                     <p className="mt-0.5 text-xs text-gray-500">
                       {t('settings.connectedStores.lastSynced', {
-                        date: new Date(store.last_synced_at).toLocaleString(),
+                        date: formatTimestamp(store.last_synced_at),
                       })}
                     </p>
                   )}

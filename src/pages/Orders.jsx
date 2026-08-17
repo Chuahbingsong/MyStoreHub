@@ -1,6 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { format, formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { Check, Copy, Loader2, Package, Printer, RefreshCw, ScanLine, Search, Truck, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -35,6 +34,7 @@ import {
   usePendingAwbPrint,
 } from '@/lib/awbPrintPrompt'
 import { useTranslation } from '@/lib/i18n/I18nContext'
+import { useDateTime } from '@/lib/i18n/datetime'
 
 const AUTO_SYNC_INTERVAL_MS = 60_000
 
@@ -120,56 +120,108 @@ const OTHER_TAB = 'other'
 // stay tellable apart inside the Returns tab — one still needs a decision, the
 // other is a stock/refund reconciliation. Only Lazada reaches it today (Shopee
 // exposes no post-return status; see LAZADA_STATUS_MAP).
+// Canonical status KEYS. These are stable identifiers and are NEVER rendered:
+// every map that keys off an order's status keys off one of these, so the
+// display wording can change — reworded, translated — without moving an order
+// between tabs, changing a badge colour or disarming a button guard.
+//
+// Before this existed the canonical English label did both jobs at once
+// ('To Pack' was simultaneously what the user read and what STATUS_TO_TAB was
+// keyed by), which made the labels untranslatable: the first translated label
+// would have silently emptied a tab. Dashboard.jsx hit exactly this and was
+// fixed the same way — see SHOPEE_STATUS_KEY / STATUS_CLASS there.
+//
+// The values are the dictionary keys under the shared `status:` namespace, so
+// a label lookup is t(`status.${statusKey}`) once the remaining six are
+// translated. Until then Orders renders from STATUS_LABEL below.
+const STATUS = {
+  UNPAID: 'unpaid',
+  INVOICE_PENDING: 'invoicePending',
+  TO_PACK: 'toPack',
+  PACKED: 'packed',
+  RETRY_SHIPMENT: 'retryShipment',
+  SHIPPED: 'shipped',
+  TO_CONFIRM_RECEIPT: 'toConfirmReceipt',
+  COMPLETED: 'completed',
+  CANCEL_REQUESTED: 'cancelRequested',
+  RETURN_REQUESTED: 'returnRequested',
+  RETURNED: 'returned',
+  CANCELLED: 'cancelled',
+}
+
+// The user-facing label for each status key — the ONLY place a status string
+// is rendered from. English-only for now, and deliberately not routed through
+// t() yet: six of these twelve have no Chinese label anywhere in the app, so
+// wiring the other six to the dictionary would render a half-Chinese status
+// column in zh-CN. The Orders translation pass adds all twelve to the shared
+// `status:` namespace and replaces this map with t(`status.${key}`).
+const STATUS_LABEL = {
+  [STATUS.UNPAID]: 'Unpaid',
+  [STATUS.INVOICE_PENDING]: 'Invoice Pending',
+  [STATUS.TO_PACK]: 'To Pack',
+  [STATUS.PACKED]: 'Packed',
+  [STATUS.RETRY_SHIPMENT]: 'Retry Shipment',
+  [STATUS.SHIPPED]: 'Shipped',
+  [STATUS.TO_CONFIRM_RECEIPT]: 'To Confirm Receipt',
+  [STATUS.COMPLETED]: 'Completed',
+  [STATUS.CANCEL_REQUESTED]: 'Cancel Requested',
+  [STATUS.RETURN_REQUESTED]: 'Return Requested',
+  [STATUS.RETURNED]: 'Returned',
+  [STATUS.CANCELLED]: 'Cancelled',
+}
+
 const STATUS_TO_TAB = {
-  Unpaid: 'unpaid',
-  'Invoice Pending': 'new',
-  'To Pack': 'new',
-  Packed: 'inprocess',
-  'Retry Shipment': 'inprocess',
-  Shipped: 'shipped',
-  'To Confirm Receipt': 'shipped',
-  Completed: 'completed',
-  'Cancel Requested': 'cancelRequests',
-  'Return Requested': 'returns',
-  Returned: 'returns',
-  Cancelled: 'cancelled',
+  [STATUS.UNPAID]: 'unpaid',
+  [STATUS.INVOICE_PENDING]: 'new',
+  [STATUS.TO_PACK]: 'new',
+  [STATUS.PACKED]: 'inprocess',
+  [STATUS.RETRY_SHIPMENT]: 'inprocess',
+  [STATUS.SHIPPED]: 'shipped',
+  [STATUS.TO_CONFIRM_RECEIPT]: 'shipped',
+  [STATUS.COMPLETED]: 'completed',
+  [STATUS.CANCEL_REQUESTED]: 'cancelRequests',
+  [STATUS.RETURN_REQUESTED]: 'returns',
+  [STATUS.RETURNED]: 'returns',
+  [STATUS.CANCELLED]: 'cancelled',
 }
 
 // Defensive lookup — always resolves to a real, visible tab, even for a
-// status this app has never seen before.
+// status this app has never seen before (statusKey null, see mapSupabaseOrder).
 function getOrderTab(order) {
-  return STATUS_TO_TAB[order.status] ?? OTHER_TAB
+  return (order.statusKey ? STATUS_TO_TAB[order.statusKey] : undefined) ?? OTHER_TAB
 }
 
 const STATUS_BADGE = {
-  Unpaid: 'bg-gray-200 text-gray-600',
-  'Invoice Pending': 'bg-orange-500/15 text-orange-600',
-  'To Pack': 'bg-yellow-600/15 text-yellow-700',
-  Packed: 'bg-yellow-600/15 text-yellow-700',
-  'Retry Shipment': 'bg-orange-600/15 text-orange-700',
-  Shipped: 'bg-green-500/15 text-green-600',
-  'To Confirm Receipt': 'bg-green-500/15 text-green-600',
-  Completed: 'bg-teal-500/15 text-teal-600',
-  'Cancel Requested': 'bg-amber-500/15 text-amber-700',
-  'Return Requested': 'bg-amber-500/15 text-amber-700',
+  [STATUS.UNPAID]: 'bg-gray-200 text-gray-600',
+  [STATUS.INVOICE_PENDING]: 'bg-orange-500/15 text-orange-600',
+  [STATUS.TO_PACK]: 'bg-yellow-600/15 text-yellow-700',
+  [STATUS.PACKED]: 'bg-yellow-600/15 text-yellow-700',
+  [STATUS.RETRY_SHIPMENT]: 'bg-orange-600/15 text-orange-700',
+  [STATUS.SHIPPED]: 'bg-green-500/15 text-green-600',
+  [STATUS.TO_CONFIRM_RECEIPT]: 'bg-green-500/15 text-green-600',
+  [STATUS.COMPLETED]: 'bg-teal-500/15 text-teal-600',
+  [STATUS.CANCEL_REQUESTED]: 'bg-amber-500/15 text-amber-700',
+  [STATUS.RETURN_REQUESTED]: 'bg-amber-500/15 text-amber-700',
   // Same amber family as 'Return Requested' (they share the Returns tab), one
   // step deeper because this one is terminal — nothing is pending on it.
-  Returned: 'bg-amber-600/15 text-amber-800',
-  Cancelled: 'bg-red-500/15 text-red-600',
+  [STATUS.RETURNED]: 'bg-amber-600/15 text-amber-800',
+  [STATUS.CANCELLED]: 'bg-red-500/15 text-red-600',
 }
+
+const DEFAULT_STATUS_BADGE = 'bg-gray-200 text-gray-600'
 
 const MARKETPLACE_STATUS = {
   Shopee: {
-    Unpaid: 'Unpaid',
-    'Invoice Pending': 'Invoice Pending',
-    'To Pack': 'Processed',
-    Packed: 'Processed',
-    'Retry Shipment': 'Retry Shipment',
-    Shipped: 'Shipped',
-    'To Confirm Receipt': 'To Confirm Receive',
-    'Cancel Requested': 'Cancellation Requested',
-    'Return Requested': 'To Return/Refund',
-    Cancelled: 'Cancelled',
+    [STATUS.UNPAID]: 'Unpaid',
+    [STATUS.INVOICE_PENDING]: 'Invoice Pending',
+    [STATUS.TO_PACK]: 'Processed',
+    [STATUS.PACKED]: 'Processed',
+    [STATUS.RETRY_SHIPMENT]: 'Retry Shipment',
+    [STATUS.SHIPPED]: 'Shipped',
+    [STATUS.TO_CONFIRM_RECEIPT]: 'To Confirm Receive',
+    [STATUS.CANCEL_REQUESTED]: 'Cancellation Requested',
+    [STATUS.RETURN_REQUESTED]: 'To Return/Refund',
+    [STATUS.CANCELLED]: 'Cancelled',
   },
   // Corrected against LAZADA_STATUS_MAP below and live Lazada data. The old
   // values here were a placeholder written before Lazada was connected and were
@@ -191,16 +243,16 @@ const MARKETPLACE_STATUS = {
   // "Canceled" is spelled with one 'l' on purpose: that is Lazada's own
   // spelling, and this table shows the marketplace's wording, not the app's.
   Lazada: {
-    Unpaid: 'Unpaid',
-    'To Pack': 'Pending',
-    Packed: 'Ready to Ship',
-    Shipped: 'Shipped',
-    Completed: 'Delivered',
+    [STATUS.UNPAID]: 'Unpaid',
+    [STATUS.TO_PACK]: 'Pending',
+    [STATUS.PACKED]: 'Ready to Ship',
+    [STATUS.SHIPPED]: 'Shipped',
+    [STATUS.COMPLETED]: 'Delivered',
     // Collapses returned / shipped_back / shipped_back_success /
     // package_returned, so this names only the representative — the same
     // lossiness 'To Pack' and 'Packed' already have here.
-    Returned: 'Returned',
-    Cancelled: 'Canceled',
+    [STATUS.RETURNED]: 'Returned',
+    [STATUS.CANCELLED]: 'Canceled',
   },
   // Audited against TIKTOK_STATUS_MAP / TikTok Shop's documented order_status
   // enum and Seller Center's own status vocabulary — replaces the earlier
@@ -216,23 +268,35 @@ const MARKETPLACE_STATUS = {
   // is deliberately no 'Invoice Pending' entry: no TikTok status maps to that
   // label any more, so one here would be dead.
   TikTok: {
-    Unpaid: 'Unpaid',
-    'To Pack': 'Awaiting Shipment',
-    Packed: 'Awaiting Collection',
-    Shipped: 'In Transit',
-    'To Confirm Receipt': 'Delivered',
-    Completed: 'Completed',
-    Cancelled: 'Cancelled',
+    [STATUS.UNPAID]: 'Unpaid',
+    [STATUS.TO_PACK]: 'Awaiting Shipment',
+    [STATUS.PACKED]: 'Awaiting Collection',
+    [STATUS.SHIPPED]: 'In Transit',
+    [STATUS.TO_CONFIRM_RECEIPT]: 'Delivered',
+    [STATUS.COMPLETED]: 'Completed',
+    [STATUS.CANCELLED]: 'Cancelled',
   },
   // Shopify isn't connected yet — this is still an unverified placeholder, and
   // there is no shopify entry in RAW_STATUS_MAP_BY_PLATFORM to feed it. It is
   // the last remaining table in this file of the kind Lazada and TikTok have
   // both now been corrected out of.
-  Shopify: { Unpaid: 'Unfulfilled', 'To Pack': 'Unfulfilled', Packed: 'Unfulfilled', Shipped: 'Fulfilled', Cancelled: 'Cancelled' },
+  Shopify: {
+    [STATUS.UNPAID]: 'Unfulfilled',
+    [STATUS.TO_PACK]: 'Unfulfilled',
+    [STATUS.PACKED]: 'Unfulfilled',
+    [STATUS.SHIPPED]: 'Fulfilled',
+    [STATUS.CANCELLED]: 'Cancelled',
+  },
 }
 
+// Falls back to the app's own label (or, for an unmapped status, the raw
+// platform string) when this marketplace has no wording of its own for the
+// state — unchanged behaviour, just keyed off statusKey now.
 function getMarketplaceStatus(order) {
-  return MARKETPLACE_STATUS[order.platform]?.[order.status] ?? order.status
+  const marketplace = order.statusKey
+    ? MARKETPLACE_STATUS[order.platform]?.[order.statusKey]
+    : undefined
+  return marketplace ?? order.status
 }
 
 const TABS = [
@@ -285,17 +349,17 @@ const PLATFORM_LABELS = {
 // mapped; if Shopee ships a new one, mapSupabaseOrder() warns and routes it
 // to the "Other" tab instead of dropping it.
 const SHOPEE_STATUS_MAP = {
-  UNPAID: 'Unpaid',
-  INVOICE_PENDING: 'Invoice Pending',
-  READY_TO_SHIP: 'To Pack',
-  PROCESSED: 'Packed',
-  RETRY_SHIP: 'Retry Shipment',
-  SHIPPED: 'Shipped',
-  TO_CONFIRM_RECEIVE: 'To Confirm Receipt',
-  COMPLETED: 'Completed',
-  TO_RETURN: 'Return Requested',
-  IN_CANCEL: 'Cancel Requested',
-  CANCELLED: 'Cancelled',
+  UNPAID: STATUS.UNPAID,
+  INVOICE_PENDING: STATUS.INVOICE_PENDING,
+  READY_TO_SHIP: STATUS.TO_PACK,
+  PROCESSED: STATUS.PACKED,
+  RETRY_SHIP: STATUS.RETRY_SHIPMENT,
+  SHIPPED: STATUS.SHIPPED,
+  TO_CONFIRM_RECEIVE: STATUS.TO_CONFIRM_RECEIPT,
+  COMPLETED: STATUS.COMPLETED,
+  TO_RETURN: STATUS.RETURN_REQUESTED,
+  IN_CANCEL: STATUS.CANCEL_REQUESTED,
+  CANCELLED: STATUS.CANCELLED,
 }
 
 // TikTok Shop Orders API (v202309) order_status enum — all nine documented
@@ -331,19 +395,15 @@ const SHOPEE_STATUS_MAP = {
 // in one of those states falls through to the "Other" tab via the same
 // unmapped-status fallback below until that's wired up.
 const TIKTOK_STATUS_MAP = {
-  UNPAID: 'Unpaid',
-  ON_HOLD: 'Unpaid',
-  AWAITING_SHIPMENT: 'To Pack',
-  PARTIALLY_SHIPPING: 'Packed',
-  AWAITING_COLLECTION: 'Packed',
-  IN_TRANSIT: 'Shipped',
-  DELIVERED: 'To Confirm Receipt',
-  COMPLETED: 'Completed',
-  CANCELLED: 'Cancelled',
-}
-
-function formatDateLabel(value) {
-  return value ? format(new Date(value), 'd MMM HH:mm') : undefined
+  UNPAID: STATUS.UNPAID,
+  ON_HOLD: STATUS.UNPAID,
+  AWAITING_SHIPMENT: STATUS.TO_PACK,
+  PARTIALLY_SHIPPING: STATUS.PACKED,
+  AWAITING_COLLECTION: STATUS.PACKED,
+  IN_TRANSIT: STATUS.SHIPPED,
+  DELIVERED: STATUS.TO_CONFIRM_RECEIPT,
+  COMPLETED: STATUS.COMPLETED,
+  CANCELLED: STATUS.CANCELLED,
 }
 
 // shipping_method is whichever of pickup/dropoff/non_integrated Shopee's
@@ -356,16 +416,6 @@ const SHIPPING_METHOD_LABELS = {
 
 function shippingMethodLabel(method) {
   return SHIPPING_METHOD_LABELS[method] ?? method
-}
-
-function formatSyncAgo(ms) {
-  const seconds = Math.max(0, Math.round(ms / 1000))
-  if (seconds < 5) return 'just now'
-  if (seconds < 60) return `${seconds}s ago`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  return `${hours}h ago`
 }
 
 function awbFilename(orderSnList) {
@@ -452,8 +502,8 @@ async function postOrderAction(session, order, action) {
 // are loss/damage claims, not returns — they land in the "Other" tab with the
 // warning below rather than being forced into a bucket they don't belong in.
 const LAZADA_STATUS_MAP = {
-  unpaid: 'Unpaid',
-  pending: 'To Pack',
+  unpaid: STATUS.UNPAID,
+  pending: STATUS.TO_PACK,
   // 'Completed', NOT 'To Pack' — do not "fix" this back without new evidence.
   //
   // `confirmed` is an order/payment-level state, not a fulfilment state. It is
@@ -475,17 +525,17 @@ const LAZADA_STATUS_MAP = {
   // is unavailable. It is deliberately the QUIET choice: the failure mode of
   // over-reporting completion is a finished order sitting in the wrong tab,
   // whereas the failure mode of 'To Pack' was hiding real work in the noise.
-  confirmed: 'Completed',
-  packed: 'Packed',
-  ready_to_ship: 'Packed',
-  shipped: 'Shipped',
-  delivered: 'Completed',
-  canceled: 'Cancelled',
-  returned: 'Returned',
-  shipped_back: 'Returned',
-  shipped_back_success: 'Returned',
-  package_returned: 'Returned',
-  failed: 'Cancelled',
+  confirmed: STATUS.COMPLETED,
+  packed: STATUS.PACKED,
+  ready_to_ship: STATUS.PACKED,
+  shipped: STATUS.SHIPPED,
+  delivered: STATUS.COMPLETED,
+  canceled: STATUS.CANCELLED,
+  returned: STATUS.RETURNED,
+  shipped_back: STATUS.RETURNED,
+  shipped_back_success: STATUS.RETURNED,
+  package_returned: STATUS.RETURNED,
+  failed: STATUS.CANCELLED,
 }
 
 const RAW_STATUS_MAP_BY_PLATFORM = {
@@ -497,18 +547,31 @@ const RAW_STATUS_MAP_BY_PLATFORM = {
 function mapSupabaseOrder(row, storeNames) {
   const platform = PLATFORM_LABELS[row.platform] ?? row.platform
   const statusMap = RAW_STATUS_MAP_BY_PLATFORM[row.platform]
-  const mappedStatus = statusMap?.[row.order_status]
+  const mappedStatusKey = statusMap?.[row.order_status]
 
   // Never let an unrecognized status make the order vanish: fall back to the
   // raw value (still routed somewhere visible via getOrderTab's OTHER_TAB
   // fallback) and flag it loudly so the relevant map above gets updated.
-  if (statusMap && row.order_status && !mappedStatus) {
+  if (statusMap && row.order_status && !mappedStatusKey) {
     console.warn(
       `[orders] unmapped ${platform} order_status "${row.order_status}" for order ${row.platform_order_id} — showing under "Other" until the status map for this platform is updated.`
     )
   }
 
-  const status = mappedStatus ?? row.order_status ?? 'Unpaid'
+  // Three cases, preserved exactly from when `status` was the only field:
+  //   mapped              -> statusKey set, label from STATUS_LABEL
+  //   unmapped but present-> statusKey null, raw platform string shown verbatim
+  //                          (Other tab, default badge) — data passthrough, the
+  //                          same treatment an unknown status gets everywhere
+  //   null/undefined      -> treated as Unpaid, where a row with no status has
+  //                          always bucketed
+  //
+  // The null check is deliberately nullish, not truthy: this replaced
+  // `mappedStatus ?? row.order_status ?? 'Unpaid'`, and under `??` an empty-string
+  // order_status passed through as an empty string rather than becoming Unpaid.
+  // Treating '' as absent here would move such a row from the Other tab into
+  // Unpaid and give it a badge it never had.
+  const statusKey = mappedStatusKey ?? (row.order_status == null ? STATUS.UNPAID : null)
   const storeName = storeNames?.[row.store_id] ?? ''
 
   const items = (row.order_items ?? []).map((item) => ({
@@ -535,12 +598,18 @@ function mapSupabaseOrder(row, storeNames) {
         : [{ name: 'Order item', qty: 1, price: Number(row.total_amount) || 0, image: null }],
     total: Number(row.total_amount) || 0,
     payment: row.payment_method || '-',
-    status,
-    timeAgo: row.order_created_at
-      ? formatDistanceToNow(new Date(row.order_created_at), { addSuffix: true })
-      : '',
-    paidAt: formatDateLabel(row.paid_at),
-    packedAt: formatDateLabel(row.packed_at),
+    // statusKey drives every decision (tab, badge, button guards); status is
+    // only ever rendered. Keep them in that order of authority — reading the
+    // label back to make a decision is the bug this split removes.
+    statusKey,
+    status: statusKey ? STATUS_LABEL[statusKey] : row.order_status,
+    // Raw timestamps, formatted at render by useDateTime() rather than here.
+    // Pre-formatting them in this mapper would have pinned every date to
+    // whichever locale was active during the fetch, so switching language
+    // would have left stale dates on screen until the next refetch.
+    orderedAt: row.order_created_at || null,
+    paidAt: row.paid_at || null,
+    packedAt: row.packed_at || null,
     packedBy: row.packed_by || undefined,
     // A 'failed'/'skipped' auto-pack never retries (see api/_lib/autoPack.js)
     // — the order just sits at READY_TO_SHIP forever unless a human notices,
@@ -561,7 +630,7 @@ function mapSupabaseOrder(row, storeNames) {
     // a human needs to pack the order instead.
     buyerMessage: row.buyer_message || undefined,
     awbPrinted: row.awb_printed === true,
-    awbPrintedAt: formatDateLabel(row.awb_printed_at),
+    awbPrintedAt: row.awb_printed_at || null,
   }
 }
 
@@ -672,7 +741,7 @@ function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPac
         {/* Pack calls ship_order, which Shopee only accepts for READY_TO_SHIP
             ("To Pack"). Every order in this tab should already be that status,
             but this guard keeps the button honest if that ever changes. */}
-        {order.status === 'To Pack' && (
+        {order.statusKey === STATUS.TO_PACK && (
           <Button
             size="sm"
             disabled={acting}
@@ -713,8 +782,23 @@ function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPac
   return null
 }
 
-function OrderTimeline({ status }) {
-  if (status === 'Cancelled') {
+// How far along the Ordered -> Packed -> Shipped rail each status sits.
+// Keyed by status key, so the rail can't silently collapse to stage 0 for
+// every order the moment a status label is reworded.
+const TIMELINE_STAGE = {
+  [STATUS.UNPAID]: 0,
+  [STATUS.INVOICE_PENDING]: 0,
+  [STATUS.TO_PACK]: 1,
+  [STATUS.PACKED]: 1,
+  [STATUS.RETRY_SHIPMENT]: 1,
+  [STATUS.SHIPPED]: 2,
+  [STATUS.TO_CONFIRM_RECEIPT]: 2,
+  [STATUS.COMPLETED]: 2,
+  [STATUS.RETURN_REQUESTED]: 2,
+}
+
+function OrderTimeline({ statusKey, statusLabel }) {
+  if (statusKey === STATUS.CANCELLED) {
     return (
       <div className="flex items-center">
         <div className="flex flex-col items-center gap-1">
@@ -724,24 +808,14 @@ function OrderTimeline({ status }) {
         <span className="mx-1 h-0.5 flex-1 bg-red-500/50" />
         <div className="flex flex-col items-center gap-1">
           <span className="h-3 w-3 rounded-full bg-red-500" />
-          <span className="text-xs text-red-600">{status}</span>
+          <span className="text-xs text-red-600">{statusLabel}</span>
         </div>
       </div>
     )
   }
 
   const stages = ['Ordered', 'Packed', 'Shipped']
-  const stageIndex = {
-    Unpaid: 0,
-    'Invoice Pending': 0,
-    'To Pack': 1,
-    Packed: 1,
-    'Retry Shipment': 1,
-    Shipped: 2,
-    'To Confirm Receipt': 2,
-    Completed: 2,
-    'Return Requested': 2,
-  }[status] ?? 0
+  const stageIndex = (statusKey ? TIMELINE_STAGE[statusKey] : undefined) ?? 0
 
   return (
     <div className="flex items-center">
@@ -807,6 +881,7 @@ function OrderCard({
   actingId,
 }) {
   const { t } = useTranslation()
+  const { formatDateTime, formatRelativeToNow } = useDateTime()
   const meta = PLATFORM_META[order.platform]
   const actions = !selectionMode
     ? renderActions(order, { fullWidth: true, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId })
@@ -818,7 +893,7 @@ function OrderCard({
         {t('orders.buyerMessage.badge')}
       </span>
     ),
-    order.status === 'Unpaid' && (
+    order.statusKey === STATUS.UNPAID && (
       <span key="unpaid" className={cn(BADGE_CLS, 'bg-gray-200 text-gray-600')}>
         Waiting for payment
       </span>
@@ -826,7 +901,7 @@ function OrderCard({
     order.awbPrinted && (
       <span
         key="printed"
-        title={order.awbPrintedAt ? `Printed ${order.awbPrintedAt}` : undefined}
+        title={order.awbPrintedAt ? `Printed ${formatDateTime(order.awbPrintedAt)}` : undefined}
         className={cn(BADGE_CLS, 'bg-green-500/15 text-green-700')}
       >
         🖨️ Printed
@@ -856,7 +931,7 @@ function OrderCard({
       onClick={() => onClick(order)}
       className="flex cursor-pointer gap-3 rounded-2xl border border-[#E8E6E1] bg-white p-4 shadow-card transition-transform active:scale-[0.98]"
     >
-      {selectionMode && order.status !== 'Unpaid' && (
+      {selectionMode && order.statusKey !== STATUS.UNPAID && (
         <input
           type="checkbox"
           checked={selected}
@@ -873,7 +948,9 @@ function OrderCard({
           </span>
           {order.storeName && <span className="truncate">{order.storeName}</span>}
           <span className="ml-auto shrink-0 font-mono tabular-nums text-gray-500">{order.id}</span>
-          <span className="shrink-0 tabular-nums text-gray-400">{order.timeAgo}</span>
+          <span className="shrink-0 tabular-nums text-gray-400">
+            {formatRelativeToNow(order.orderedAt)}
+          </span>
         </div>
 
         <div className="mt-2.5">
@@ -886,7 +963,7 @@ function OrderCard({
           <div className="mt-2.5 flex flex-wrap gap-1.5">{flagBadges}</div>
         )}
 
-        {order.status === 'Cancel Requested' && (
+        {order.statusKey === STATUS.CANCEL_REQUESTED && (
           <div className="mt-2.5 rounded-lg bg-amber-500/10 px-2.5 py-2 text-[11px] leading-snug text-amber-800">
             <p className="font-semibold">Buyer requested cancellation</p>
             <p className="mt-0.5">
@@ -939,8 +1016,8 @@ function OrderCard({
 
         {(order.paidAt || order.packedAt) && (
           <div className="mt-2 flex gap-4 text-[11px] tabular-nums text-gray-500">
-            {order.paidAt && <span>Paid {order.paidAt}</span>}
-            {order.packedAt && <span>Packed {order.packedAt}</span>}
+            {order.paidAt && <span>Paid {formatDateTime(order.paidAt)}</span>}
+            {order.packedAt && <span>Packed {formatDateTime(order.packedAt)}</span>}
           </div>
         )}
 
@@ -966,6 +1043,7 @@ function OrderCard({
 
 export default function Orders() {
   const { t } = useTranslation()
+  const { formatDateTime, formatShortAgo } = useDateTime()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [activeTab, setActiveTabState] = useState(() => getInitialTab(searchParams))
@@ -1335,7 +1413,7 @@ export default function Orders() {
   function getBulkPrintSelection() {
     const selected = orders.filter((order) => selectedIds.has(order.id))
     const realOrders = selected.filter(
-      (order) => order.platform_order_id && order.store_id && order.status !== 'Unpaid'
+      (order) => order.platform_order_id && order.store_id && order.statusKey !== STATUS.UNPAID
     )
 
     if (realOrders.length === 0) return null
@@ -1646,7 +1724,7 @@ export default function Orders() {
   async function handleBulkShip() {
     const selected = orders.filter((o) => selectedIds.has(o.id))
     const realOrders = selected.filter(
-      (o) => o.platform_order_id && o.store_id && o.status !== 'Unpaid'
+      (o) => o.platform_order_id && o.store_id && o.statusKey !== STATUS.UNPAID
     )
 
     if (realOrders.length === 0) {
@@ -1679,7 +1757,7 @@ export default function Orders() {
   async function handleBulkCancel() {
     const selected = orders.filter((o) => selectedIds.has(o.id))
     const realOrders = selected.filter(
-      (o) => o.platform_order_id && o.store_id && o.status !== 'Unpaid'
+      (o) => o.platform_order_id && o.store_id && o.statusKey !== STATUS.UNPAID
     )
 
     if (realOrders.length === 0) {
@@ -1771,7 +1849,7 @@ export default function Orders() {
 
   function handleCardClick(order) {
     if (selectionMode) {
-      if (order.status === 'Unpaid') return
+      if (order.statusKey === STATUS.UNPAID) return
       setSelectedIds((prev) => {
         const next = new Set(prev)
         if (next.has(order.id)) next.delete(order.id)
@@ -1802,7 +1880,7 @@ export default function Orders() {
             )}
             {lastSyncedAt !== null && nowTick !== null && (
               <span className="hidden items-center gap-1.5 text-xs tabular-nums text-gray-400 sm:flex">
-                Updated {formatSyncAgo(nowTick - lastSyncedAt)}
+                Updated {formatShortAgo(nowTick - lastSyncedAt)}
                 {hasMorePending && (
                   <span
                     title="This store has more orders than fit in one sync — keep syncing to catch up."
@@ -1841,7 +1919,7 @@ export default function Orders() {
         {lastSyncedAt !== null && nowTick !== null && (
           <div className="flex justify-end pb-1.5 sm:hidden">
             <span className="flex items-center gap-1.5 text-xs tabular-nums text-gray-400">
-              Updated {formatSyncAgo(nowTick - lastSyncedAt)}
+              Updated {formatShortAgo(nowTick - lastSyncedAt)}
               {hasMorePending && (
                 <span
                   title="This store has more orders than fit in one sync — keep syncing to catch up."
@@ -2074,13 +2152,14 @@ export default function Orders() {
                 <span
                   className={cn(
                     'inline-block rounded-full px-2.5 py-1 text-[11px] font-medium',
-                    STATUS_BADGE[selectedOrder.status] ?? 'bg-gray-200 text-gray-600'
+                    (selectedOrder.statusKey ? STATUS_BADGE[selectedOrder.statusKey] : undefined) ??
+                      DEFAULT_STATUS_BADGE
                   )}
                 >
                   {selectedOrder.status}
                 </span>
 
-                {selectedOrder.status === 'Cancel Requested' && (
+                {selectedOrder.statusKey === STATUS.CANCEL_REQUESTED && (
                   <div className="mt-4 rounded-xl bg-amber-500/10 px-3 py-3 text-xs leading-snug text-amber-800">
                     <p className="text-sm font-semibold">Buyer requested cancellation</p>
                     <p className="mt-1.5">
@@ -2147,14 +2226,14 @@ export default function Orders() {
                     {selectedOrder.paidAt && (
                       <div className="flex justify-between text-[#6B7280]">
                         <span>Paid</span>
-                        <span className="text-[#1F2937]">{selectedOrder.paidAt}</span>
+                        <span className="text-[#1F2937]">{formatDateTime(selectedOrder.paidAt)}</span>
                       </div>
                     )}
                     {selectedOrder.packedAt && (
                       <div className="flex justify-between text-[#6B7280]">
                         <span>Packed</span>
                         <span className="text-[#1F2937]">
-                          {selectedOrder.packedAt}
+                          {formatDateTime(selectedOrder.packedAt)}
                           {selectedOrder.packedBy === 'auto' ? ' (auto)' : ''}
                         </span>
                       </div>
@@ -2220,7 +2299,10 @@ export default function Orders() {
 
                 <section>
                   <h3 className="mb-3 text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">Order Timeline</h3>
-                  <OrderTimeline status={selectedOrder.status} />
+                  <OrderTimeline
+                    statusKey={selectedOrder.statusKey}
+                    statusLabel={selectedOrder.status}
+                  />
                 </section>
               </div>
 

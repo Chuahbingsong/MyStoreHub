@@ -2,6 +2,34 @@
 // per-page rollout (Settings first, others later) stays easy to track: each
 // page owns one top-level key.
 export default {
+  // Order-status vocabulary, shared rather than owned by any one page — the
+  // same status is rendered on Dashboard, Orders and Scan, and three copies
+  // would drift. Keyed by the STABLE status keys (see STATUS in Orders.jsx),
+  // never by the English label, so rewording a label here can never move an
+  // order between tabs or change a badge colour.
+  //
+  // PARTIAL ON PURPOSE. This holds exactly the statuses that already had a
+  // translated label before the shared namespace existed (Dashboard's six).
+  // Orders' full twelve-status vocabulary — invoicePending, retryShipment,
+  // toConfirmReceipt, cancelRequested, returnRequested, returned — is NOT here
+  // yet: Orders still renders those from its own English STATUS_LABEL map,
+  // because adding them here would mean translating them, and the pass that
+  // built this namespace was explicitly a no-translation pass. The Orders
+  // translation pass moves STATUS_LABEL's remaining entries in and deletes it.
+  status: {
+    // PROVISIONAL — 'new' is Dashboard's rendering of Shopee's raw UNPAID
+    // status, and it disagrees with Orders, which gives UNPAID a dedicated
+    // "Unpaid" tab. That inconsistency predates the shared namespace and is
+    // carried across unchanged rather than quietly resolved: picking one
+    // wording changes what the Dashboard displays, which is a product
+    // decision, not a refactor. Resolve it alongside Orders' status labels.
+    new: 'New',
+    toPack: 'To Pack',
+    packed: 'Packed',
+    shipped: 'Shipped',
+    completed: 'Completed',
+    cancelled: 'Cancelled',
+  },
   nav: {
     dashboard: 'Dashboard',
     orders: 'Orders',
@@ -59,23 +87,9 @@ export default {
       flashDeals: 'Flash Deals',
       boostNow: 'Boost Now',
     },
-    // PROVISIONAL — reused between the "To Pack" stat card and the recent-
-    // orders status badges. This is Shopee order-status vocabulary; final
-    // wording is being settled separately before Orders.jsx is converted.
-    // `new` in particular maps from Shopee's raw UNPAID status (see
-    // SHOPEE_STATUS_KEY in Dashboard.jsx) — note this already reads
-    // differently from Orders.jsx, which gives UNPAID its own dedicated
-    // "Unpaid" tab distinct from "New Orders". That inconsistency predates
-    // this translation pass; flagging it here rather than quietly picking a
-    // wording that papers over it.
-    status: {
-      new: 'New',
-      toPack: 'To Pack',
-      packed: 'Packed',
-      shipped: 'Shipped',
-      completed: 'Completed',
-      cancelled: 'Cancelled',
-    },
+    // dashboard.status.* moved to the top-level `status:` namespace — it was
+    // never Dashboard-specific vocabulary, and Scan/Orders render the same
+    // statuses. Call sites use t('status.<key>').
   },
   settings: {
     title: 'Settings',

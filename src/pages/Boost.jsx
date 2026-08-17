@@ -9,6 +9,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { Switch } from '@/components/ui/switch'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import { useDateTime } from '@/lib/i18n/datetime'
 
 const MAX_SLOTS = 5
 
@@ -117,6 +118,7 @@ function StoreCard({ store, slots, rotation, onToggle, toggling, onEdit }) {
 }
 
 export default function Boost() {
+  const { formatTimestamp } = useDateTime()
   const [stores, setStores] = useState([])
   const [slotsByStore, setSlotsByStore] = useState({})
   const [rotationByStore, setRotationByStore] = useState({})
@@ -321,7 +323,7 @@ export default function Boost() {
                       )}
                       <p className="text-[11px] text-gray-400">
                         {row.last_boosted_at
-                          ? `Last boosted ${new Date(row.last_boosted_at).toLocaleString()}`
+                          ? `Last boosted ${formatTimestamp(row.last_boosted_at)}`
                           : 'Never boosted'}
                       </p>
                     </div>

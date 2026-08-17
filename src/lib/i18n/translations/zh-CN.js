@@ -2,6 +2,18 @@
 // the i18n context falls back to en.js per-key if a key is ever missing
 // here, but that fallback should never actually be exercised.
 export default {
+  // See en.js for why this namespace exists and why it is deliberately
+  // partial. Every key here already had this exact Chinese label under
+  // dashboard.status.* — the shared namespace is a move, not a retranslation.
+  status: {
+    // PROVISIONAL — see the matching note in en.js.
+    new: '新',
+    toPack: '待打包',
+    packed: '已打包',
+    shipped: '已发货',
+    completed: '已完成',
+    cancelled: '已取消',
+  },
   nav: {
     dashboard: '首页',
     orders: '订单',
@@ -62,17 +74,7 @@ export default {
       // confirm-against-Shopee caveat as `nav.boost` above applies.
       flashDeals: '限时秒杀',
     },
-    // PROVISIONAL — see the matching comment in en.js. Do not treat these as
-    // final; revisit for consistency once Orders.jsx's status vocabulary is
-    // settled.
-    status: {
-      new: '新',
-      toPack: '待打包',
-      packed: '已打包',
-      shipped: '已发货',
-      completed: '已完成',
-      cancelled: '已取消',
-    },
+    // dashboard.status.* 已移至顶层 `status:` 命名空间 —— 见 en.js。
   },
   settings: {
     title: '设置',

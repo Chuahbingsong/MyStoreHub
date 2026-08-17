@@ -12,6 +12,7 @@ import {
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/i18n/I18nContext'
+import { useDateTime } from '@/lib/i18n/datetime'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
 
 // Shipping methods — which couriers each store offers at checkout.
@@ -138,6 +139,7 @@ function StateCell({ state, onClick, label }) {
 
 export default function Shipping() {
   const { t } = useTranslation()
+  const { formatTimeOfDay } = useDateTime()
 
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
@@ -311,7 +313,7 @@ export default function Shipping() {
           <h1 className="text-xl font-bold text-[#1F2937]">{t('shipping.title')}</h1>
           <p className="text-[11px] text-[#6B7280]">
             {fetchedAt
-              ? t('shipping.liveAt', { time: new Date(fetchedAt).toLocaleTimeString() })
+              ? t('shipping.liveAt', { time: formatTimeOfDay(fetchedAt) })
               : t('shipping.subtitle')}
           </p>
         </div>

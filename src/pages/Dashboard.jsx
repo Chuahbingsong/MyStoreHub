@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { formatDistanceToNow } from 'date-fns'
-import { zhCN } from 'date-fns/locale'
 import { Bell, ChevronRight, Flame, Printer, ScanLine, ShoppingBag, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -16,6 +14,7 @@ import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/i18n/I18nContext'
+import { formatRelativeToNow } from '@/lib/i18n/datetime'
 import {
   addDaysISO,
   fetchSalesReport,
@@ -56,12 +55,16 @@ const BADGE_CLS = 'inline-flex items-center gap-1 rounded-full px-2 py-1 text-[1
 // Maps Shopee's raw order_status to a STABLE status key — never the
 // translated display label — so STATUS_CLASS and the translation dictionary
 // can both key off something that doesn't change when the locale does.
-// Rendering the label itself always goes through t('dashboard.status.<key>')
-// instead of using this map's values directly (that was the previous bug:
-// SHOPEE_STATUS_MAP used to hold the English display string, and STATUS_CLASS
-// was keyed by that same string — switching locale would have translated the
-// on-screen text while STATUS_CLASS's keys stayed English, so every badge
-// would have silently fallen back to the default gray class).
+// Rendering the label itself always goes through t('status.<key>') instead of
+// using this map's values directly (that was the previous bug: SHOPEE_STATUS_MAP
+// used to hold the English display string, and STATUS_CLASS was keyed by that
+// same string — switching locale would have translated the on-screen text
+// while STATUS_CLASS's keys stayed English, so every badge would have silently
+// fallen back to the default gray class).
+//
+// Orders.jsx now uses the same pattern (see STATUS there) against the same
+// shared `status:` dictionary namespace. The keys below are a subset of that
+// vocabulary, except 'new' — see the PROVISIONAL note in the dictionaries.
 const SHOPEE_STATUS_KEY = {
   UNPAID: 'new',
   READY_TO_SHIP: 'toPack',
@@ -294,7 +297,7 @@ export default function Dashboard() {
         // bucketing, so it can never disagree with the number above it.
         sub: salesReport ? `${t('sales.yesterday')}: ${formatRM(yesterday.revenue)}` : null,
       },
-      { id: 'toPack', label: t('dashboard.status.toPack'), value: String(toPack), valueClass: 'text-red-600' },
+      { id: 'toPack', label: t('status.toPack'), value: String(toPack), valueClass: 'text-red-600' },
       { id: 'lowStock', label: t('dashboard.stats.lowStock'), value: String(lowStock), valueClass: 'text-yellow-700' },
     ]
   }, [scopedOrders, scopedProducts, salesReport, store, t])
@@ -311,7 +314,9 @@ export default function Dashboard() {
       return {
         name,
         dotClass: display.dotClass,
-        orders: t(count === 1 ? 'dashboard.platforms.orderCount_one' : 'dashboard.platforms.orderCount_other', { count }),
+        // t() picks _one/_other off `count` itself — see pluralKey in
+        // I18nProvider. The ternary this replaces did the same thing by hand.
+        orders: t('dashboard.platforms.orderCount', { count }),
         revenue: formatRevenue(revenue),
         connected: connectedSet.has(name),
       }
@@ -327,7 +332,7 @@ export default function Dashboard() {
       // (that's data passthrough, same treatment as an unrecognized status
       // anywhere else in the app) rather than forcing it through a
       // translation key that may not exist for it.
-      const status = statusKey ? t(`dashboard.status.${statusKey}`) : row.order_status || t('dashboard.status.new')
+      const status = statusKey ? t(`status.${statusKey}`) : row.order_status || t('status.new')
       const statusClass = statusKey ? (STATUS_CLASS[statusKey] ?? DEFAULT_STATUS_CLASS) : DEFAULT_STATUS_CLASS
       return {
         id: `#${row.platform_order_id}`,
@@ -337,12 +342,7 @@ export default function Dashboard() {
         amount: `RM ${(Number(row.total_amount) || 0).toFixed(2)}`,
         status,
         statusClass,
-        timeAgo: row.order_created_at
-          ? formatDistanceToNow(new Date(row.order_created_at), {
-              addSuffix: true,
-              locale: locale === 'zh-CN' ? zhCN : undefined,
-            })
-          : '',
+        timeAgo: formatRelativeToNow(locale, row.order_created_at),
       }
     })
   }, [scopedOrders, t, locale])
