@@ -70,6 +70,10 @@ const COUNTRY_CURRENCIES = {
 // earlier in the lifecycle = more likely to still need seller action.
 // `confirmed` was observed in the live sample and is not in Lazada's published
 // status list.
+//
+// LIVE statuses only. A terminal status goes in COLLAPSE_TERMINAL_STATUSES
+// instead and needs no rank — the collapse filters those out before it ever
+// compares ranks.
 const STATUS_PROGRESS_RANK = {
   unpaid: 0,
   pending: 1,
@@ -83,12 +87,47 @@ const STATUS_PROGRESS_RANK = {
 // Statuses meaning "this line is finished and needs nothing further". Used ONLY
 // by the collapse below — see TERMINAL_ORDER_STATUSES for the (narrower) set
 // that governs skipping API round trips.
-const COLLAPSE_TERMINAL_STATUSES = new Set(['canceled', 'returned', 'failed']);
+//
+// The reverse-logistics statuses (shipped_back, shipped_back_success,
+// package_returned) belong HERE rather than in STATUS_PROGRESS_RANK above.
+// The two tables are mutually exclusive in effect: `live` below is defined as
+// "not in this set", so a status listed here never reaches the rank
+// comparison, and a rank given to it would be dead weight. Membership in
+// EITHER table is what marks a status recognised, so listing them here is also
+// what silences the UNRECOGNISED warning.
+//
+// `shipped_back` is included even though the parcel is still in transit back.
+// It is terminal in the only sense this set means — the seller has no action
+// left that would move it forward, and it must not be allowed to outrank a
+// sibling item that still needs packing. That is a separate question from
+// whether the ORDER can still change, which TERMINAL_ORDER_STATUSES answers
+// differently below.
+const COLLAPSE_TERMINAL_STATUSES = new Set([
+  'canceled',
+  'returned',
+  'failed',
+  'shipped_back',
+  'shipped_back_success',
+  'package_returned',
+]);
 
 // When EVERY entry is terminal, this decides which one represents the order.
 // Ordered most-consequential first: a return moved money and goods both ways,
 // a failure may still need chasing, a cancellation is the quiet case.
-const TERMINAL_PRECEDENCE = ['returned', 'failed', 'canceled'];
+//
+// The return family sits at the front as one block, ordered most-settled
+// first, so an order carrying several of them is described by its furthest-
+// along line. All four map to 'Returned' in Orders.jsx's LAZADA_STATUS_MAP, so
+// the ordering within the block only affects the raw value stored, never which
+// tab the order lands in.
+const TERMINAL_PRECEDENCE = [
+  'returned',
+  'shipped_back_success',
+  'package_returned',
+  'shipped_back',
+  'failed',
+  'canceled',
+];
 
 // Statuses an order can never leave, so the item round trip can be skipped for
 // them entirely (see fetchTerminalOrderIds).
@@ -99,6 +138,14 @@ const TERMINAL_PRECEDENCE = ['returned', 'failed', 'canceled'];
 // would otherwise be frozen at a stale status forever. The saving from skipping
 // is small anyway — /orders/get returns full order detail for free, so this
 // only avoids the /orders/items/get call, never the order data itself.
+//
+// The reverse-logistics statuses are excluded for exactly that reason and are
+// NOT added here. `shipped_back` is the clearest case — a parcel in transit
+// back is still moving and will become shipped_back_success (or fail), so
+// freezing it would strand it mid-return, the same trap `failed` is kept out
+// to avoid. shipped_back_success and package_returned look settled, but the
+// upside of skipping is one items call while the downside is a permanently
+// stale row, so they stay out too until there is a reason to optimise.
 const TERMINAL_ORDER_STATUSES = new Set(['canceled', 'returned']);
 
 /**
@@ -131,7 +178,7 @@ function collapseStatuses(rawStatuses, orderId) {
   );
   if (unknown.length > 0) {
     console.warn(
-      `[lazada-sync] order ${orderId} carries UNRECOGNISED status(es) ${JSON.stringify(unknown)} out of ${JSON.stringify(statuses)} — add them to STATUS_PROGRESS_RANK here AND to LAZADA_STATUS_MAP in src/pages/Orders.jsx. Storing "${unknown[0]}" as-is; it will sit in the UI's "Other" tab until then.`
+      `[lazada-sync] order ${orderId} carries UNRECOGNISED status(es) ${JSON.stringify(unknown)} out of ${JSON.stringify(statuses)} — add them here (STATUS_PROGRESS_RANK if the seller can still act on it, COLLAPSE_TERMINAL_STATUSES if it is finished) AND to LAZADA_STATUS_MAP in src/pages/Orders.jsx. Storing "${unknown[0]}" as-is; it will sit in the UI's "Other" tab until then.`
     );
     return unknown[0];
   }
