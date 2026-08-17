@@ -68,8 +68,19 @@ const COUNTRY_CURRENCIES = {
 //
 // Progress ranks drive the least-progressed-wins collapse below. Lower rank =
 // earlier in the lifecycle = more likely to still need seller action.
-// `confirmed` was observed in the live sample and is not in Lazada's published
-// status list.
+//
+// `confirmed` is UNDER REVIEW and is very likely dead weight here. It was
+// observed in the ORDER-LEVEL `statuses` array (the source deriveOrderStatus no
+// longer reads) and is not in Lazada's published item-status list, which points
+// to it being an order/payment-level state that item status never uses. Ranking
+// it below `packed` is what let it beat shipped/delivered siblings under
+// least-progressed-wins. It is kept for now because the fallback path can still
+// feed order-level values in, and because removing it before the temporary
+// [lazada-sync][DIAG] log has proved it absent from item status would only swap
+// one unverified assumption for another. Once a run confirms that, delete it
+// here and delete `confirmed: 'To Pack'` from LAZADA_STATUS_MAP in
+// src/pages/Orders.jsx together — dropping it here alone would make any
+// straggler land in the UI's "Other" tab.
 //
 // LIVE statuses only. A terminal status goes in COLLAPSE_TERMINAL_STATUSES
 // instead and needs no rank — the collapse filters those out before it ever
@@ -149,10 +160,15 @@ const TERMINAL_PRECEDENCE = [
 const TERMINAL_ORDER_STATUSES = new Set(['canceled', 'returned']);
 
 /**
- * Collapses Lazada's `statuses` ARRAY into the single value stored in
+ * Collapses a LIST of Lazada statuses into the single value stored in
  * orders.order_status. Shopee and TikTok both hand back a scalar status; Lazada
  * does not, because a multi-item order can be partially shipped and carry
  * e.g. ["shipped", "pending"].
+ *
+ * Callers pass the PER-ITEM `status` values — see deriveOrderStatus, which owns
+ * the choice of source and is the only thing that should call this. The
+ * order-level `statuses` array is now only a fallback for when no per-item
+ * status is available.
  *
  * Least-progressed-wins: if ANY entry is still live, the least-progressed live
  * entry represents the order, so a part that still needs packing surfaces in an
@@ -204,6 +220,125 @@ function collapseStatuses(rawStatuses, orderId) {
     );
   }
   return collapsed;
+}
+
+/**
+ * Picks the status list that represents an order, and collapses it.
+ *
+ * PER-ITEM `status` from /orders/items/get is the source, NOT the order-level
+ * `statuses` array from /orders/get. The order-level array was the original
+ * source and was wrong: it reports `confirmed` — an order/payment-level state
+ * that is not in Lazada's item-status vocabulary and never advances through
+ * fulfilment — so orders sat at `confirmed` for months while their items were
+ * shipped and delivered. 102 of 129 orders were stored that way, each with a
+ * tracking_code written into the SAME row by the SAME upsert from the SAME
+ * fetch pair, which is what proves the contradiction lives inside one Lazada
+ * response rather than between two syncs.
+ *
+ * `confirmed` being ranked below `packed` in STATUS_PROGRESS_RANK compounded it:
+ * under least-progressed-wins it beat every real fulfilment status it appeared
+ * next to. That rank entry is deliberately left in place for now — see the note
+ * on it above — because it is harmless once nothing feeds `confirmed` in, and
+ * removing it before the diagnostic below has confirmed the vocabulary in live
+ * data would just be a second unverified guess.
+ *
+ * Costs no extra API calls: the items are already fetched for tracking_code and
+ * the order_items rows.
+ *
+ * Statuses are deduplicated first. Lazada returns ONE ROW PER UNIT (see
+ * mapItemsToRows), so a 3-unit order would otherwise hand collapseStatuses
+ * ["shipped","shipped","shipped"] and trip its multi-status log line on every
+ * ordinary order. The collapse is order-insensitive and idempotent over
+ * duplicates, so this changes nothing but the noise.
+ */
+function deriveOrderStatus(lazadaOrder, items) {
+  const orderId = lazadaOrder.order_id;
+
+  const itemStatuses = [
+    ...new Set(items.map((i) => i.status).filter((s) => typeof s === 'string' && s.trim() !== '')),
+  ];
+
+  // FALLBACK 1 — nothing usable came back at item level. Covers the empty-items
+  // path (fetchOrderItems' batch-miss warning) and an items response that
+  // carries no status field at all. Without this an itemless order would be
+  // written with a null status.
+  if (itemStatuses.length === 0) {
+    console.warn(
+      `[lazada-sync] order ${orderId} has no usable per-item status (${items.length} item row(s)) — falling back to the order-level statuses array, which is known to under-report fulfilment progress`
+    );
+    return collapseStatuses(lazadaOrder.statuses, orderId);
+  }
+
+  const collapsed = collapseStatuses(itemStatuses, orderId);
+
+  // CONFIRMED: items_count equals the item row count (one row per unit), so a
+  // short item list means we are looking at a PARTIAL view of the order.
+  const expectedItemCount = Number(lazadaOrder.items_count ?? 0);
+  const partialItemList = expectedItemCount > 0 && items.length < expectedItemCount;
+
+  // FALLBACK 2 — a partial item list that happens to be all-terminal must not
+  // be allowed to conclude `canceled`/`returned`. Those two are the whole of
+  // TERMINAL_ORDER_STATUSES, so storing one makes fetchTerminalOrderIds skip
+  // this order's item fetch on EVERY later sync — a wrong value there strands
+  // the order permanently instead of self-healing. The unseen items may still
+  // be live, and there is no way to tell from what came back, so this defers
+  // rather than guesses. The order-level statuses array is never
+  // canceled/returned-only for a live order, so falling back cannot freeze it,
+  // and the order stays eligible for a correct read next cycle.
+  if (partialItemList && TERMINAL_ORDER_STATUSES.has(collapsed)) {
+    console.error(
+      `[lazada-sync] order ${orderId} returned only ${items.length} of ${expectedItemCount} item(s) and they collapse to the freezing status "${collapsed}" — refusing to store it from a partial item list (it would skip every future item fetch); falling back to the order-level statuses array this cycle`
+    );
+    return collapseStatuses(lazadaOrder.statuses, orderId);
+  }
+
+  if (partialItemList) {
+    console.warn(
+      `[lazada-sync] order ${orderId} returned only ${items.length} of ${expectedItemCount} item(s) — "${collapsed}" is derived from a partial item list and may be more-progressed than the true order status`
+    );
+  }
+
+  return collapsed;
+}
+
+/* ==========================================================================
+ * ⚠️  TEMPORARY DIAGNOSTIC — DELETE AFTER ONE SYNC RUN HAS BEEN INSPECTED  ⚠️
+ * ==========================================================================
+ *
+ * Confirms the per-item-vs-order-level diagnosis in live data across the full
+ * order set, rather than the 5 orders the original ?action=probe sampled. That
+ * probe asked whether `statuses` was multi-valued but never compared it against
+ * item status, which is exactly how the wrong field got shipped.
+ *
+ * TO REMOVE: delete this function and its single call in mapOrderToRow.
+ *
+ * Logs STATUS FIELDS ONLY — no buyer name, phone or address, unlike the
+ * ?action=probe endpoint this replaces. tracking_code is reported as a boolean,
+ * never the number itself.
+ *
+ * Grep a run for `[lazada-sync][DIAG]`. The two things to read off it:
+ *   - order_level vs item_statuses: if order_level is ["confirmed"] while
+ *     item_statuses holds shipped/delivered, the diagnosis holds and `confirmed`
+ *     never appears at item level at all.
+ *   - any `confirmed` inside item_statuses: if it DOES appear there, it is a
+ *     real item status and its STATUS_PROGRESS_RANK entry has to stay (and its
+ *     rank needs establishing from observation, not assumption).
+ */
+function logStatusDiagnostic(lazadaOrder, items, derived) {
+  console.log(
+    '[lazada-sync][DIAG]',
+    JSON.stringify({
+      order_id: String(lazadaOrder.order_id),
+      order_level_statuses: lazadaOrder.statuses ?? null,
+      item_statuses: items.map((i) => i.status ?? null),
+      distinct_item_statuses: [...new Set(items.map((i) => i.status ?? null))],
+      items_seen: items.length,
+      items_count_field: lazadaOrder.items_count ?? null,
+      any_tracking_code: items.some((i) => i.tracking_code != null && String(i.tracking_code).trim() !== ''),
+      derived_status: derived,
+      order_level_would_have_been: collapseStatuses(lazadaOrder.statuses, lazadaOrder.order_id),
+    })
+  );
 }
 
 /* --------------------------------- Requests --------------------------------- */
@@ -452,11 +587,14 @@ function mapOrderToRow(storeId, currency, lazadaOrder, items) {
   const shipping = lazadaOrder.address_shipping ?? {};
   const firstItem = items[0] ?? {};
 
+  const orderStatus = deriveOrderStatus(lazadaOrder, items);
+  logStatusDiagnostic(lazadaOrder, items, orderStatus); // TEMPORARY — see logStatusDiagnostic
+
   return {
     store_id: storeId,
     platform: 'lazada',
     platform_order_id: String(lazadaOrder.order_id),
-    order_status: collapseStatuses(lazadaOrder.statuses, lazadaOrder.order_id),
+    order_status: orderStatus,
     region: shipping.city ?? null,
     total_amount: lazadaOrder.price ?? null,
     currency,
