@@ -9,8 +9,6 @@ import {
 import { supabaseAdmin } from './_lib/supabaseAdmin.js';
 import { withCors } from './_lib/cors.js';
 import { syncLazadaShopOrders, getLazadaStoresToSync, SYNC_TIME_BUDGET_MS } from './_lib/lazadaSync.js';
-// TEMPORARY — remove with api/_lib/labelProbe.js. See that file's banner.
-import { handleLazadaProbe } from './_lib/labelProbe.js';
 
 // Combines what would otherwise be api/lazada/auth.js and
 // api/lazada/callback.js into one Vercel function (dispatched on ?action=),
@@ -28,12 +26,10 @@ function handler(req, res) {
   if (action === 'auth') return handleAuth(req, res);
   if (action === 'callback') return handleCallback(req, res);
   if (action === 'sync') return handleSync(req, res);
-  // TEMPORARY — remove with api/_lib/labelProbe.js. See that file's banner.
-  if (action === 'probe') return handleLazadaProbe(req, res);
 
   return res
     .status(400)
-    .json({ error: 'Unknown or missing action. Use ?action=auth, ?action=callback, ?action=sync or ?action=probe (temporary)' });
+    .json({ error: 'Unknown or missing action. Use ?action=auth, ?action=callback or ?action=sync' });
 }
 
 // Same HMAC-over-service-role-key convention as api/tiktok.js's
