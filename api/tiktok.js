@@ -10,6 +10,8 @@ import {
 import { supabaseAdmin } from './_lib/supabaseAdmin.js';
 import { withCors } from './_lib/cors.js';
 import { syncTikTokShopOrders, getTikTokStoresToSync, SYNC_TIME_BUDGET_MS } from './_lib/tiktokSync.js';
+// TEMPORARY — remove with api/_lib/labelProbe.js. See that file's banner.
+import { handleTikTokProbe } from './_lib/labelProbe.js';
 
 // Combines what used to be api/tiktok/auth.js and api/tiktok/callback.js into
 // one Vercel function (dispatched on ?action=) to stay under the Hobby plan's
@@ -31,8 +33,10 @@ function handler(req, res) {
   if (action === 'auth') return handleAuth(req, res);
   if (action === 'callback') return handleCallback(req, res);
   if (action === 'sync') return handleSync(req, res);
+  // TEMPORARY — remove with api/_lib/labelProbe.js. See that file's banner.
+  if (action === 'probe') return handleTikTokProbe(req, res);
 
-  return res.status(400).json({ error: 'Unknown or missing action. Use ?action=auth, ?action=callback or ?action=sync' });
+  return res.status(400).json({ error: 'Unknown or missing action. Use ?action=auth, ?action=callback, ?action=sync or ?action=probe (temporary)' });
 }
 
 async function handleSync(req, res) {

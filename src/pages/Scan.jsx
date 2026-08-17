@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Capacitor } from '@capacitor/core'
 import { Html5Qrcode } from 'html5-qrcode'
 import { toast } from 'sonner'
 import { ArrowLeft, Flashlight, FlashlightOff, Loader2, Package, ScanLine } from 'lucide-react'
@@ -9,6 +10,15 @@ import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
 const SCANNER_ELEMENT_ID = 'scan-reader'
+
+// Where a user has to go to undo a camera denial. In the APK the WebView has no
+// browser UI at all — a denied CAMERA permission is an Android app permission,
+// revoked and restored from the system Settings app — so the web wording ("this
+// site", "browser settings") is not just wrong there, it points nowhere. Read
+// once at module scope: the platform can't change mid-session.
+const CAMERA_DENIED_HELP = Capacitor.isNativePlatform()
+  ? 'Allow camera access for MyStore Hub in Android Settings › Apps › MyStore Hub › Permissions, then try again — or type the tracking number below.'
+  : 'Allow camera access for this site in your browser settings, then reload — or type the tracking number below.'
 
 // Shared pill style — matches Orders'/Dashboard's BADGE_CLS so all three
 // pages read as one system.
@@ -314,10 +324,7 @@ export default function Scan() {
             {cameraState === 'denied' && (
               <div className="rounded-2xl bg-white border border-[#E8E6E1] shadow-card p-4">
                 <p className="text-sm font-medium text-[#1F2937]">Camera access is blocked</p>
-                <p className="mt-1 text-xs text-[#6B7280]">
-                  Allow camera access for this site in your browser settings, then reload — or type
-                  the tracking number below.
-                </p>
+                <p className="mt-1 text-xs text-[#6B7280]">{CAMERA_DENIED_HELP}</p>
                 <Button
                   size="sm"
                   variant="outline"

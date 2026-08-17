@@ -38,4 +38,15 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Barcode scanning on the Scan page. html5-qrcode calls getUserMedia
+         inside the WebView; Capacitor's BridgeWebChromeClient.onPermissionRequest
+         already maps that to a runtime CAMERA request, but the launcher returns
+         "denied" WITHOUT showing a prompt unless the permission is declared here. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Declaring CAMERA implicitly marks android.hardware.camera as a REQUIRED
+         feature for Play Store device filtering. Scanning is one page of the app
+         and there's a manual-entry fallback, so keep it optional. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 </manifest>
