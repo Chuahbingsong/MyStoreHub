@@ -114,6 +114,12 @@ const OTHER_TAB = 'other'
 // cancellation, a return is often time-sensitive and requires the seller to
 // accept/dispute it — folding it into Cancelled (a tab whose implicit
 // meaning is "done, nothing to do") risks a seller missing the deadline.
+// 'Returned' shares that tab but is the OPPOSITE end of the same lifecycle:
+// the return is finished and the goods are physically back. It exists as a
+// separate label rather than reusing 'Return Requested' because the two must
+// stay tellable apart inside the Returns tab — one still needs a decision, the
+// other is a stock/refund reconciliation. Only Lazada reaches it today (Shopee
+// exposes no post-return status; see LAZADA_STATUS_MAP).
 const STATUS_TO_TAB = {
   Unpaid: 'unpaid',
   'Invoice Pending': 'new',
@@ -125,6 +131,7 @@ const STATUS_TO_TAB = {
   Completed: 'completed',
   'Cancel Requested': 'cancelRequests',
   'Return Requested': 'returns',
+  Returned: 'returns',
   Cancelled: 'cancelled',
 }
 
@@ -145,6 +152,9 @@ const STATUS_BADGE = {
   Completed: 'bg-teal-500/15 text-teal-600',
   'Cancel Requested': 'bg-amber-500/15 text-amber-700',
   'Return Requested': 'bg-amber-500/15 text-amber-700',
+  // Same amber family as 'Return Requested' (they share the Returns tab), one
+  // step deeper because this one is terminal — nothing is pending on it.
+  Returned: 'bg-amber-600/15 text-amber-800',
   Cancelled: 'bg-red-500/15 text-red-600',
 }
 
@@ -181,6 +191,10 @@ const MARKETPLACE_STATUS = {
     Packed: 'Ready to Ship',
     Shipped: 'Shipped',
     Completed: 'Delivered',
+    // Collapses returned / shipped_back / shipped_back_success /
+    // package_returned, so this names only the representative — the same
+    // lossiness 'To Pack' and 'Packed' already have here.
+    Returned: 'Returned',
     Cancelled: 'Canceled',
   },
   // Audited against TIKTOK_STATUS_MAP / TikTok Shop's documented order_status
@@ -397,26 +411,41 @@ async function postOrderAction(session, order, action) {
 // in particular is absent from Lazada's published status list but appeared in
 // the live sample.
 //
-// Three mappings are lossy, because Lazada simply has no equivalent state:
+// Two mappings are lossy, because Lazada simply has no equivalent state:
 //   delivered -> 'Completed'. Lazada has NO status after delivered — it is the
 //     end state for a fulfilled order. (TikTok maps DELIVERED to 'To Confirm
 //     Receipt' instead, and that asymmetry is correct: TikTok has a real
 //     COMPLETED status afterwards, Lazada does not. Mapping this to 'To Confirm
 //     Receipt' would leave the Completed tab permanently empty for Lazada.)
-//   returned -> 'Cancelled'. Lazada's `returned` means the return has ALREADY
-//     COMPLETED, unlike Shopee's TO_RETURN which is a request awaiting the
-//     seller. Routing it to the Returns tab would imply action that no longer
-//     exists, so it goes to Cancelled — terminal, money returned, nothing to do.
-//     The cancelled-vs-returned distinction is lost in the UI as a result.
 //   failed -> 'Cancelled'. ⚠️ The weakest mapping here. Lazada's `failed` may
 //     mean a failed DELIVERY (parcel coming back, arguably still actionable) or
 //     a failed ORDER (payment/fraud, genuinely dead). Treated as terminal for
-//     now; re-check this one against live data before trusting it.
+//     now; re-check this one against live data before trusting it. If it turns
+//     out to mean failed DELIVERY, it belongs with the return group below.
 //
-// Anything outside this table — shipped_back, lost_by_3pl, damaged_by_3pl,
-// package_returned and friends — is deliberately left unmapped so it lands in
-// the "Other" tab with the warning below, rather than being silently forced
-// into a bucket it doesn't belong in.
+// THE RETURN GROUP: returned, shipped_back, shipped_back_success and
+// package_returned all map to 'Returned' (Returns tab).
+//
+// `returned` used to map to 'Cancelled', on the reasoning that a COMPLETED
+// return implies no outstanding action and the Returns tab implies one. That
+// was wrong in practice: it hid physically-returning stock inside a tab that
+// reads as "dead orders, nothing to do", when a returned parcel still needs
+// receiving, inspecting and restocking. The Returns tab now covers the whole
+// return lifecycle — 'Return Requested' at the front (a decision is pending),
+// 'Returned' at the back (goods are on their way back or already back) — and
+// Cancelled is reserved for orders where no goods ever moved.
+//
+// The four are collapsed into one label deliberately: `shipped_back` is in
+// transit back while the other three are complete, so calling all four
+// 'Returned' runs slightly ahead of reality for that one. That is the same
+// many-to-one lossiness this table already carries elsewhere (pending and
+// confirmed both -> 'To Pack'), and it keeps a canonical label from existing
+// for a single platform's single status. Split it if the in-transit-back case
+// ever needs its own handling.
+//
+// Still deliberately unmapped: lost_by_3pl, damaged_by_3pl and friends. Those
+// are loss/damage claims, not returns — they land in the "Other" tab with the
+// warning below rather than being forced into a bucket they don't belong in.
 const LAZADA_STATUS_MAP = {
   unpaid: 'Unpaid',
   pending: 'To Pack',
@@ -426,7 +455,10 @@ const LAZADA_STATUS_MAP = {
   shipped: 'Shipped',
   delivered: 'Completed',
   canceled: 'Cancelled',
-  returned: 'Cancelled',
+  returned: 'Returned',
+  shipped_back: 'Returned',
+  shipped_back_success: 'Returned',
+  package_returned: 'Returned',
   failed: 'Cancelled',
 }
 
