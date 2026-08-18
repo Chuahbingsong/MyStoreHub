@@ -41,11 +41,57 @@ create index if not exists idx_orders_created_at
 --   calendar day. Named zone, not a hardcoded +8, so it stays correct if
 --   Malaysia ever observes DST again (it did until 1935).
 --
--- WHAT COUNTS AS A SALE:
---   PROCESSED, SHIPPED, TO_CONFIRM_RECEIVE, COMPLETED, RETRY_SHIP.
---   Deliberately EXCLUDED: UNPAID (cash-at-counter orders that mostly never
---   get paid — counting them inflates revenue), CANCELLED, IN_CANCEL,
---   TO_RETURN.
+-- WHAT COUNTS AS A SALE — PER PLATFORM, because order_status holds each
+-- platform's RAW vocabulary (see api/_lib/*Sync.js: every sync writes the
+-- platform's own status verbatim and the single translation into the app's
+-- canonical labels lives in src/pages/Orders.jsx).
+--
+-- The rule is defined ONCE in canonical terms and then spelled out in each
+-- platform's own words below. An order counts as revenue when its canonical
+-- status is one of:
+--     Packed, Retry Shipment, Shipped, To Confirm Receipt, Completed
+-- i.e. paid AND at least packed. Deliberately EXCLUDED, in canonical terms:
+--   Unpaid / Invoice Pending  — cash-at-counter orders that mostly never get
+--                               paid; counting them inflates revenue
+--   To Pack                   — paid but not yet packed (Shopee READY_TO_SHIP,
+--                               Lazada 'pending'). Excluded since this function
+--                               was written; kept that way here so the fix
+--                               below changes WHICH PLATFORMS are counted and
+--                               nothing else.
+--   Cancel Requested, Return Requested, Returned, Cancelled
+--
+-- This used to be a single flat status list — PROCESSED, SHIPPED,
+-- TO_CONFIRM_RECEIVE, COMPLETED, RETRY_SHIP — with no platform predicate at
+-- all, which was Shopee's vocabulary applied to every row. The effect:
+--   - Lazada revenue was ALWAYS zero. Lazada's statuses are lowercase
+--     ('shipped', 'delivered', 'confirmed', ...) and share not one string with
+--     that list, so no Lazada order could ever match.
+--   - TikTok revenue was counted only by ACCIDENT, and only partly: TikTok's
+--     COMPLETED happens to be spelled the same as Shopee's, so those matched,
+--     while IN_TRANSIT / DELIVERED / AWAITING_COLLECTION silently did not.
+-- Meanwhile order COUNTS on the dashboard were never status-filtered, so the
+-- count included Lazada while the revenue beside it did not — which is how the
+-- bug surfaced (12 orders, but only Shopee's money).
+--
+-- FALSE FRIEND, do not "simplify" this into one case-insensitive list:
+-- Shopee's READY_TO_SHIP and Lazada's 'ready_to_ship' are NOT the same state.
+-- Shopee's means canonical 'To Pack' (not packed yet — excluded); Lazada's
+-- means canonical 'Packed' (label printed, awaiting pickup — counted), which
+-- is Shopee's PROCESSED. Lazada's equivalent of Shopee READY_TO_SHIP is
+-- 'pending'. Matching case-insensitively would flip both of them to the wrong
+-- side. See LAZADA_STATUS_MAP in src/pages/Orders.jsx, which is the source
+-- these lists are derived from.
+--
+-- A platform absent from this list contributes ZERO revenue rather than
+-- falling through to some other platform's vocabulary. That is the deliberate
+-- trade — an unknown platform must never have its cancelled orders counted as
+-- sales — but it IS the failure mode that hid Lazada, so: WHEN A NEW PLATFORM
+-- IS CONNECTED, ADD ITS COUNTED STATUSES HERE. Shopify is the open case today
+-- (it appears in the dashboard's platform grid but has no sync and no status
+-- map anywhere yet).
+--
+-- The mirror of these lists in src/lib/salesReport.js is for display only and
+-- follows this file; SQL is the source of truth.
 --
 -- DATE FIELD:
 --   order_created_at, NOT paid_at. paid_at is null on 166 of 1,290 orders
@@ -101,8 +147,26 @@ as $$
            coalesce(o.total_amount, 0) as amount
     from orders o
     where o.order_created_at >= (select ts from window_start)
-      and o.order_status in (
-        'PROCESSED', 'SHIPPED', 'TO_CONFIRM_RECEIVE', 'COMPLETED', 'RETRY_SHIP'
+      and (
+        -- Shopee v2 order_status (SHOPEE_STATUS_MAP in src/pages/Orders.jsx)
+        (o.platform = 'shopee' and o.order_status in (
+          'PROCESSED', 'RETRY_SHIP', 'SHIPPED', 'TO_CONFIRM_RECEIVE', 'COMPLETED'
+        ))
+        -- Lazada, lowercase and collapsed least-progressed-wins before it is
+        -- written (LAZADA_STATUS_MAP / api/_lib/lazadaSync.js). 'confirmed'
+        -- counts because it means settled-but-no-fulfilment-detail, which maps
+        -- to canonical 'Completed' — the same evidence that stopped it being
+        -- treated as 'To Pack'. 'pending' is Lazada's To Pack and is excluded.
+        or (o.platform = 'lazada' and o.order_status in (
+          'packed', 'ready_to_ship', 'shipped', 'delivered', 'confirmed'
+        ))
+        -- TikTok Shop v202309 (TIKTOK_STATUS_MAP). That map is documented-but-
+        -- unverified against live data, so this list inherits the same caveat;
+        -- it is still strictly better than the accidental COMPLETED-only match
+        -- it replaces.
+        or (o.platform = 'tiktok' and o.order_status in (
+          'PARTIALLY_SHIPPING', 'AWAITING_COLLECTION', 'IN_TRANSIT', 'DELIVERED', 'COMPLETED'
+        ))
       )
   )
   -- per store, zero-filled across every store the caller owns

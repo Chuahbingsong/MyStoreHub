@@ -17,6 +17,7 @@ import { useTranslation } from '@/lib/i18n/I18nContext'
 import { formatRelativeToNow } from '@/lib/i18n/datetime'
 import {
   addDaysISO,
+  countsAsRevenue,
   fetchSalesReport,
   figuresForDay,
   formatRM,
@@ -310,7 +311,22 @@ export default function Dashboard() {
       const display = PLATFORM_DISPLAY[name]
       const forPlatform = todaysOrders.filter((o) => platformLabel(o.platform) === name)
       const count = forPlatform.length
-      const revenue = forPlatform.reduce((sum, o) => sum + (Number(o.total_amount) || 0), 0)
+      // Same rule daily_sales() applies to the revenue tile above — see
+      // countsAsRevenue in src/lib/salesReport.js. This sum used to include
+      // EVERY status, so a card could claim revenue for a cancelled or unpaid
+      // order that the tile (correctly) left out, and the two would disagree
+      // for reasons no one could see. The counts beside them stay unfiltered
+      // on purpose: "orders today" is a different question from "revenue
+      // today", and the tile pair at the top of the page splits it the same
+      // way.
+      //
+      // Summing client-side is safe HERE and only here: today's orders are
+      // fetched in full via selectAllPaged, so there is no 1,000-row cap to
+      // silently truncate the way an all-time sum would.
+      const revenue = forPlatform.reduce(
+        (sum, o) => sum + (countsAsRevenue(o) ? Number(o.total_amount) || 0 : 0),
+        0
+      )
       return {
         name,
         dotClass: display.dotClass,

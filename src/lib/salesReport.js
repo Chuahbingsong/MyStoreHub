@@ -15,16 +15,37 @@ import { supabase } from '@/lib/supabase'
 
 export const SALES_WINDOW_DAYS = 30
 
-// Mirrors the status list inside daily_sales(). Exported for display only —
+// Mirrors the status filter inside daily_sales(). Exported for display only —
 // the filter that actually runs is the one in SQL. If these ever need to
 // change, SQL is the source of truth and this follows it.
-export const COUNTED_STATUSES = [
-  'PROCESSED',
-  'SHIPPED',
-  'TO_CONFIRM_RECEIVE',
-  'COMPLETED',
-  'RETRY_SHIP',
-]
+//
+// Keyed BY PLATFORM because orders.order_status stores each platform's raw
+// vocabulary, never a canonical one. A single flat list is what caused the bug
+// this shape replaces: the old list was Shopee's words applied to every row, so
+// Lazada (lowercase statuses, zero overlap) contributed nothing to revenue
+// while its orders still showed up in the order count next to it.
+//
+// The lists are per-platform spellings of ONE canonical rule — count an order
+// once it is paid and at least packed:
+//   Packed, Retry Shipment, Shipped, To Confirm Receipt, Completed
+// Unpaid, To Pack, cancellations and returns are all excluded. See the long
+// WHAT COUNTS AS A SALE note in supabase/sales_reporting_migration.sql for the
+// per-status reasoning, including why Shopee's READY_TO_SHIP and Lazada's
+// 'ready_to_ship' land on OPPOSITE sides of this rule.
+//
+// A platform missing from here contributes zero — add new platforms in SQL
+// first, then here. Shopify has no sync or status map yet, so it has no entry.
+export const COUNTED_STATUSES_BY_PLATFORM = {
+  shopee: ['PROCESSED', 'RETRY_SHIP', 'SHIPPED', 'TO_CONFIRM_RECEIVE', 'COMPLETED'],
+  lazada: ['packed', 'ready_to_ship', 'shipped', 'delivered', 'confirmed'],
+  tiktok: ['PARTIALLY_SHIPPING', 'AWAITING_COLLECTION', 'IN_TRANSIT', 'DELIVERED', 'COMPLETED'],
+}
+
+/** Whether an order row counts toward revenue, by the same rule daily_sales() applies. */
+export function countsAsRevenue(order) {
+  const statuses = COUNTED_STATUSES_BY_PLATFORM[order?.platform]
+  return statuses ? statuses.includes(order.order_status) : false
+}
 
 /** KL calendar day for "now", as YYYY-MM-DD. */
 export function todayKL(nowMs = Date.now()) {
