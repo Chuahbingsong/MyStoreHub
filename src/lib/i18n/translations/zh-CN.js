@@ -2,27 +2,29 @@
 // the i18n context falls back to en.js per-key if a key is ever missing
 // here, but that fallback should never actually be exercised.
 export default {
-  // See en.js. DELIBERATELY INCOMPLETE — the one namespace in this file that is
-  // allowed to be, and the only place the provider's per-key English fallback
-  // is expected to fire.
+  // See en.js. COMPLETE — all twelve canonical statuses, in Shopee Seller
+  // Centre's own zh-CN wording (supplied by the seller, not translated from
+  // the English). This namespace no longer relies on the provider's per-key
+  // English fallback.
   //
-  // The five below are carried over unchanged from dashboard.status.*; they
-  // still need checking against Shopee Seller Centre's own zh-CN wording.
-  //
-  // AWAITING SHOPEE SELLER CENTRE VOCABULARY — do not guess these seven:
-  //   unpaid, invoicePending, retryShipment, toConfirmReceipt,
-  //   cancelRequested, returnRequested, returned
-  // Until they are supplied they fall back to the English in en.js, which is
-  // the honest behaviour: a wrong Chinese status label moves a seller's
-  // understanding of what a parcel needs, and these words drive the tabs.
-  // Add them here and the whole app picks them up — no code change needed.
+  // The last five were already present and have been confirmed against Seller
+  // Centre unchanged; the first seven were added once the vocabulary was
+  // available, rather than guessed at — a wrong Chinese status label changes
+  // what a seller believes a parcel needs, and these words drive the tabs.
   //
   // 'new' was retired alongside en.js; Dashboard now maps UNPAID to 'unpaid'.
   status: {
+    unpaid: '待付款',
+    invoicePending: '待开发票',
     toPack: '待打包',
     packed: '已打包',
+    retryShipment: '重新发货',
     shipped: '已发货',
+    toConfirmReceipt: '待收货确认',
     completed: '已完成',
+    cancelRequested: '取消申请中',
+    returnRequested: '退货申请中',
+    returned: '已退货',
     cancelled: '已取消',
   },
   errors: {
@@ -591,14 +593,21 @@ export default {
     arrangedVia: '发货方式',
     paidAt: '付款 {{date}}',
     packedAt: '打包 {{date}}',
-    // AWAITING SHOPEE SELLER CENTRE VOCABULARY — same reasoning as the
-    // top-level `status:` namespace. These eight drive which orders a seller
-    // sees under which heading, so they are left to fall back to the English
-    // in en.js rather than guessed at. Fill them in and the tabs pick them up.
-    // ('other' is a safety-net tab that should always read 0.)
-    //
-    // tabs: { unpaid, new, inprocess, shipped, completed, cancelRequests,
-    //         returns, cancelled, other }
+    // Tab labels, keyed by the stable tab ids in TABS. These are this app's own
+    // groupings rather than Shopee screens, so they do not all have a Seller
+    // Centre counterpart — 'other' in particular is a safety-net tab that
+    // should always read 0.
+    tabs: {
+      unpaid: '待付款',
+      new: '新订单',
+      inprocess: '处理中',
+      shipped: '已发货',
+      completed: '已完成',
+      cancelRequests: '取消申请',
+      returns: '退货',
+      cancelled: '已取消',
+      other: '其他',
+    },
     filters: {
       all: '全部',
     },
@@ -617,14 +626,27 @@ export default {
       packed: '已打包',
       shipped: '已发货',
     },
-    // AWAITING SHOPEE SELLER CENTRE VOCABULARY — this column exists to mirror
-    // what Seller Centre itself says, so guessing here would defeat its whole
-    // purpose. Falls back to the English in en.js until supplied:
-    //   marketplaceStatus.shopee: { unpaid, invoicePending, processed,
-    //     retryShipment, shipped, toConfirmReceive, cancellationRequested,
-    //     toReturnRefund, cancelled }
+    // Shopee Seller Centre's OWN zh-CN wording — this column exists to mirror
+    // what Seller Centre itself says, so these came from the console rather
+    // than from translating en.js. Note they deliberately differ from the
+    // `status:` namespace above: Seller Centre says 已处理 where this app says
+    // 待打包/已打包, and 买家申请取消 where the app says 取消申请中.
+    //
     // Lazada/TikTok/Shopify are intentionally never translated — see the note
     // on MARKETPLACE_STATUS in Orders.jsx.
+    marketplaceStatus: {
+      shopee: {
+        unpaid: '待付款',
+        invoicePending: '待开发票',
+        processed: '已处理',
+        retryShipment: '重新发货',
+        shipped: '已发货',
+        toConfirmReceive: '待买家确认收货',
+        cancellationRequested: '买家申请取消',
+        toReturnRefund: '退货/退款',
+        cancelled: '已取消',
+      },
+    },
     sections: {
       buyer: '买家',
       shipping: '配送',
