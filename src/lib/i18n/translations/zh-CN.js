@@ -2,17 +2,34 @@
 // the i18n context falls back to en.js per-key if a key is ever missing
 // here, but that fallback should never actually be exercised.
 export default {
-  // See en.js for why this namespace exists and why it is deliberately
-  // partial. Every key here already had this exact Chinese label under
-  // dashboard.status.* — the shared namespace is a move, not a retranslation.
+  // See en.js. DELIBERATELY INCOMPLETE — the one namespace in this file that is
+  // allowed to be, and the only place the provider's per-key English fallback
+  // is expected to fire.
+  //
+  // The five below are carried over unchanged from dashboard.status.*; they
+  // still need checking against Shopee Seller Centre's own zh-CN wording.
+  //
+  // AWAITING SHOPEE SELLER CENTRE VOCABULARY — do not guess these seven:
+  //   unpaid, invoicePending, retryShipment, toConfirmReceipt,
+  //   cancelRequested, returnRequested, returned
+  // Until they are supplied they fall back to the English in en.js, which is
+  // the honest behaviour: a wrong Chinese status label moves a seller's
+  // understanding of what a parcel needs, and these words drive the tabs.
+  // Add them here and the whole app picks them up — no code change needed.
+  //
+  // 'new' was retired alongside en.js; Dashboard now maps UNPAID to 'unpaid'.
   status: {
-    // PROVISIONAL — see the matching note in en.js.
-    new: '新',
     toPack: '待打包',
     packed: '已打包',
     shipped: '已发货',
     completed: '已完成',
     cancelled: '已取消',
+  },
+  errors: {
+    timeout: '请求超时，请重试。',
+    badResponse: '服务器返回了意外的响应，请重试。',
+    unreachable: '无法连接服务器 —— 请检查网络（详情见控制台）。',
+    withDetail: '{{fallback}}（{{detail}}）',
   },
   nav: {
     dashboard: '首页',
@@ -154,6 +171,370 @@ export default {
       logout: '退出登录',
     },
   },
+  boost: {
+    // 「推广」沿用 nav.boost 的用词 —— 同样需向 Shopee 官方中文界面核实。
+    title: '推广管理',
+    subtitle: 'Shopee 商品推广',
+    howItWorks:
+      '每个店铺会推广 {{max}} 件商品约 4 小时，然后自动轮换推广列表中的下一批商品。开启某个店铺后，MyStore Hub 将接管它的 {{max}} 个推广位 —— 请先关闭该店铺的其他推广工具（如 BigSeller）。',
+    noStores: '尚未连接 Shopee 店铺。',
+    unnamedStore: '未命名店铺',
+    untitledProduct: '无标题商品',
+    slotsSummary: '{{active}}/{{max}} 个推广位进行中 · 轮换列表 {{rotation}} 件',
+    externallyControlled_one:
+      '有 {{count}} 个推广位由其他推广工具控制。请关闭该店铺在 BigSeller 上的推广，MyStore Hub 才能接管。',
+    externallyControlled_other:
+      '有 {{count}} 个推广位由其他推广工具控制。请关闭该店铺在 BigSeller 上的推广，MyStore Hub 才能接管。',
+    minutesLeft: '剩 {{mins}} 分钟',
+    ready: '就绪',
+    emptySlot: '空闲',
+    editRotation: '编辑轮换',
+    rotationTitle: '轮换列表 —— {{store}}',
+    inRotation: '轮换中（{{count}}）',
+    emptyRotation:
+      '暂无商品 —— 请在下方添加。调度器会让 {{max}} 个推广位按此列表轮换，最久未推广的优先。',
+    lastBoosted: '上次推广 {{date}}',
+    neverBoosted: '从未推广',
+    addProduct: '添加商品',
+    searchProducts: '搜索商品',
+    noSyncedProducts: '此店铺尚未同步任何商品。',
+    noProductsMatch: '没有匹配的商品。',
+    stock: '库存',
+    add: '添加',
+    enabledToast: '自动推广已开启 —— MyStore Hub 现已接管该店铺的 {{max}} 个推广位',
+    disabledToast: '自动推广已关闭',
+    toggleError: '无法更新自动推广设置',
+    addError: '无法添加到轮换列表',
+    removeError: '无法从轮换列表移除',
+  },
+  flashDeals: {
+    // Shopee 中国站对店铺限时活动的官方叫法是「限时秒杀」——
+    // 与 dashboard.quickActions.flashDeals 保持一致，同样需向 Shopee 核实。
+    title: '限时秒杀',
+    subtitle: 'Shopee 限时秒杀场次',
+    monitoringNote:
+      '仅作监控之用。这些时段由 BigSeller 创建和填充 —— MyStore Hub 只负责读取，让你在一处查看价格、配额和时间安排。Shopee 不提供已售数量，因此配额指的是分配量，而非剩余库存。',
+    copyDisabledHint: '复制功能即将推出 —— 有待 8 月 2 日时段归属测试结果',
+    tabs: {
+      ongoing: '进行中',
+      upcoming: '即将开始',
+      expired: '已结束',
+    },
+    state: {
+      ongoing: '进行中',
+      upcoming: '即将开始',
+      expired: '已结束',
+      rejected: '已驳回',
+    },
+    emptyTab: {
+      ongoing: '没有进行中的场次。',
+      upcoming: '没有即将开始的场次。',
+      expired: '没有已结束的场次。',
+    },
+    noDataYet: '暂无限时秒杀数据 —— 下次同步后会显示。',
+    noItemData: '此场次尚未同步商品数据。',
+    session: '场次',
+    clear: '清除',
+    selectedCount: '已选 {{count}} 项',
+    endsIn: '{{duration}}后结束',
+    startsIn: '{{duration}}后开始',
+    endsNextDay: '次日结束',
+    selectSlot: '选择 {{slot}}',
+    unknownStore: '店铺',
+    untitledItem: '无标题',
+    unknownStatusCode: '状态 {{code}}',
+    syncedAgo: '同步于{{ago}}',
+    refreshFailed: '刷新失败。',
+    tryAgainIn: '请在 {{secs}} 秒后重试。',
+    refreshed: '已刷新 —— {{items}} 件商品，{{variants}} 个规格。',
+    networkError: '网络错误',
+    clicksCount: '{{count}} 次点击',
+    remindersCount: '{{count}} 次提醒',
+    variantsCount: '{{count}} 个规格',
+    rejectedVariants: '{{count}} 个规格被 Shopee 驳回',
+    buyerPaysInclTax: '买家实付（含税）',
+    promoQuota: '秒杀配额',
+    maxPerBuyer: '每人限购 {{limit}} 件',
+    productStockNow: '当前商品库存',
+    outOfStock: '缺货',
+    underDiscountFloor: '低于 10% 折扣门槛',
+    countsDisagree:
+      'Shopee 报告有 {{reported}} 件已启用商品，但商品列表返回 {{derived}} 件。应以商品列表为准 —— Shopee 会把已结束场次的该数值清零。',
+    columns: {
+      timeSlot: '时段',
+      flashSaleId: '秒杀 ID',
+      items: '商品',
+      clicks: '点击',
+      remind: '提醒',
+      status: '状态',
+      renew: '续期',
+      actions: '操作',
+    },
+    details: {
+      itemsInSlot: '时段内商品',
+      enabledItems: '已启用商品',
+      variants: '规格',
+      shopeeReports: 'Shopee 报告',
+      flashSaleId: '秒杀 ID',
+      timeslotId: '时段 ID',
+    },
+    actions: {
+      refresh: '从 Shopee 刷新此场次',
+      coolingDown: '冷却中 —— {{secs}} 秒',
+      copy: '将此场次复制到空闲时段',
+      details: '打开详情',
+    },
+    autoRenew: {
+      short: '自动续期',
+      title: '自动续期此时段',
+      previewBadge: '预览',
+      notActive: '尚未启用 —— 此开关目前不起作用。',
+    },
+    modelStatus: {
+      disabled: '已停用',
+      enabled: '已启用',
+      deleted: '已删除',
+      systemRejected: '系统驳回',
+      manualRejected: '人工驳回',
+    },
+    sessionStatus: {
+      deleted: '已删除',
+      enabled: '已启用',
+      disabled: '已停用',
+      systemRejected: '系统驳回',
+    },
+    risk: {
+      near: {
+        label: '48 小时内',
+        note: '风险较高 —— 与 BigSeller 争夺时段归属的结果尚未验证',
+      },
+      mid: { label: '2–7 天后', note: '有一定提前量' },
+      far: { label: '7 天以上', note: '最稳妥 —— 在 BigSeller 出手前留有最多时间' },
+    },
+    picker: {
+      title: '选择时段',
+      description: '未来 18 天内的空闲时段。最多可选 {{max}} 个 —— 每个都会成为独立的秒杀场次。',
+      noFreeSlots: '此店铺在未来 18 天内没有空闲时段。',
+      justCopied: '刚刚已复制',
+      selectedCount: '已选 {{picked}} / {{max}}',
+      estimate: '约 {{duration}} —— 每分钟 {{perMin}} 次的频率限制',
+      atCap: '上限为 {{max}} 个 —— 批处理在本页面内运行，再多会让你在此等待过久。',
+      confirmCount_one: '确认 {{count}} 个时段',
+      confirmCount_other: '确认 {{count}} 个时段',
+      confirmEmpty: '确认时段',
+    },
+    tally: {
+      join: '，',
+      copied: '{{count}} 个已复制',
+      partial: '{{count}} 个部分成功',
+      unverified: '{{count}} 个未核实',
+      failed: '{{count}} 个失败',
+      skipped: '{{count}} 个已跳过',
+      allCopied: '已复制 {{count}} 个时段。',
+      mixed: '{{parts}} —— 请查看各时段的详细结果。',
+    },
+    copy: {
+      sheetTitle: '复制到空闲时段',
+      fromSlot: '来自 {{slot}}',
+      disabledBanner:
+        '⏸️ 复制功能已停用。这只是将要写入内容的预览 —— 不会发送到 Shopee。有待 8 月 2 日时段归属测试结果。',
+      loadingSlots: '正在加载时段…',
+      chooseSlot: '选择时段',
+      changeSlots: '更改时段（{{count}}）',
+      removeSlot: '移除 {{slot}}',
+      nearTermWarning:
+        '⚠️ 部分所选时段将在 48 小时内开始。Shopee 是否允许我们占用 BigSeller 也想要的时段，目前仍无观测数据 —— 8 月 2 日的测试尚未进行。',
+      copyingHeading: '正在复制…',
+      resultsHeading: '结果',
+      slotCount_one: '{{count}} 个时段',
+      slotCount_other: '{{count}} 个时段',
+      willCopySummary: '将复制 {{items}} 件商品／{{variants}} 个规格，价格不变',
+      copiedSummary: '已复制 {{items}} 件商品／{{variants}} 个规格，价格不变',
+      intoEachSlot: '，分别写入 {{count}} 个时段',
+      pricesNote:
+        '已停用和被驳回的规格会被跳过。价格原样复制 —— 重复使用同一价格已被验证不会触发 Shopee 的最低价规则。',
+      noEnabledVariants: '此场次没有已启用的规格 —— 无内容可复制。',
+      stopAfterCurrent: '完成当前时段后停止',
+      done: '完成',
+      copyDisabled: '复制已停用',
+      chooseSlotFirst: '请先选择时段',
+      createDeals_one: '创建 {{count}} 个秒杀场次',
+      createDeals_other: '创建 {{count}} 个秒杀场次',
+      keepOpen: '请保持此页面打开 —— 批处理在本页运行，而非服务器。',
+      copying: '复制中',
+      waitingForLock: '等待锁释放',
+      rateLimit: '频率限制',
+      queued: '排队中',
+      skipped: '已跳过',
+      lockHeldNote:
+        '此前的一次复制仍持有该店铺的锁。若它是中途被终止的，锁会在 90 秒内自行释放 —— 此时段并未失败。',
+      verdictCopied: '已复制 —— 已核实 {{persisted}}/{{sent}} 个规格',
+      verdictFailed: '失败 —— 未确认创建任何秒杀场次',
+      verdictPartial: '部分成功 —— 已核实 {{persisted}}/{{sent}} 个规格',
+      verdictUnverified: '未核实 —— 已核实 {{persisted}}/{{sent}} 个规格',
+      uncertainNote:
+        '请求已发出，但结果未知 —— 该时段上可能已经创建了场次。重试前请先在 Shopee 上确认。',
+      newFlashSale: '新秒杀场次',
+      onSlot: '位于时段',
+      addCallReported: '添加调用返回',
+      readBackFailed: '回读失败：{{error}}。实际写入内容未知 —— 重试前请先在 Shopee 上检查该场次。',
+      notPersisted: '已发送但未保存（{{count}}）：',
+      priceDrift: '价格偏差（{{count}}）：',
+      quotaDrift: '配额偏差（{{count}}）：',
+      rejectedByShopee: '被 Shopee 驳回（{{count}}）：',
+      sentGot: '发送 {{sent}} → 实得 {{got}}',
+      lockTimeoutError:
+        '另一次复制持有该店铺的锁超过 90 秒 —— 它很可能是中途被终止的。此时段从未被尝试，请重试。',
+      neverAttempted: '此时段从未被尝试，请重试。',
+      httpError: '复制失败（HTTP {{status}}）',
+      batchFailed: '批量复制失败。',
+    },
+  },
+  // BulkPrint 与 Orders 共用 —— 两者渲染同一组运单打印对话框。
+  printAwb: {
+    cancel: '取消',
+    confirmButton: '确认',
+    confirm: {
+      // 中文无单复数变化，两个后缀内容相同 —— 见 I18nProvider.jsx 的说明。
+      title_one: '要下载并打开该运单吗？',
+      title_other: '要下载并打开 {{count}} 张运单吗？',
+      description: '运单将以 PDF 格式下载到本设备。',
+    },
+    markPrinted: {
+      title_one: '要将此包裹标记为已打印吗？',
+      title_other: '要将 {{count}} 个包裹标记为已打印吗？',
+      description: '请在运单确实已打印后再确认。',
+    },
+    hint: {
+      androidNative: '系统会弹出「打开方式」选择器 —— 请选择你的打印应用（或 Drive、WPS 等）。',
+      androidWeb: '在 Android 上，点击下载通知即可选择用哪个应用打开。',
+      ios: '在 iPhone／iPad 上，运单会在 Safari 中打开 —— 点击分享图标即可用其他应用打开。',
+    },
+  },
+  bulkPrint: {
+    title: '批量打印运单',
+    loading: '加载中...',
+    backToOrders: '返回订单',
+    backToOrdersButton: '返回订单',
+    readyToPrint_one: '{{count}} 个订单待打印',
+    readyToPrint_other: '{{count}} 个订单待打印',
+    orderCount_one: '{{count}} 个订单',
+    orderCount_other: '{{count}} 个订单',
+    unknownCourier: '未知快递',
+    unknownStore: '未知店铺',
+    shopFallback: '店铺 {{id}}',
+    noCourierWarning: '未记录快递 —— 这些订单可能跨渠道，将分成多个文件打印。',
+    printed: '已打印',
+    printing: '正在打印...',
+    print: '打印',
+    allPrinted: '所有运单均已打印',
+    allPrintedHint: '目前没有待打印的运单。',
+    summary: '{{orders}} 个订单，共 {{groups}} 组',
+    perChannelNote: 'Shopee 每个物流渠道生成一个文件，因此各组需分别打印。',
+    preparingMerged: '正在生成单个文件...',
+    printMerged: '将全部未打印运单合并为一个文件',
+    printMergedCount: '将全部未打印运单合并为一个文件（{{count}}）',
+    mergeUnavailable: '目前没有可合并的内容 —— 订单需先由 Shopee 处理，才会生成运单。',
+    mergeAvailable: '将以上所有 Shopee 运单合并为一个 PDF，并按快递排序，打印出来即已分好组。',
+    loadError: '加载订单失败。',
+    loginRequired: '请先登录后再打印。',
+    printError: '打印运单失败。',
+    nothingToPrint: '没有可打印的内容。',
+    deliveryError: '运单已生成，但无法在此设备上保存或打开。',
+    printedToast_one: '已打印 {{count}} 张运单 —— {{courier}}',
+    printedToast_other: '已打印 {{count}} 张运单 —— {{courier}}',
+    mergedToast_one: '已将 {{count}} 张运单打印到一个文件中',
+    mergedToast_other: '已将 {{count}} 张运单打印到一个文件中',
+    remainingToast_one: '还剩 {{count}} 个订单 —— 请再次打印以继续。',
+    remainingToast_other: '还剩 {{count}} 个订单 —— 请再次打印以继续。',
+    notReadyToast_one: '{{count}} 个订单尚未就绪 —— 还没有运单号。',
+    notReadyToast_other: '{{count}} 个订单尚未就绪 —— 还没有运单号。',
+    // {{reason}} 是 Shopee 自己给出的逐单原因，原样透传，不翻译。
+    skippedToast_one: '已跳过 {{count}} 个订单 —— {{reason}}',
+    skippedToast_other: '已跳过 {{count}} 个订单 —— {{reason}}',
+    failedToast_one: '{{count}} 个订单失败 —— {{reason}}',
+    failedToast_other: '{{count}} 个订单失败 —— {{reason}}',
+  },
+  scan: {
+    title: '扫码查单',
+    subtitle: '封箱前扫描运单条码，再次核对包裹内容',
+    back: '返回',
+    lookingUp: '正在查询订单…',
+    toggleTorch: '开关闪光灯',
+    torchUnsupported: '此设备不支持闪光灯。',
+    lookupError: '查询失败 —— 请检查网络后重试。',
+    cameraBlocked: '相机权限已被阻止',
+    cameraDenied: {
+      native:
+        '请在 Android 设置 › 应用 › MyStore Hub › 权限 中允许 MyStore Hub 使用相机，然后重试 —— 或在下方手动输入运单号。',
+      web: '请在浏览器设置中允许本站使用相机，然后重新加载 —— 或在下方手动输入运单号。',
+    },
+    retryCamera: '重试相机',
+    manualPlaceholder: '或输入／粘贴运单号',
+    lookUp: '查询',
+    notFound: '未找到订单 —— 请尝试同步',
+    scannedValue: '已扫描：{{value}}',
+    scanAgain: '重新扫描',
+    scanAnother: '扫描下一个',
+    unknownBuyer: '未知买家',
+    unnamedItem: '未命名商品',
+    unknownStatus: '未知',
+    fields: {
+      order: '订单',
+      package: '包裹',
+      tracking: '运单号',
+      // 保留英文缩写：运单和卖家中心上印的都是 SKU，卖家靠它做视觉比对。
+      sku: 'SKU',
+    },
+    noItems: '此订单没有商品。',
+  },
+  products: {
+    title: '商品',
+    // 见 en.js：这是 Shopee 未返回标题时的占位符，商品真实标题属于数据，不翻译。
+    untitled: '无标题商品',
+    searchPlaceholder: '搜索商品名称或 SKU',
+    clearSearch: '清除搜索',
+    empty: '暂无商品 —— 点击「同步」拉取你的 Shopee 商品',
+    noMatches: '未找到商品。',
+    filters: {
+      all: '全部',
+    },
+    statusFilters: {
+      all: '全部',
+      active: '在售',
+      lowStock: '库存不足',
+      outOfStock: '缺货',
+    },
+    status: {
+      active: '在售',
+      unlisted: '已下架',
+      banned: '已封禁',
+      deleted: '已删除',
+    },
+    card: {
+      outOfStock: '缺货',
+      inStock: '库存 {{count}}',
+    },
+    sync: {
+      button: '同步',
+      loginRequired: '请先登录后再同步。',
+      success: '已同步 {{count}} 件商品！',
+      error: '同步商品失败。',
+    },
+    edit: {
+      title: '编辑商品',
+      titleField: '标题',
+      priceField: '价格（RM）',
+      stockField: '库存',
+      cancel: '取消',
+      save: '保存',
+      saved: '商品已更新！',
+      titleRequired: '标题不能为空。',
+      priceInvalid: '请输入有效的价格。',
+      stockInvalid: '请输入有效的库存数量。',
+      saveError: '保存更改失败。',
+    },
+  },
   sales: {
     title: '销售',
     subtitle: '近 30 天每日营业额',
@@ -192,6 +573,181 @@ export default {
       title: '买家留言',
       hint: '打包前请先阅读 —— 可能涉及换货、礼品包装或配送指示，需要人工判断。',
     },
+    title: '订单',
+    searchPlaceholder: '搜索订单号或买家名称',
+    clearSearch: '清除搜索',
+    scanAria: '扫码查单',
+    selectedCount: '已选 {{count}} 项',
+    updatedAgo: '更新于{{ago}}',
+    catchingUp: '同步中',
+    catchingUpHint: '此店铺的订单数量超过单次同步上限 —— 请继续同步以补齐。',
+    printAll: '打印全部运单',
+    printAllCount: '打印全部运单（{{count}}）',
+    truncated: '仅显示最近 {{count}} 个订单 —— 更早的订单未加载，因此以下计数和搜索不包含它们。',
+    unknownBuyer: '未知买家',
+    unnamedItem: '商品',
+    copyTracking: '复制运单号',
+    loginRequired: '请先登录。',
+    arrangedVia: '发货方式',
+    paidAt: '付款 {{date}}',
+    packedAt: '打包 {{date}}',
+    // AWAITING SHOPEE SELLER CENTRE VOCABULARY — same reasoning as the
+    // top-level `status:` namespace. These eight drive which orders a seller
+    // sees under which heading, so they are left to fall back to the English
+    // in en.js rather than guessed at. Fill them in and the tabs pick them up.
+    // ('other' is a safety-net tab that should always read 0.)
+    //
+    // tabs: { unpaid, new, inprocess, shipped, completed, cancelRequests,
+    //         returns, cancelled, other }
+    filters: {
+      all: '全部',
+    },
+    printedFilters: {
+      all: '全部',
+      notPrinted: '未打印',
+      printed: '已打印',
+    },
+    shippingMethod: {
+      pickup: '上门取件',
+      dropoff: '自行寄件',
+      non_integrated: '非集成物流',
+    },
+    timeline: {
+      ordered: '已下单',
+      packed: '已打包',
+      shipped: '已发货',
+    },
+    // AWAITING SHOPEE SELLER CENTRE VOCABULARY — this column exists to mirror
+    // what Seller Centre itself says, so guessing here would defeat its whole
+    // purpose. Falls back to the English in en.js until supplied:
+    //   marketplaceStatus.shopee: { unpaid, invoicePending, processed,
+    //     retryShipment, shipped, toConfirmReceive, cancellationRequested,
+    //     toReturnRefund, cancelled }
+    // Lazada/TikTok/Shopify are intentionally never translated — see the note
+    // on MARKETPLACE_STATUS in Orders.jsx.
+    sections: {
+      buyer: '买家',
+      shipping: '配送',
+      items: '商品',
+      timeline: '订单进度',
+    },
+    fields: {
+      marketplaceStatus: '平台状态',
+      logistics: '物流',
+      trackingNo: '运单号',
+      paid: '付款时间',
+      packed: '打包时间',
+      autoSuffix: '（自动）',
+      qty: '数量',
+      subtotal: '小计',
+      shippingFee: '运费',
+      total: '合计',
+    },
+    actions: {
+      printAwb: '打印运单',
+      printLabel: '打印面单',
+      pack: '打包',
+      ship: '发货',
+      cancel: '取消',
+      track: '查看物流',
+      approve: '同意',
+      reject: '拒绝',
+    },
+    flags: {
+      waitingForPayment: '等待付款',
+      printed: '已打印',
+      printedAt: '打印于 {{date}}',
+      autoPackFailed: '自动打包失败 —— 需手动打包',
+      autoPackFailedHint: '自动打包失败 —— 请手动打包此订单',
+      autoPacked: '已自动打包',
+    },
+    autoPack: {
+      failed: '自动打包失败',
+      unknownError: '未知错误',
+      noRetry: '此订单不会自动重试 —— 请使用下方的「打包」。',
+    },
+    empty: {
+      title: '暂无订单',
+      hint: '点击上方「同步」拉取你的 Shopee 订单',
+    },
+    noResults: {
+      title: '未找到订单',
+      hint: '请尝试其他搜索词或筛选条件',
+    },
+    cancelRequest: {
+      title: '买家申请取消订单',
+      reason: '原因',
+      notProvided: '未提供',
+      deadlineShort: '请在约 2 天内回复，否则 Shopee 将自动同意。',
+      deadline:
+        '请在约 2 天内回复，否则 Shopee 将自动同意取消并为买家退款。请先阅读原因，然后在下方选择同意或拒绝。',
+    },
+    sync: {
+      button: '同步',
+      noStore: '尚未连接 Shopee 店铺 —— 暂无可同步内容。',
+      error: '同步订单失败。',
+      partial: '部分店铺同步失败。',
+      autoError: '自动同步失败。',
+      success_one: '已同步 —— 更新了 {{count}} 个订单',
+      success_other: '已同步 —— 更新了 {{count}} 个订单',
+      successMore_one: '已同步 —— 更新了 {{count}} 个订单。仍有待同步内容，请再次同步以继续。',
+      successMore_other: '已同步 —— 更新了 {{count}} 个订单。仍有待同步内容，请再次同步以继续。',
+    },
+    printAwb: {
+      realOrdersOnly: '打印运单仅适用于已连接的真实订单。',
+      loginRequired: '请先登录后再打印。',
+      error: '打印运单失败。',
+      bulkError: '打印面单失败。',
+      deliveryErrorSingle: '运单已生成，但无法在此设备上保存或打开。',
+      deliveryError: '运单已生成，但无法在此设备上保存或打开。',
+      downloaded: '已下载 {{files}} 个面单文件，共涵盖 {{orders}} 个订单',
+      notReady_one: '{{count}} 个订单尚未就绪 —— 还没有运单号。',
+      notReady_other: '{{count}} 个订单尚未就绪 —— 还没有运单号。',
+      // {{reason}} 是 Shopee 自己给出的逐单原因，原样透传。
+      failed_one: '{{count}} 个订单失败 —— {{reason}}',
+      failed_other: '{{count}} 个订单失败 —— {{reason}}',
+      sameStoreOnly: '已打印所选 {{selected}} 个中的 {{printed}} 个（仅限同一店铺）。',
+    },
+    pack: {
+      realOrdersOnly: '打包仅适用于已连接的真实订单。',
+      error: '安排发货失败。',
+      success: '已安排发货 —— 已通知 Shopee',
+    },
+    ship: {
+      realOrdersOnly: '发货仅适用于已连接的真实订单。',
+      error: '订单发货失败。',
+      success: '订单已发货！',
+    },
+    cancel: {
+      realOrdersOnly: '取消仅适用于已连接的真实订单。',
+      error: '取消订单失败。',
+      success: '订单已取消。',
+    },
+    bulk: {
+      shipped: '已发货 {{total}} 个订单中的 {{succeeded}} 个。',
+      shipError: '批量发货失败。',
+      cancelled: '已取消 {{total}} 个订单中的 {{succeeded}} 个。',
+      cancelError: '批量取消失败。',
+    },
+    buyerCancel: {
+      realOrdersOnly: '此操作仅适用于已连接的真实订单。',
+      noReason: '未说明原因',
+      alreadyResolved: '此取消申请已处理完毕。',
+      confirm: {
+        approve:
+          '要同意取消订单 {{id}} 吗？\n\n买家的原因：{{reason}}\n\n该订单将被取消并向买家退款。此操作无法撤销。',
+        reject:
+          '要拒绝取消订单 {{id}} 吗？\n\n买家的原因：{{reason}}\n\n该订单将回到履约流程，买家应会收到商品。此操作无法撤销。',
+      },
+      error: {
+        approve: '同意取消申请失败。',
+        reject: '拒绝取消申请失败。',
+      },
+      success: {
+        approve: '已同意取消申请。',
+        reject: '已拒绝取消申请。',
+      },
+    },
   },
   shipping: {
     title: '配送方式',
@@ -204,6 +760,12 @@ export default {
     noStores: '尚未连接 Shopee 店铺。',
     storesFailed: '无法读取以下店铺的渠道：{{names}}。相关列已隐藏。',
     courier: '快递',
+    thisStore: '该店铺',
+    cell: {
+      notOffered: '此店铺未提供该快递',
+      lockedCompulsory: 'Shopee 强制要求使用此快递 —— 无法关闭',
+      lockedForced: 'Shopee 强制开启此快递 —— 无法更改',
+    },
     standalone: '独立快递',
     on: '开',
     off: '关',

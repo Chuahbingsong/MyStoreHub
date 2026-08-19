@@ -11,6 +11,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { supabase } from '@/lib/supabase'
 import { useTranslation } from '@/lib/i18n/I18nContext'
+import { formatDayLong, formatDayShort } from '@/lib/i18n/datetime'
 import { cn } from '@/lib/utils'
 import {
   coverageFor,
@@ -56,15 +57,9 @@ function RevenueChart({ series, coverageFirstDay, t, locale }) {
     return [ceiling, ceiling / 2, 0]
   }, [ceiling])
 
-  const dayLabel = useCallback(
-    (iso) =>
-      new Date(`${iso}T00:00:00Z`).toLocaleDateString(locale === 'zh-CN' ? 'zh-CN' : 'en-MY', {
-        day: 'numeric',
-        month: 'short',
-        timeZone: 'UTC',
-      }),
-    [locale]
-  )
+  // Formatting lives in lib/i18n/datetime.js — this used to inline both the
+  // zh-CN/en-MY choice and the UTC day handling, duplicating that module.
+  const dayLabel = useCallback((iso) => formatDayShort(locale, iso), [locale])
 
   if (series.length === 0 || max <= 0) {
     return (
@@ -129,7 +124,7 @@ function RevenueChart({ series, coverageFirstDay, t, locale }) {
                 onFocus={() => setActiveIdx(i)}
                 onBlur={() => setActiveIdx((prev) => (prev === i ? null : prev))}
                 onClick={() => setActiveIdx((prev) => (prev === i ? null : i))}
-                aria-label={`${dayLabel(d.day)}: ${formatRM(d.revenue)}, ${d.orderCount}`}
+                aria-label={`${dayLabel(d.day)}: ${formatRM(d.revenue)}, ${t('sales.table.orders')} ${d.orderCount}`}
               >
                 {beforeHistory ? (
                   // Outside synced history — deliberately NOT drawn as a zero
@@ -235,16 +230,7 @@ export default function Sales() {
 
   const rows = useMemo(() => [...series].reverse(), [series])
 
-  const dayLabelLong = useCallback(
-    (iso) =>
-      new Date(`${iso}T00:00:00Z`).toLocaleDateString(locale === 'zh-CN' ? 'zh-CN' : 'en-MY', {
-        weekday: 'short',
-        day: 'numeric',
-        month: 'short',
-        timeZone: 'UTC',
-      }),
-    [locale]
-  )
+  const dayLabelLong = useCallback((iso) => formatDayLong(locale, iso), [locale])
 
   return (
     <div className="pb-24">

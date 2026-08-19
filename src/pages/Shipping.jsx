@@ -90,9 +90,11 @@ function applyStoreTree(groups, storeId, tree) {
 }
 
 function StateCell({ state, onClick, label }) {
+  const { t } = useTranslation()
+
   if (!state?.present) {
     return (
-      <div className="flex h-11 items-center justify-center" title="Not offered for this store">
+      <div className="flex h-11 items-center justify-center" title={t('shipping.cell.notOffered')}>
         <Minus className="h-4 w-4 text-[#D1D5DB]" />
       </div>
     )
@@ -102,10 +104,12 @@ function StateCell({ state, onClick, label }) {
     return (
       <div
         className="flex h-11 items-center justify-center"
+        // lockReason is a stable internal key, not a display string — safe to
+        // compare against.
         title={
           state.lockReason === 'compulsory'
-            ? 'Shopee requires this courier — it cannot be turned off'
-            : 'Shopee forces this courier on — it cannot be changed'
+            ? t('shipping.cell.lockedCompulsory')
+            : t('shipping.cell.lockedForced')
         }
       >
         <Lock className={cn('h-4 w-4', state.enabled ? 'text-emerald-600/60' : 'text-[#9CA3AF]')} />
@@ -179,7 +183,7 @@ export default function Shipping() {
       setFetchedAt(data.fetchedAt ?? null)
     } catch (err) {
       console.error('[shipping] load failed', err)
-      if (!isCancelled()) setLoadError(describeRequestError(err, t('shipping.loadError')))
+      if (!isCancelled()) setLoadError(describeRequestError(t, err, t('shipping.loadError')))
     } finally {
       if (!isCancelled()) setLoading(false)
     }
@@ -201,8 +205,8 @@ export default function Shipping() {
   const failedStores = useMemo(() => stores.filter((s) => !s.ok), [stores])
   const storeIds = useMemo(() => okStores.map((s) => s.id), [okStores])
   const storeName = useCallback(
-    (id) => stores.find((s) => s.id === id)?.shopName ?? 'this store',
-    [stores]
+    (id) => stores.find((s) => s.id === id)?.shopName ?? t('shipping.thisStore'),
+    [stores, t]
   )
 
   const divergent = useMemo(() => findDivergent(groups, storeIds), [groups, storeIds])
@@ -287,7 +291,7 @@ export default function Shipping() {
       }
     } catch (err) {
       console.error('[shipping] toggle failed', err)
-      const message = describeRequestError(err, t('shipping.toggleError'))
+      const message = describeRequestError(t, err, t('shipping.toggleError'))
       setLastResult({
         kind: 'unverified',
         storeName: storeName(pending.storeId),

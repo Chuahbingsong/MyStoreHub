@@ -135,7 +135,7 @@ export default function Settings() {
       window.location.href = data.authUrl
     } catch (err) {
       console.error('[settings] connect shopee failed', err)
-      toast.error(describeRequestError(err, t('settings.connectStore.startErrorToast')))
+      toast.error(describeRequestError(t, err, t('settings.connectStore.startErrorToast')))
       setConnectingShopee(false)
     }
   }
@@ -176,7 +176,7 @@ export default function Settings() {
       window.location.href = data.authUrl
     } catch (err) {
       console.error('[settings] connect tiktok failed', err)
-      toast.error(describeRequestError(err, t('settings.connectStore.tiktokStartErrorToast')))
+      toast.error(describeRequestError(t, err, t('settings.connectStore.tiktokStartErrorToast')))
       setConnectingTikTok(false)
     }
   }
@@ -215,7 +215,7 @@ export default function Settings() {
       window.location.href = data.authUrl
     } catch (err) {
       console.error('[settings] connect lazada failed', err)
-      toast.error(describeRequestError(err, t('settings.connectStore.lazadaStartErrorToast')))
+      toast.error(describeRequestError(t, err, t('settings.connectStore.lazadaStartErrorToast')))
       setConnectingLazada(false)
     }
   }
@@ -253,7 +253,7 @@ export default function Settings() {
       }
     } catch (err) {
       console.error('[settings] sync orders failed', err)
-      toast.error(describeRequestError(err, t('settings.connectedStores.sync.ordersError')))
+      toast.error(describeRequestError(t, err, t('settings.connectedStores.sync.ordersError')))
     } finally {
       setSyncingStoreId(null)
     }
@@ -292,7 +292,7 @@ export default function Settings() {
       }
     } catch (err) {
       console.error('[settings] sync products failed', err)
-      toast.error(describeRequestError(err, t('settings.connectedStores.sync.productsError')))
+      toast.error(describeRequestError(t, err, t('settings.connectedStores.sync.productsError')))
     } finally {
       setSyncingProductsStoreId(null)
     }

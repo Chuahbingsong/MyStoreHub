@@ -10,6 +10,7 @@ import { Switch } from '@/components/ui/switch'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useDateTime } from '@/lib/i18n/datetime'
+import { useTranslation } from '@/lib/i18n/I18nContext'
 
 const MAX_SLOTS = 5
 
@@ -33,6 +34,7 @@ function Thumb({ imageUrl, className }) {
 }
 
 function StoreCard({ store, slots, rotation, onToggle, toggling, onEdit }) {
+  const { t } = useTranslation()
   const [nowMs, setNowMs] = useState(() => Date.now())
 
   // Re-render every 30s so the "Xm left" countdowns stay honest without a refetch.
@@ -50,7 +52,9 @@ function StoreCard({ store, slots, rotation, onToggle, toggling, onEdit }) {
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span>🏪</span>
-          <span className="text-sm font-medium text-[#1F2937]">{store.shop_name || 'Unnamed store'}</span>
+          <span className="text-sm font-medium text-[#1F2937]">
+            {store.shop_name || t('boost.unnamedStore')}
+          </span>
         </div>
         <div className="flex items-center gap-2">
           {toggling && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
@@ -65,15 +69,20 @@ function StoreCard({ store, slots, rotation, onToggle, toggling, onEdit }) {
       {externalCount > 0 && (
         <div className="mb-3 flex items-start gap-2 rounded-lg border border-yellow-300 bg-yellow-50 p-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600" />
+          {/* Was `slot{n > 1 ? 's are' : ' is'}` — English inflection spliced
+              into JSX, which no translation can reach. Plural keys instead. */}
           <p className="text-xs text-yellow-800">
-            {externalCount} slot{externalCount > 1 ? 's are' : ' is'} controlled by another booster. Turn
-            BigSeller&apos;s boost off for this store so MyStore Hub can take over.
+            {t('boost.externallyControlled', { count: externalCount })}
           </p>
         </div>
       )}
 
       <p className="mb-2 text-xs text-gray-500">
-        {activeSlots.length}/{MAX_SLOTS} slots boosting · {rotation.length} in rotation
+        {t('boost.slotsSummary', {
+          active: activeSlots.length,
+          max: MAX_SLOTS,
+          rotation: rotation.length,
+        })}
       </p>
 
       <div className="flex gap-2 overflow-x-auto pb-1">
@@ -88,7 +97,7 @@ function StoreCard({ store, slots, rotation, onToggle, toggling, onEdit }) {
                   slot.externally_controlled ? 'text-yellow-600' : 'text-[#EE4D2D]'
                 )}
               >
-                {mins > 0 ? `${mins}m left` : 'ready'}
+                {mins > 0 ? t('boost.minutesLeft', { mins }) : t('boost.ready')}
               </span>
             </div>
           )
@@ -98,7 +107,7 @@ function StoreCard({ store, slots, rotation, onToggle, toggling, onEdit }) {
             <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-dashed border-[#E5E7EB]">
               <Plus className="h-4 w-4 text-gray-300" />
             </div>
-            <span className="text-center text-[10px] text-gray-400">empty</span>
+            <span className="text-center text-[10px] text-gray-400">{t('boost.emptySlot')}</span>
           </div>
         ))}
       </div>
@@ -110,7 +119,7 @@ function StoreCard({ store, slots, rotation, onToggle, toggling, onEdit }) {
           onClick={() => onEdit(store)}
           className="border-[#E5E7EB] text-[#374151] hover:bg-[#F3F4F6]"
         >
-          Edit Rotation
+          {t('boost.editRotation')}
         </Button>
       </div>
     </div>
@@ -118,6 +127,7 @@ function StoreCard({ store, slots, rotation, onToggle, toggling, onEdit }) {
 }
 
 export default function Boost() {
+  const { t } = useTranslation()
   const { formatTimestamp } = useDateTime()
   const [stores, setStores] = useState([])
   const [slotsByStore, setSlotsByStore] = useState({})
@@ -174,17 +184,13 @@ export default function Boost() {
         .eq('id', store.id)
 
       if (error) {
-        toast.error('Could not update auto-boost')
+        toast.error(t('boost.toggleError'))
         return
       }
       setStores((prev) => prev.map((s) => (s.id === store.id ? { ...s, auto_boost_enabled: next } : s)))
-      toast.success(
-        next
-          ? 'Auto-boost on — MyStore Hub now owns this store’s 5 slots'
-          : 'Auto-boost off'
-      )
+      toast.success(next ? t('boost.enabledToast', { max: MAX_SLOTS }) : t('boost.disabledToast'))
     } catch {
-      toast.error('Could not update auto-boost')
+      toast.error(t('boost.toggleError'))
     } finally {
       setTogglingId(null)
     }
@@ -213,7 +219,7 @@ export default function Boost() {
         .single()
 
       if (error) {
-        toast.error('Could not add to rotation')
+        toast.error(t('boost.addError'))
         return
       }
       setRotationByStore((prev) => ({
@@ -221,7 +227,7 @@ export default function Boost() {
         [editingStoreId]: [...(prev[editingStoreId] ?? []), data],
       }))
     } catch {
-      toast.error('Could not add to rotation')
+      toast.error(t('boost.addError'))
     } finally {
       setMutatingRotation(false)
     }
@@ -232,7 +238,7 @@ export default function Boost() {
     try {
       const { error } = await supabase.from('boost_rotation').delete().eq('id', row.id)
       if (error) {
-        toast.error('Could not remove from rotation')
+        toast.error(t('boost.removeError'))
         return
       }
       setRotationByStore((prev) => ({
@@ -240,7 +246,7 @@ export default function Boost() {
         [row.store_id]: (prev[row.store_id] ?? []).filter((r) => r.id !== row.id),
       }))
     } catch {
-      toast.error('Could not remove from rotation')
+      toast.error(t('boost.removeError'))
     } finally {
       setMutatingRotation(false)
     }
@@ -249,16 +255,12 @@ export default function Boost() {
   return (
     <div className="pb-24">
       <header className="sticky top-0 z-10 bg-[#FAF9F6] px-4 pt-4 pb-2">
-        <h1 className="text-xl font-bold text-[#1F2937]">⚡ Boost Manager</h1>
-        <p className="text-sm text-[#6B7280]">Shopee product boosts</p>
+        <h1 className="text-xl font-bold text-[#1F2937]">⚡ {t('boost.title')}</h1>
+        <p className="text-sm text-[#6B7280]">{t('boost.subtitle')}</p>
       </header>
 
       <div className="mx-4 my-3 rounded-xl border border-[#EE4D2D]/30 bg-[#EE4D2D]/10 p-3">
-        <p className="text-xs text-[#EE4D2D]">
-          ℹ️ Each store boosts 5 products for ~4 hours, then auto re-boosts the next products in your
-          rotation. Turn a store on and MyStore Hub owns its 5 slots — switch off any other booster
-          (e.g. BigSeller) for that store first.
-        </p>
+        <p className="text-xs text-[#EE4D2D]">ℹ️ {t('boost.howItWorks', { max: MAX_SLOTS })}</p>
       </div>
 
       <div className="flex flex-col gap-4 px-4">
@@ -267,9 +269,7 @@ export default function Boost() {
             <Skeleton key={i} className="h-40 w-full rounded-xl" />
           ))
         ) : stores.length === 0 ? (
-          <p className="mt-8 text-center text-sm text-gray-500">
-            No Shopee stores connected yet.
-          </p>
+          <p className="mt-8 text-center text-sm text-gray-500">{t('boost.noStores')}</p>
         ) : (
           stores.map((store) => (
             <StoreCard
@@ -295,18 +295,19 @@ export default function Boost() {
         >
           <SheetHeader className="border-b border-[#ECECEC] px-4 py-4">
             <SheetTitle className="text-[#1F2937]">
-              Rotation — {editingStore?.shop_name || 'Store'}
+              {t('boost.rotationTitle', {
+                store: editingStore?.shop_name || t('boost.unnamedStore'),
+              })}
             </SheetTitle>
           </SheetHeader>
 
           <div className="flex-1 overflow-y-auto px-4 py-4">
             <h3 className="mb-2 text-sm font-semibold text-[#1F2937]">
-              In rotation ({editingRotation.length})
+              {t('boost.inRotation', { count: editingRotation.length })}
             </h3>
             {editingRotation.length === 0 ? (
               <p className="mb-2 text-xs text-gray-500">
-                No products yet — add some below. The scheduler cycles the 5 slots through this list,
-                least-recently-boosted first.
+                {t('boost.emptyRotation', { max: MAX_SLOTS })}
               </p>
             ) : (
               <div className="space-y-2">
@@ -317,14 +318,18 @@ export default function Boost() {
                   >
                     <Thumb imageUrl={row.products?.image_url} className="h-12 w-12" />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm text-[#1F2937]">{row.products?.title ?? 'Product'}</p>
+                      {/* Product title is Shopee DATA — only the empty-field
+                          placeholder is translated. */}
+                      <p className="truncate text-sm text-[#1F2937]">
+                        {row.products?.title ?? t('boost.untitledProduct')}
+                      </p>
                       {row.products?.price != null && (
                         <p className="text-xs text-[#6B7280]">RM {Number(row.products.price).toFixed(2)}</p>
                       )}
                       <p className="text-[11px] text-gray-400">
                         {row.last_boosted_at
-                          ? `Last boosted ${formatTimestamp(row.last_boosted_at)}`
-                          : 'Never boosted'}
+                          ? t('boost.lastBoosted', { date: formatTimestamp(row.last_boosted_at) })
+                          : t('boost.neverBoosted')}
                       </p>
                     </div>
                     <Button
@@ -343,13 +348,13 @@ export default function Boost() {
 
             <Separator className="my-4 bg-[#ECECEC]" />
 
-            <h3 className="mb-2 text-sm font-semibold text-[#1F2937]">Add product</h3>
+            <h3 className="mb-2 text-sm font-semibold text-[#1F2937]">{t('boost.addProduct')}</h3>
             <div className="relative">
               <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-gray-500" />
               <Input
                 value={productSearch}
                 onChange={(e) => setProductSearch(e.target.value)}
-                placeholder="Search products"
+                placeholder={t('boost.searchProducts')}
                 className="h-10 rounded-xl border-[#E5E7EB] pl-9 !bg-white text-[#1F2937] placeholder:text-gray-400"
               />
             </div>
@@ -358,19 +363,23 @@ export default function Boost() {
               {filteredProducts.length === 0 ? (
                 <p className="py-6 text-center text-xs text-gray-400">
                   {editingProducts.length === 0
-                    ? 'No synced products for this store yet.'
-                    : 'No products match.'}
+                    ? t('boost.noSyncedProducts')
+                    : t('boost.noProductsMatch')}
                 </p>
               ) : (
                 filteredProducts.map((product) => (
                   <div key={product.id} className="flex items-center gap-3 border-b border-[#ECECEC] p-3">
                     <Thumb imageUrl={product.image_url} className="h-12 w-12" />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm text-[#1F2937]">{product.title ?? 'Untitled'}</p>
+                      <p className="truncate text-sm text-[#1F2937]">
+                        {product.title ?? t('boost.untitledProduct')}
+                      </p>
                       {product.price != null && (
                         <p className="text-xs text-[#6B7280]">RM {Number(product.price).toFixed(2)}</p>
                       )}
-                      <p className="text-xs text-gray-500">Stock: {product.stock ?? 0}</p>
+                      <p className="text-xs text-gray-500">
+                        {t('boost.stock')}: {product.stock ?? 0}
+                      </p>
                     </div>
                     <Button
                       size="sm"
@@ -378,7 +387,7 @@ export default function Boost() {
                       onClick={() => addToRotation(product)}
                       className="bg-[#EE4D2D] text-white hover:bg-[#EE4D2D]/90"
                     >
-                      <Plus className="h-4 w-4" /> Add
+                      <Plus className="h-4 w-4" /> {t('boost.add')}
                     </Button>
                   </div>
                 ))

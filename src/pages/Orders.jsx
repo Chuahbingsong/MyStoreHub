@@ -35,6 +35,7 @@ import {
 } from '@/lib/awbPrintPrompt'
 import { useTranslation } from '@/lib/i18n/I18nContext'
 import { useDateTime } from '@/lib/i18n/datetime'
+import { STATUS, statusKeyFor } from '@/lib/orderStatus'
 
 const AUTO_SYNC_INTERVAL_MS = 60_000
 
@@ -83,9 +84,19 @@ const BADGE_CLS = 'inline-flex items-center gap-1 rounded-full px-2 py-1 text-[1
 // tapping, kept consistent across every action so none feel like an outlier.
 const ACTION_BTN_CLS = 'h-9 rounded-lg px-3 text-[13px] font-medium'
 
-const PLATFORM_FILTERS = ['All', 'Shopee', 'Lazada', 'TikTok', 'Shopify']
+// Filter values are STABLE KEYS, never display labels — the same fix Products
+// needed. `printedFilter === 'Printed'` and `platformFilter !== 'All'` were
+// comparisons against on-screen English: the first translated label would have
+// made the platform chips filter nothing and the printed chips invert.
+//
+// Brand names double as their own keys (they are also the values in
+// order.platform, and read the same in both locales); only ALL_FILTER is
+// chrome, so it is the one platform entry that gets translated.
+const ALL_FILTER = 'all'
 
-const PRINTED_FILTERS = ['All', 'Not Printed', 'Printed']
+const PLATFORM_FILTERS = [ALL_FILTER, 'Shopee', 'Lazada', 'TikTok', 'Shopify']
+
+const PRINTED_FILTERS = [ALL_FILTER, 'notPrinted', 'printed']
 
 // The tab holding "Packed" orders — the ones already shipped-out via
 // ship_order and now waiting on an AWB label (plus RETRY_SHIP: a shipment
@@ -119,55 +130,26 @@ const OTHER_TAB = 'other'
 // separate label rather than reusing 'Return Requested' because the two must
 // stay tellable apart inside the Returns tab — one still needs a decision, the
 // other is a stock/refund reconciliation. Only Lazada reaches it today (Shopee
-// exposes no post-return status; see LAZADA_STATUS_MAP).
-// Canonical status KEYS. These are stable identifiers and are NEVER rendered:
-// every map that keys off an order's status keys off one of these, so the
-// display wording can change — reworded, translated — without moving an order
-// between tabs, changing a badge colour or disarming a button guard.
+// exposes no post-return status; see LAZADA_STATUS_MAP in lib/orderStatus.js).
 //
-// Before this existed the canonical English label did both jobs at once
-// ('To Pack' was simultaneously what the user read and what STATUS_TO_TAB was
-// keyed by), which made the labels untranslatable: the first translated label
-// would have silently emptied a tab. Dashboard.jsx hit exactly this and was
-// fixed the same way — see SHOPEE_STATUS_KEY / STATUS_CLASS there.
-//
-// The values are the dictionary keys under the shared `status:` namespace, so
-// a label lookup is t(`status.${statusKey}`) once the remaining six are
-// translated. Until then Orders renders from STATUS_LABEL below.
-const STATUS = {
-  UNPAID: 'unpaid',
-  INVOICE_PENDING: 'invoicePending',
-  TO_PACK: 'toPack',
-  PACKED: 'packed',
-  RETRY_SHIPMENT: 'retryShipment',
-  SHIPPED: 'shipped',
-  TO_CONFIRM_RECEIPT: 'toConfirmReceipt',
-  COMPLETED: 'completed',
-  CANCEL_REQUESTED: 'cancelRequested',
-  RETURN_REQUESTED: 'returnRequested',
-  RETURNED: 'returned',
-  CANCELLED: 'cancelled',
-}
+// STATUS (the canonical keys) and the three raw->key platform maps now live in
+// src/lib/orderStatus.js — Scan and Dashboard need the same vocabulary, and
+// keeping a second copy here is what the note above warns against. The tab
+// bucketing below is Orders' own concern and stays here.
 
-// The user-facing label for each status key — the ONLY place a status string
-// is rendered from. English-only for now, and deliberately not routed through
-// t() yet: six of these twelve have no Chinese label anywhere in the app, so
-// wiring the other six to the dictionary would render a half-Chinese status
-// column in zh-CN. The Orders translation pass adds all twelve to the shared
-// `status:` namespace and replaces this map with t(`status.${key}`).
-const STATUS_LABEL = {
-  [STATUS.UNPAID]: 'Unpaid',
-  [STATUS.INVOICE_PENDING]: 'Invoice Pending',
-  [STATUS.TO_PACK]: 'To Pack',
-  [STATUS.PACKED]: 'Packed',
-  [STATUS.RETRY_SHIPMENT]: 'Retry Shipment',
-  [STATUS.SHIPPED]: 'Shipped',
-  [STATUS.TO_CONFIRM_RECEIPT]: 'To Confirm Receipt',
-  [STATUS.COMPLETED]: 'Completed',
-  [STATUS.CANCEL_REQUESTED]: 'Cancel Requested',
-  [STATUS.RETURN_REQUESTED]: 'Return Requested',
-  [STATUS.RETURNED]: 'Returned',
-  [STATUS.CANCELLED]: 'Cancelled',
+// STATUS_LABEL is gone: all twelve labels now live in the shared `status:`
+// dictionary namespace and are resolved HERE, at render, never stored.
+//
+// Resolving late is the same discipline the date fields already follow (see
+// the note on orderedAt in mapSupabaseOrder): a label baked into the mapper
+// would be pinned to whichever locale was active during the fetch, so
+// switching language would leave stale English statuses on screen until the
+// next refetch.
+//
+// An unmapped status has no key, so its raw platform string is shown verbatim
+// — data passthrough, the same treatment it gets in getOrderTab's OTHER_TAB.
+function statusLabel(t, order) {
+  return order.statusKey ? t(`status.${order.statusKey}`) : order.rawStatus
 }
 
 const STATUS_TO_TAB = {
@@ -210,19 +192,31 @@ const STATUS_BADGE = {
 
 const DEFAULT_STATUS_BADGE = 'bg-gray-200 text-gray-600'
 
+// This column shows each MARKETPLACE's own wording for a status, not the
+// app's — that is its whole purpose, so it is mostly platform DATA rather than
+// chrome and is NOT uniformly translated.
+//
+// Shopee is the exception: the seller works in Shopee Seller Centre, which has
+// its own zh-CN vocabulary, so Shopee's row goes through t() and reads in
+// Seller Centre's Chinese. Its values below are dictionary KEYS, not text.
+//
+// Lazada, TikTok and Shopify stay as literal English: that is the wording
+// those consoles actually show, and there is no verified Chinese for them.
+// Inventing one would misreport what the seller will see on that platform.
+const MARKETPLACE_STATUS_SHOPEE_KEYS = {
+  [STATUS.UNPAID]: 'unpaid',
+  [STATUS.INVOICE_PENDING]: 'invoicePending',
+  [STATUS.TO_PACK]: 'processed',
+  [STATUS.PACKED]: 'processed',
+  [STATUS.RETRY_SHIPMENT]: 'retryShipment',
+  [STATUS.SHIPPED]: 'shipped',
+  [STATUS.TO_CONFIRM_RECEIPT]: 'toConfirmReceive',
+  [STATUS.CANCEL_REQUESTED]: 'cancellationRequested',
+  [STATUS.RETURN_REQUESTED]: 'toReturnRefund',
+  [STATUS.CANCELLED]: 'cancelled',
+}
+
 const MARKETPLACE_STATUS = {
-  Shopee: {
-    [STATUS.UNPAID]: 'Unpaid',
-    [STATUS.INVOICE_PENDING]: 'Invoice Pending',
-    [STATUS.TO_PACK]: 'Processed',
-    [STATUS.PACKED]: 'Processed',
-    [STATUS.RETRY_SHIPMENT]: 'Retry Shipment',
-    [STATUS.SHIPPED]: 'Shipped',
-    [STATUS.TO_CONFIRM_RECEIPT]: 'To Confirm Receive',
-    [STATUS.CANCEL_REQUESTED]: 'Cancellation Requested',
-    [STATUS.RETURN_REQUESTED]: 'To Return/Refund',
-    [STATUS.CANCELLED]: 'Cancelled',
-  },
   // Corrected against LAZADA_STATUS_MAP below and live Lazada data. The old
   // values here were a placeholder written before Lazada was connected and were
   // simply wrong — they claimed Lazada's word for canonical Unpaid was
@@ -292,29 +286,37 @@ const MARKETPLACE_STATUS = {
 // Falls back to the app's own label (or, for an unmapped status, the raw
 // platform string) when this marketplace has no wording of its own for the
 // state — unchanged behaviour, just keyed off statusKey now.
-function getMarketplaceStatus(order) {
-  const marketplace = order.statusKey
-    ? MARKETPLACE_STATUS[order.platform]?.[order.statusKey]
-    : undefined
-  return marketplace ?? order.status
+function getMarketplaceStatus(t, order) {
+  if (!order.statusKey) return statusLabel(t, order)
+
+  if (order.platform === 'Shopee') {
+    const key = MARKETPLACE_STATUS_SHOPEE_KEYS[order.statusKey]
+    return key ? t(`orders.marketplaceStatus.shopee.${key}`) : statusLabel(t, order)
+  }
+
+  // Every other platform's own English wording, verbatim.
+  return MARKETPLACE_STATUS[order.platform]?.[order.statusKey] ?? statusLabel(t, order)
 }
 
+// `key` is the stable tab id — it is the URL's ?tab= value, the key of
+// STATUS_TO_TAB and of tabCounts, and what getInitialTab validates. The label
+// is looked up from it at render, so tab wording can change freely.
 const TABS = [
-  { key: 'unpaid', label: 'Unpaid', badgeClass: 'bg-gray-200 text-gray-600' },
-  { key: 'new', label: 'New Orders', badgeClass: 'bg-red-500 text-white' },
-  { key: 'inprocess', label: 'In Process', badgeClass: 'bg-yellow-500 text-gray-900' },
-  { key: 'shipped', label: 'Shipped', badgeClass: 'bg-[#2563EB] text-white' },
-  { key: 'completed', label: 'Completed' },
+  { key: 'unpaid', badgeClass: 'bg-gray-200 text-gray-600' },
+  { key: 'new', badgeClass: 'bg-red-500 text-white' },
+  { key: 'inprocess', badgeClass: 'bg-yellow-500 text-gray-900' },
+  { key: 'shipped', badgeClass: 'bg-[#2563EB] text-white' },
+  { key: 'completed' },
   // Buyer-initiated cancellations awaiting the seller's approve/reject. Red
   // badge (like New Orders) because it's time-sensitive: Shopee auto-accepts
   // after ~2 days of no response.
-  { key: 'cancelRequests', label: 'Cancel Requests', badgeClass: 'bg-red-500 text-white' },
-  { key: 'returns', label: 'Returns', badgeClass: 'bg-amber-500 text-white' },
-  { key: 'cancelled', label: 'Cancelled' },
+  { key: 'cancelRequests', badgeClass: 'bg-red-500 text-white' },
+  { key: 'returns', badgeClass: 'bg-amber-500 text-white' },
+  { key: 'cancelled' },
   // Safety net only — should stay at 0 in normal operation. A non-zero count
   // here means Shopee returned a status SHOPEE_STATUS_MAP doesn't know about
   // yet (check the console for a "[orders] unmapped Shopee order_status" warning).
-  { key: 'other', label: 'Other', badgeClass: 'bg-gray-400 text-white' },
+  { key: 'other', badgeClass: 'bg-gray-400 text-white' },
 ]
 
 const TAB_KEYS = new Set(TABS.map((tab) => tab.key))
@@ -343,79 +345,15 @@ const PLATFORM_LABELS = {
   shopify: 'Shopify',
 }
 
-// Shopee v2 order_status enum, audited against this list (source: Shopee
-// Open Platform v2 order.get_order_detail / get_order_list docs, plus
-// TO_CONFIRM_RECEIVE observed live in this shop's data). Every value here is
-// mapped; if Shopee ships a new one, mapSupabaseOrder() warns and routes it
-// to the "Other" tab instead of dropping it.
-const SHOPEE_STATUS_MAP = {
-  UNPAID: STATUS.UNPAID,
-  INVOICE_PENDING: STATUS.INVOICE_PENDING,
-  READY_TO_SHIP: STATUS.TO_PACK,
-  PROCESSED: STATUS.PACKED,
-  RETRY_SHIP: STATUS.RETRY_SHIPMENT,
-  SHIPPED: STATUS.SHIPPED,
-  TO_CONFIRM_RECEIVE: STATUS.TO_CONFIRM_RECEIPT,
-  COMPLETED: STATUS.COMPLETED,
-  TO_RETURN: STATUS.RETURN_REQUESTED,
-  IN_CANCEL: STATUS.CANCEL_REQUESTED,
-  CANCELLED: STATUS.CANCELLED,
-}
-
-// TikTok Shop Orders API (v202309) order_status enum — all nine documented
-// values — mapped to the same shared canonical labels SHOPEE_STATUS_MAP uses,
-// so tab bucketing and badge styling work identically across platforms.
-//
-// This is the ONLY place a TikTok status is translated. api/_lib/tiktokSync.js
-// writes TikTok's raw value straight into orders.order_status, exactly as the
-// Shopee sync does with Shopee's. It used to convert into Shopee's vocabulary
-// first, which meant two tables mapped the same thing and disagreed: the sync
-// wrote READY_TO_SHIP/PROCESSED/SHIPPED, this table has no keys for those, and
-// so every TikTok order in those states silently fell through to "Other".
-// If a status ever needs remapping, it changes here and nowhere else.
-//
-// Two values were resolved when the duplicate table was removed:
-//   ON_HOLD  -> 'Unpaid' (was 'Invoice Pending' here). ON_HOLD means TikTok
-//     has suspended the order — payment/risk review — and the seller CANNOT
-//     ship it. 'Invoice Pending' buckets into "New Orders" with a red,
-//     act-now badge, which is exactly wrong. The Unpaid tab is the one whose
-//     stated meaning is "nothing the seller can do until the platform moves
-//     it", so ON_HOLD belongs there.
-//   DELIVERED -> 'To Confirm Receipt' (the sync said 'Shipped'). The parcel
-//     has arrived but the buyer hasn't confirmed and the order hasn't settled
-//     — that is precisely Shopee's TO_CONFIRM_RECEIVE. Both labels bucket
-//     into the Shipped tab anyway, so this is a display-precision win only.
-//
-// Still best-effort from TikTok's documented enum — unlike SHOPEE_STATUS_MAP
-// above, it has NOT been audited against a live sandbox order, so verify it
-// against real TikTok order data before depending on it for fulfilment
-// decisions. TikTok exposes cancellations/returns through a separate
-// Return/Refund object rather than a top-level order_status value, so there's
-// no TikTok analogue for Shopee's IN_CANCEL/TO_RETURN buckets here — an order
-// in one of those states falls through to the "Other" tab via the same
-// unmapped-status fallback below until that's wired up.
-const TIKTOK_STATUS_MAP = {
-  UNPAID: STATUS.UNPAID,
-  ON_HOLD: STATUS.UNPAID,
-  AWAITING_SHIPMENT: STATUS.TO_PACK,
-  PARTIALLY_SHIPPING: STATUS.PACKED,
-  AWAITING_COLLECTION: STATUS.PACKED,
-  IN_TRANSIT: STATUS.SHIPPED,
-  DELIVERED: STATUS.TO_CONFIRM_RECEIPT,
-  COMPLETED: STATUS.COMPLETED,
-  CANCELLED: STATUS.CANCELLED,
-}
 
 // shipping_method is whichever of pickup/dropoff/non_integrated Shopee's
 // info_needed selected when ship_order fired (see api/_lib/shopeeShip.js).
-const SHIPPING_METHOD_LABELS = {
-  pickup: 'Pickup',
-  dropoff: 'Dropoff',
-  non_integrated: 'Non-integrated',
-}
+// The raw values are the stable keys; an unrecognised one falls through to
+// Shopee's own string rather than being mislabelled.
+const SHIPPING_METHODS = ['pickup', 'dropoff', 'non_integrated']
 
-function shippingMethodLabel(method) {
-  return SHIPPING_METHOD_LABELS[method] ?? method
+function shippingMethodLabel(t, method) {
+  return SHIPPING_METHODS.includes(method) ? t(`orders.shippingMethod.${method}`) : method
 }
 
 function awbFilename(orderSnList) {
@@ -453,113 +391,22 @@ async function postOrderAction(session, order, action) {
   return { ok: res.ok && data.success, error: data.error, data }
 }
 
-// Lazada's raw status vocabulary, mapped to the same shared canonical labels
-// SHOPEE_STATUS_MAP uses. api/_lib/lazadaSync.js writes Lazada's raw status
-// straight into orders.order_status — this is the single translation layer, the
-// same arrangement Shopee has and the one TikTok was fixed to use.
-//
-// Lazada's `statuses` field is an ARRAY (a part-shipped order can carry
-// ["shipped","pending"]); lazadaSync.js collapses it least-progressed-wins
-// BEFORE writing, so the values arriving here are always scalar.
-//
-// Every value below was seen in, or confirmed against, live data — `confirmed`
-// in particular is absent from Lazada's published status list but appeared in
-// the live sample.
-//
-// Two mappings are lossy, because Lazada simply has no equivalent state:
-//   delivered -> 'Completed'. Lazada has NO status after delivered — it is the
-//     end state for a fulfilled order. (TikTok maps DELIVERED to 'To Confirm
-//     Receipt' instead, and that asymmetry is correct: TikTok has a real
-//     COMPLETED status afterwards, Lazada does not. Mapping this to 'To Confirm
-//     Receipt' would leave the Completed tab permanently empty for Lazada.)
-//   failed -> 'Cancelled'. ⚠️ The weakest mapping here. Lazada's `failed` may
-//     mean a failed DELIVERY (parcel coming back, arguably still actionable) or
-//     a failed ORDER (payment/fraud, genuinely dead). Treated as terminal for
-//     now; re-check this one against live data before trusting it. If it turns
-//     out to mean failed DELIVERY, it belongs with the return group below.
-//
-// THE RETURN GROUP: returned, shipped_back, shipped_back_success and
-// package_returned all map to 'Returned' (Returns tab).
-//
-// `returned` used to map to 'Cancelled', on the reasoning that a COMPLETED
-// return implies no outstanding action and the Returns tab implies one. That
-// was wrong in practice: it hid physically-returning stock inside a tab that
-// reads as "dead orders, nothing to do", when a returned parcel still needs
-// receiving, inspecting and restocking. The Returns tab now covers the whole
-// return lifecycle — 'Return Requested' at the front (a decision is pending),
-// 'Returned' at the back (goods are on their way back or already back) — and
-// Cancelled is reserved for orders where no goods ever moved.
-//
-// The four are collapsed into one label deliberately: `shipped_back` is in
-// transit back while the other three are complete, so calling all four
-// 'Returned' runs slightly ahead of reality for that one. That is the same
-// many-to-one lossiness this table already carries elsewhere (packed and
-// ready_to_ship both -> 'Packed'), and it keeps a canonical label from existing
-// for a single platform's single status. Split it if the in-transit-back case
-// ever needs its own handling.
-//
-// Still deliberately unmapped: lost_by_3pl, damaged_by_3pl and friends. Those
-// are loss/damage claims, not returns — they land in the "Other" tab with the
-// warning below rather than being forced into a bucket they don't belong in.
-const LAZADA_STATUS_MAP = {
-  unpaid: STATUS.UNPAID,
-  pending: STATUS.TO_PACK,
-  // 'Completed', NOT 'To Pack' — do not "fix" this back without new evidence.
-  //
-  // `confirmed` is an order/payment-level state, not a fulfilment state. It is
-  // absent from Lazada's published item-status vocabulary, and it never
-  // advances: an order that ships and is delivered keeps reporting `confirmed`
-  // at order level forever, while the real progress shows up only in per-item
-  // status (which api/_lib/lazadaSync.js now reads instead — see
-  // deriveOrderStatus there).
-  //
-  // EVIDENCE (2026-08-17): 146 orders were stored as `confirmed`, spanning May
-  // to August, nearly all carrying tracking numbers. Lazada Seller Centre showed
-  // exactly ONE order actually needing seller action over that whole period, and
-  // that one was stored as `ready_to_ship`, not `confirmed`. So `confirmed`
-  // reliably means settled business, and mapping it to 'To Pack' flooded the New
-  // Orders tab with months of finished orders — burying the single order that
-  // did need packing.
-  //
-  // 'Completed' is the honest bucket for a settled order whose fulfilment detail
-  // is unavailable. It is deliberately the QUIET choice: the failure mode of
-  // over-reporting completion is a finished order sitting in the wrong tab,
-  // whereas the failure mode of 'To Pack' was hiding real work in the noise.
-  confirmed: STATUS.COMPLETED,
-  packed: STATUS.PACKED,
-  ready_to_ship: STATUS.PACKED,
-  shipped: STATUS.SHIPPED,
-  delivered: STATUS.COMPLETED,
-  canceled: STATUS.CANCELLED,
-  returned: STATUS.RETURNED,
-  shipped_back: STATUS.RETURNED,
-  shipped_back_success: STATUS.RETURNED,
-  package_returned: STATUS.RETURNED,
-  failed: STATUS.CANCELLED,
-}
-
-const RAW_STATUS_MAP_BY_PLATFORM = {
-  shopee: SHOPEE_STATUS_MAP,
-  tiktok: TIKTOK_STATUS_MAP,
-  lazada: LAZADA_STATUS_MAP,
-}
 
 function mapSupabaseOrder(row, storeNames) {
   const platform = PLATFORM_LABELS[row.platform] ?? row.platform
-  const statusMap = RAW_STATUS_MAP_BY_PLATFORM[row.platform]
-  const mappedStatusKey = statusMap?.[row.order_status]
+  const mappedStatusKey = statusKeyFor(row.platform, row.order_status)
 
   // Never let an unrecognized status make the order vanish: fall back to the
   // raw value (still routed somewhere visible via getOrderTab's OTHER_TAB
-  // fallback) and flag it loudly so the relevant map above gets updated.
-  if (statusMap && row.order_status && !mappedStatusKey) {
+  // fallback) and flag it loudly so the relevant map gets updated.
+  if (row.order_status && !mappedStatusKey) {
     console.warn(
       `[orders] unmapped ${platform} order_status "${row.order_status}" for order ${row.platform_order_id} — showing under "Other" until the status map for this platform is updated.`
     )
   }
 
   // Three cases, preserved exactly from when `status` was the only field:
-  //   mapped              -> statusKey set, label from STATUS_LABEL
+  //   mapped              -> statusKey set, label resolved by statusLabel()
   //   unmapped but present-> statusKey null, raw platform string shown verbatim
   //                          (Other tab, default badge) — data passthrough, the
   //                          same treatment an unknown status gets everywhere
@@ -574,8 +421,10 @@ function mapSupabaseOrder(row, storeNames) {
   const statusKey = mappedStatusKey ?? (row.order_status == null ? STATUS.UNPAID : null)
   const storeName = storeNames?.[row.store_id] ?? ''
 
+  // Item names are Shopee DATA. A missing one stays null so the placeholder
+  // can be resolved at render, where the locale is known.
   const items = (row.order_items ?? []).map((item) => ({
-    name: item.product_name || 'Item',
+    name: item.product_name || null,
     qty: item.quantity ?? 1,
     price: Number(item.price) || 0,
     variant: item.variant_name || undefined,
@@ -588,21 +437,22 @@ function mapSupabaseOrder(row, storeNames) {
     storeName,
     platform_order_id: row.platform_order_id,
     platform,
-    buyer: row.buyer_name || 'Unknown Buyer',
+    buyer: row.buyer_name || null,
     phone: row.buyer_phone || '-',
     address: row.shipping_address || '-',
     region: row.region || '-',
     items:
       items.length > 0
         ? items
-        : [{ name: 'Order item', qty: 1, price: Number(row.total_amount) || 0, image: null }],
+        : [{ name: null, qty: 1, price: Number(row.total_amount) || 0, image: null }],
     total: Number(row.total_amount) || 0,
     payment: row.payment_method || '-',
-    // statusKey drives every decision (tab, badge, button guards); status is
-    // only ever rendered. Keep them in that order of authority — reading the
-    // label back to make a decision is the bug this split removes.
+    // statusKey drives every decision (tab, badge, button guards). No display
+    // label is stored at all any more — statusLabel(t, order) resolves it at
+    // render, so a language switch updates every status on screen immediately.
+    // rawStatus is kept only as the fallback for a status with no key.
     statusKey,
-    status: statusKey ? STATUS_LABEL[statusKey] : row.order_status,
+    rawStatus: row.order_status ?? null,
     // Raw timestamps, formatted at render by useDateTime() rather than here.
     // Pre-formatting them in this mapper would have pinned every date to
     // whichever locale was active during the fetch, so switching language
@@ -640,7 +490,7 @@ function ItemThumb({ image, alt, tint, className }) {
     return (
       <img
         src={image}
-        alt={alt || 'Item'}
+        alt={alt}
         className={cn('shrink-0 rounded-lg object-cover', className)}
       />
     )
@@ -658,7 +508,10 @@ function ItemThumb({ image, alt, tint, className }) {
   )
 }
 
-function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId } = {}) {
+// `t` is threaded in rather than read from a hook: this is a plain function,
+// not a component, and it is also called in a boolean position (`renderActions(...) &&`)
+// where a hook would be illegal.
+function renderActions(t, order, { fullWidth = false, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId } = {}) {
   // TikTok and Lazada orders are read-only for now: Pack/Cancel/Approve/
   // Reject all go through postOrderAction -> POST /api/shopee/order-action,
   // and Print AWB goes through /api/shopee/print-awb — both Shopee-only
@@ -685,7 +538,7 @@ function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPac
       }}
       className={cn(ACTION_BTN_CLS, grow, className)}
     >
-      {printing ? <Loader2 className="animate-spin" /> : <Printer />} Print AWB
+      {printing ? <Loader2 className="animate-spin" /> : <Printer />} {t('orders.actions.printAwb')}
     </Button>
   )
 
@@ -700,7 +553,7 @@ function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPac
       }}
       className={cn(ACTION_BTN_CLS, grow, 'text-red-600 hover:bg-red-500/10 hover:text-red-600')}
     >
-      {acting ? <Loader2 className="animate-spin" /> : null} Cancel
+      {acting ? <Loader2 className="animate-spin" /> : null} {t('orders.actions.cancel')}
     </Button>
   )
 
@@ -725,8 +578,8 @@ function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPac
     )
     return (
       <>
-        {buyerCancelButton('accept', 'Approve')}
-        {buyerCancelButton('reject', 'Reject')}
+        {buyerCancelButton('accept', t('orders.actions.approve'))}
+        {buyerCancelButton('reject', t('orders.actions.reject'))}
       </>
     )
   }
@@ -751,7 +604,7 @@ function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPac
             }}
             className={cn(ACTION_BTN_CLS, grow, 'bg-[#2563EB] text-white hover:bg-[#2563EB]/90')}
           >
-            {acting ? <Loader2 className="animate-spin" /> : <Package />} Pack
+            {acting ? <Loader2 className="animate-spin" /> : <Package />} {t('orders.actions.pack')}
           </Button>
         )}
         {cancelButton}
@@ -773,7 +626,7 @@ function renderActions(order, { fullWidth = false, onPrintAWB, printingId, onPac
       <>
         {printAwbButton('bg-gray-200 text-[#1F2937] hover:bg-gray-300')}
         <Button size="sm" variant="ghost" className={cn(ACTION_BTN_CLS, grow, 'text-[#374151]')}>
-          Track
+          {t('orders.actions.track')}
         </Button>
       </>
     )
@@ -797,13 +650,19 @@ const TIMELINE_STAGE = {
   [STATUS.RETURN_REQUESTED]: 2,
 }
 
+// Stable stage keys — also used as the React key below, so a translated label
+// can never change list identity.
+const TIMELINE_STAGES = ['ordered', 'packed', 'shipped']
+
 function OrderTimeline({ statusKey, statusLabel }) {
+  const { t } = useTranslation()
+
   if (statusKey === STATUS.CANCELLED) {
     return (
       <div className="flex items-center">
         <div className="flex flex-col items-center gap-1">
           <span className="h-3 w-3 rounded-full bg-[#2563EB]" />
-          <span className="text-xs text-[#1F2937]">Ordered</span>
+          <span className="text-xs text-[#1F2937]">{t('orders.timeline.ordered')}</span>
         </div>
         <span className="mx-1 h-0.5 flex-1 bg-red-500/50" />
         <div className="flex flex-col items-center gap-1">
@@ -814,13 +673,12 @@ function OrderTimeline({ statusKey, statusLabel }) {
     )
   }
 
-  const stages = ['Ordered', 'Packed', 'Shipped']
   const stageIndex = (statusKey ? TIMELINE_STAGE[statusKey] : undefined) ?? 0
 
   return (
     <div className="flex items-center">
-      {stages.map((label, i) => (
-        <Fragment key={label}>
+      {TIMELINE_STAGES.map((stage, i) => (
+        <Fragment key={stage}>
           <div className="flex flex-col items-center gap-1">
             <span
               className={cn(
@@ -829,10 +687,10 @@ function OrderTimeline({ statusKey, statusLabel }) {
               )}
             />
             <span className={cn('text-xs', i <= stageIndex ? 'text-[#1F2937]' : 'text-gray-400')}>
-              {label}
+              {t(`orders.timeline.${stage}`)}
             </span>
           </div>
-          {i < stages.length - 1 && (
+          {i < TIMELINE_STAGES.length - 1 && (
             <span
               className={cn('mx-1 h-0.5 flex-1', i < stageIndex ? 'bg-[#2563EB]' : 'bg-gray-300')}
             />
@@ -844,6 +702,7 @@ function OrderTimeline({ statusKey, statusLabel }) {
 }
 
 function CopyButton({ text }) {
+  const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
   return (
     <button
@@ -854,7 +713,7 @@ function CopyButton({ text }) {
         setCopied(true)
         setTimeout(() => setCopied(false), 1500)
       }}
-      aria-label="Copy tracking number"
+      aria-label={t('orders.copyTracking')}
       className="text-gray-400 hover:text-gray-600"
     >
       {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
@@ -862,9 +721,14 @@ function CopyButton({ text }) {
   )
 }
 
-function itemsSummary(items) {
+// Item and variant names are Shopee DATA and are joined verbatim; only the
+// placeholder for a nameless item comes from the dictionary.
+function itemsSummary(t, items) {
   return items
-    .map((item) => (item.variant ? `${item.name} (${item.variant}) x${item.qty}` : `${item.name} x${item.qty}`))
+    .map((item) => {
+      const name = item.name ?? t('orders.unnamedItem')
+      return item.variant ? `${name} (${item.variant}) x${item.qty}` : `${name} x${item.qty}`
+    })
     .join(', ')
 }
 
@@ -884,7 +748,7 @@ function OrderCard({
   const { formatDateTime, formatRelativeToNow } = useDateTime()
   const meta = PLATFORM_META[order.platform]
   const actions = !selectionMode
-    ? renderActions(order, { fullWidth: true, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId })
+    ? renderActions(t, order, { fullWidth: true, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId })
     : null
 
   const flagBadges = [
@@ -895,16 +759,20 @@ function OrderCard({
     ),
     order.statusKey === STATUS.UNPAID && (
       <span key="unpaid" className={cn(BADGE_CLS, 'bg-gray-200 text-gray-600')}>
-        Waiting for payment
+        {t('orders.flags.waitingForPayment')}
       </span>
     ),
     order.awbPrinted && (
       <span
         key="printed"
-        title={order.awbPrintedAt ? `Printed ${formatDateTime(order.awbPrintedAt)}` : undefined}
+        title={
+          order.awbPrintedAt
+            ? t('orders.flags.printedAt', { date: formatDateTime(order.awbPrintedAt) })
+            : undefined
+        }
         className={cn(BADGE_CLS, 'bg-green-500/15 text-green-700')}
       >
-        🖨️ Printed
+        🖨️ {t('orders.flags.printed')}
       </span>
     ),
     // auto_pack_status never retries once set (see api/_lib/autoPack.js) — a
@@ -913,15 +781,16 @@ function OrderCard({
     order.autoPackStatus === 'failed' && (
       <span
         key="autopack-failed"
-        title={order.autoPackError || 'Auto-pack failed — pack this order manually'}
+        // autoPackError is the server's own reason — shown verbatim when set.
+        title={order.autoPackError || t('orders.flags.autoPackFailedHint')}
         className={cn(BADGE_CLS, 'bg-red-500/15 text-red-700')}
       >
-        ⚠️ Auto-pack failed — needs manual Pack
+        ⚠️ {t('orders.flags.autoPackFailed')}
       </span>
     ),
     order.packedBy === 'auto' && (
       <span key="auto-packed" className={cn(BADGE_CLS, 'bg-blue-500/15 text-blue-700')}>
-        ⚡ Auto-packed
+        ⚡ {t('orders.flags.autoPacked')}
       </span>
     ),
   ].filter(Boolean)
@@ -954,7 +823,10 @@ function OrderCard({
         </div>
 
         <div className="mt-2.5">
-          <p className="text-base leading-tight font-semibold text-[#1F2937]">{order.buyer}</p>
+          {/* Buyer name/phone/region are Shopee DATA — untouched. */}
+          <p className="text-base leading-tight font-semibold text-[#1F2937]">
+            {order.buyer ?? t('orders.unknownBuyer')}
+          </p>
           <p className="mt-0.5 text-xs text-[#6B7280]">{order.phone}</p>
           <p className="text-xs text-[#9CA3AF]">{order.region}</p>
         </div>
@@ -965,13 +837,12 @@ function OrderCard({
 
         {order.statusKey === STATUS.CANCEL_REQUESTED && (
           <div className="mt-2.5 rounded-lg bg-amber-500/10 px-2.5 py-2 text-[11px] leading-snug text-amber-800">
-            <p className="font-semibold">Buyer requested cancellation</p>
+            <p className="font-semibold">{t('orders.cancelRequest.title')}</p>
             <p className="mt-0.5">
-              Reason: {order.buyerCancelReason || order.cancelReason || 'Not provided'}
+              {t('orders.cancelRequest.reason')}:{' '}
+              {order.buyerCancelReason || order.cancelReason || t('orders.cancelRequest.notProvided')}
             </p>
-            <p className="mt-0.5 text-amber-700">
-              Respond within ~2 days or Shopee auto-accepts.
-            </p>
+            <p className="mt-0.5 text-amber-700">{t('orders.cancelRequest.deadlineShort')}</p>
           </div>
         )}
 
@@ -987,12 +858,12 @@ function OrderCard({
             <ItemThumb
               key={i}
               image={item.image}
-              alt={item.name}
+              alt={item.name ?? t('orders.unnamedItem')}
               tint={meta.tint}
               className="h-10 w-10"
             />
           ))}
-          <p className="truncate text-xs leading-snug text-[#6B7280]">{itemsSummary(order.items)}</p>
+          <p className="truncate text-xs leading-snug text-[#6B7280]">{itemsSummary(t, order.items)}</p>
         </div>
 
         {order.courier && (
@@ -1002,7 +873,7 @@ function OrderCard({
             </span>
             {order.shippingMethod && (
               <span className="rounded-md bg-[#F3F4F6] px-2 py-1 text-[11px] text-[#6B7280]">
-                Arranged via: {shippingMethodLabel(order.shippingMethod)}
+                {t('orders.arrangedVia')}: {shippingMethodLabel(t, order.shippingMethod)}
               </span>
             )}
             {order.trackingNumber && (
@@ -1016,8 +887,10 @@ function OrderCard({
 
         {(order.paidAt || order.packedAt) && (
           <div className="mt-2 flex gap-4 text-[11px] tabular-nums text-gray-500">
-            {order.paidAt && <span>Paid {formatDateTime(order.paidAt)}</span>}
-            {order.packedAt && <span>Packed {formatDateTime(order.packedAt)}</span>}
+            {order.paidAt && <span>{t('orders.paidAt', { date: formatDateTime(order.paidAt) })}</span>}
+            {order.packedAt && (
+              <span>{t('orders.packedAt', { date: formatDateTime(order.packedAt) })}</span>
+            )}
           </div>
         )}
 
@@ -1047,7 +920,7 @@ export default function Orders() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [activeTab, setActiveTabState] = useState(() => getInitialTab(searchParams))
-  const [platformFilter, setPlatformFilter] = useState('All')
+  const [platformFilter, setPlatformFilter] = useState(ALL_FILTER)
   const [search, setSearch] = useState('')
   const [selectedOrder, setSelectedOrder] = useState(null)
   const [selectionMode, setSelectionMode] = useState(false)
@@ -1062,7 +935,7 @@ export default function Orders() {
   const [bulkPrinting, setBulkPrinting] = useState(false)
   const [printConfirm, setPrintConfirm] = useState(null) // { count, run } | null
   const pendingAwbPrint = usePendingAwbPrint()
-  const [printedFilter, setPrintedFilter] = useState('All')
+  const [printedFilter, setPrintedFilter] = useState(ALL_FILTER)
   const [actingId, setActingId] = useState(null)
   const [bulkActing, setBulkActing] = useState(null)
   const [lastSyncedAt, setLastSyncedAt] = useState(null)
@@ -1225,12 +1098,12 @@ export default function Orders() {
       const result = await performSync()
 
       if (result.skipped) {
-        toast.info('No Shopee store connected — nothing to sync yet.')
+        toast.info(t('orders.sync.noStore'))
         return
       }
 
       if (!result.ok) {
-        toast.error(result.message || 'Failed to sync orders.')
+        toast.error(result.message || t('orders.sync.error'))
         return
       }
 
@@ -1240,15 +1113,21 @@ export default function Orders() {
       autoSyncErrorShownRef.current = false
 
       if (result.partial) {
-        toast.error(result.message || 'Some stores failed to sync.')
+        toast.error(result.message || t('orders.sync.partial'))
       } else {
         const count = result.data.synced ?? 0
-        const suffix = result.data.hasMore ? ' — more pending, syncing again will continue' : ''
-        toast.success(`Synced — ${count} order${count === 1 ? '' : 's'} updated${suffix}`)
+        // Two whole sentences rather than a suffix concatenated onto one:
+        // the trailing clause cannot be appended to a Chinese sentence and
+        // still read as grammar.
+        toast.success(
+          result.data.hasMore
+            ? t('orders.sync.successMore', { count })
+            : t('orders.sync.success', { count })
+        )
       }
     } catch (err) {
       console.error('[sync] unexpected error during manual sync', err)
-      toast.error(err.message || 'Failed to sync orders.')
+      toast.error(err.message || t('orders.sync.error'))
     } finally {
       setSyncing(false)
     }
@@ -1269,7 +1148,7 @@ export default function Orders() {
       if (!result.ok || result.partial) {
         console.error('[auto-sync] sync problem', result.message)
         if (!autoSyncErrorShownRef.current) {
-          toast.error(result.message || 'Auto-sync failed.')
+          toast.error(result.message || t('orders.sync.autoError'))
           autoSyncErrorShownRef.current = true
         }
         if (result.ok) {
@@ -1287,7 +1166,9 @@ export default function Orders() {
     } finally {
       syncInFlightRef.current = false
     }
-  }, [performSync, fetchOrders])
+    // `t` is a dependency because the auto-sync failure toast reads it; its
+    // identity only changes on a locale switch.
+  }, [performSync, fetchOrders, t])
 
   // 60s auto-sync: only while this page is mounted, the tab is visible, and
   // the user has the preference on. Reads the localStorage toggle once at
@@ -1337,7 +1218,7 @@ export default function Orders() {
 
   function requestPrintAWB(order) {
     if (!order.platform_order_id || !order.store_id) {
-      toast.error('Print AWB works with real connected orders only.')
+      toast.error(t('orders.printAwb.realOrdersOnly'))
       return
     }
     // eslint-disable-next-line react-hooks/purity -- perf instrumentation, event-handler only
@@ -1354,7 +1235,7 @@ export default function Orders() {
       } = await supabase.auth.getSession()
 
       if (!session) {
-        toast.error('You must be logged in to print.')
+        toast.error(t('orders.printAwb.loginRequired'))
         return
       }
 
@@ -1388,7 +1269,7 @@ export default function Orders() {
         await deliverPdf(blob, `AWB-${order.platform_order_id}.pdf`)
       } catch (err) {
         console.error('[print-awb] PDF did not reach the device', err)
-        toast.error('Label generated but could not be saved/opened on this device.')
+        toast.error(t('orders.printAwb.deliveryErrorSingle'))
         return
       }
       // Includes time spent on the confirm dialog, not just system latency —
@@ -1404,7 +1285,7 @@ export default function Orders() {
       await fetchOrders()
     } catch (err) {
       console.error('[print-awb] request failed', err)
-      toast.error(describeRequestError(err, 'Failed to print AWB.'))
+      toast.error(describeRequestError(t, err, t('orders.printAwb.error')))
     } finally {
       setPrintingId(null)
     }
@@ -1427,7 +1308,7 @@ export default function Orders() {
   function requestBulkPrintAWB() {
     const selection = getBulkPrintSelection()
     if (!selection) {
-      toast.error('Print AWB works with real connected orders only.')
+      toast.error(t('orders.printAwb.realOrdersOnly'))
       return
     }
     // eslint-disable-next-line react-hooks/purity -- perf instrumentation, event-handler only
@@ -1450,7 +1331,7 @@ export default function Orders() {
   async function handleBulkPrintAWB(tapAt) {
     const selection = getBulkPrintSelection()
     if (!selection) {
-      toast.error('Print AWB works with real connected orders only.')
+      toast.error(t('orders.printAwb.realOrdersOnly'))
       return
     }
     const { storeId, sameStoreOrders, realOrders } = selection
@@ -1463,7 +1344,7 @@ export default function Orders() {
       } = await supabase.auth.getSession()
 
       if (!session) {
-        toast.error('You must be logged in to print.')
+        toast.error(t('orders.printAwb.loginRequired'))
         return
       }
 
@@ -1488,7 +1369,7 @@ export default function Orders() {
           await deliverPdf(blob, awbFilename(orderSnList))
         } catch (err) {
           console.error('[bulk-print] PDF did not reach the device', err)
-          toast.error('Labels generated but could not be saved/opened on this device.')
+          toast.error(t('orders.printAwb.deliveryError'))
           return
         }
         // Includes time spent on the confirm dialog, not just system latency —
@@ -1499,7 +1380,7 @@ export default function Orders() {
         const data = await res.json().catch(() => ({}))
         if (!res.ok || !data.success) {
           logPrintAwbFailure('bulk print', data)
-          toast.error(printAwbErrorMessage(data, 'Failed to print labels.'))
+          toast.error(printAwbErrorMessage(data, t('orders.printAwb.bulkError')))
           return
         }
 
@@ -1509,7 +1390,7 @@ export default function Orders() {
         )
         if (fileCount === 0) {
           logPrintAwbFailure('bulk print (no pdf)', data)
-          toast.error('Labels generated but could not be saved/opened on this device.')
+          toast.error(t('orders.printAwb.deliveryError'))
           return
         }
         // documents.length PDFs deliver sequentially inside downloadAwbResponse
@@ -1520,27 +1401,36 @@ export default function Orders() {
         await finalizeAwbDelivery({ storeId, accessToken: session.access_token, orderSnList: deliveredOrderSns })
 
         const orderCount = deliveredOrderSns.length
-        toast.success(
-          `Downloaded ${fileCount} label file${fileCount === 1 ? '' : 's'} covering ${orderCount} order${orderCount === 1 ? '' : 's'}`
-        )
+        toast.success(t('orders.printAwb.downloaded', { files: fileCount, orders: orderCount }))
 
         if (data.skipped_orders?.length) {
-          toast.info(`${data.skipped_orders.length} order(s) not ready — no tracking number yet.`)
+          toast.info(t('orders.printAwb.notReady', { count: data.skipped_orders.length }))
         }
 
         if (data.failed?.length) {
-          toast.error(`${data.failed.length} order(s) failed — ${describeFailedOrders(data.failed)}`)
+          // reason is Shopee's own per-order text — passed through untranslated.
+          toast.error(
+            t('orders.printAwb.failed', {
+              count: data.failed.length,
+              reason: describeFailedOrders(data.failed),
+            })
+          )
         }
       }
 
       if (sameStoreOrders.length < realOrders.length) {
-        toast.info(`Printed ${sameStoreOrders.length} of ${realOrders.length} selected (same store only).`)
+        toast.info(
+          t('orders.printAwb.sameStoreOnly', {
+            printed: sameStoreOrders.length,
+            selected: realOrders.length,
+          })
+        )
       }
 
       await fetchOrders()
     } catch (err) {
       console.error('[bulk-print] request failed', err)
-      toast.error(describeRequestError(err, 'Failed to print labels.'))
+      toast.error(describeRequestError(t, err, t('orders.printAwb.bulkError')))
     } finally {
       setBulkPrinting(false)
     }
@@ -1551,7 +1441,7 @@ export default function Orders() {
   // preparing the parcel". So packing is a real API call, not a local nudge.
   async function handlePackOrder(order) {
     if (!order.platform_order_id || !order.store_id) {
-      toast.error('Pack works with real connected orders only.')
+      toast.error(t('orders.pack.realOrdersOnly'))
       return
     }
 
@@ -1562,21 +1452,21 @@ export default function Orders() {
       } = await supabase.auth.getSession()
 
       if (!session) {
-        toast.error('You must be logged in.')
+        toast.error(t('orders.loginRequired'))
         return
       }
 
       const { ok, error } = await postOrderAction(session, order, 'ship')
       if (!ok) {
-        toast.error(error || 'Failed to arrange shipment.')
+        toast.error(error || t('orders.pack.error'))
         return
       }
 
-      toast.success('Shipment arranged — Shopee notified')
+      toast.success(t('orders.pack.success'))
       await fetchOrders()
     } catch (err) {
       console.error('[pack-order] request failed', err)
-      toast.error(describeRequestError(err, 'Failed to arrange shipment.'))
+      toast.error(describeRequestError(t, err, t('orders.pack.error')))
     } finally {
       setActingId(null)
     }
@@ -1584,7 +1474,7 @@ export default function Orders() {
 
   async function handleShipOrder(order, { silent = false, skipRefetch = false } = {}) {
     if (!order.platform_order_id || !order.store_id) {
-      if (!silent) toast.error('Ship works with real connected orders only.')
+      if (!silent) toast.error(t('orders.ship.realOrdersOnly'))
       return false
     }
 
@@ -1595,22 +1485,22 @@ export default function Orders() {
       } = await supabase.auth.getSession()
 
       if (!session) {
-        if (!silent) toast.error('You must be logged in.')
+        if (!silent) toast.error(t('orders.loginRequired'))
         return false
       }
 
       const { ok, error } = await postOrderAction(session, order, 'ship')
       if (!ok) {
-        if (!silent) toast.error(error || 'Failed to ship order.')
+        if (!silent) toast.error(error || t('orders.ship.error'))
         return false
       }
 
-      if (!silent) toast.success('Order shipped!')
+      if (!silent) toast.success(t('orders.ship.success'))
       if (!skipRefetch) await fetchOrders()
       return true
     } catch (err) {
       console.error('[ship-order] request failed', err)
-      if (!silent) toast.error(describeRequestError(err, 'Failed to ship order.'))
+      if (!silent) toast.error(describeRequestError(t, err, t('orders.ship.error')))
       return false
     } finally {
       setActingId(null)
@@ -1619,7 +1509,7 @@ export default function Orders() {
 
   async function handleCancelOrder(order, { silent = false, skipRefetch = false, skipConfirm = false } = {}) {
     if (!order.platform_order_id || !order.store_id) {
-      if (!silent) toast.error('Cancel works with real connected orders only.')
+      if (!silent) toast.error(t('orders.cancel.realOrdersOnly'))
       return false
     }
 
@@ -1634,22 +1524,22 @@ export default function Orders() {
       } = await supabase.auth.getSession()
 
       if (!session) {
-        if (!silent) toast.error('You must be logged in.')
+        if (!silent) toast.error(t('orders.loginRequired'))
         return false
       }
 
       const { ok, error } = await postOrderAction(session, order, 'cancel')
       if (!ok) {
-        if (!silent) toast.error(error || 'Failed to cancel order.')
+        if (!silent) toast.error(error || t('orders.cancel.error'))
         return false
       }
 
-      if (!silent) toast.success('Order cancelled.')
+      if (!silent) toast.success(t('orders.cancel.success'))
       if (!skipRefetch) await fetchOrders()
       return true
     } catch (err) {
       console.error('[cancel-order] request failed', err)
-      if (!silent) toast.error(describeRequestError(err, 'Failed to cancel order.'))
+      if (!silent) toast.error(describeRequestError(t, err, t('orders.cancel.error')))
       return false
     } finally {
       setActingId(null)
@@ -1665,16 +1555,20 @@ export default function Orders() {
   // leaving a stale row the seller could click again.
   async function handleBuyerCancel(order, decision) {
     if (!order.platform_order_id || !order.store_id) {
-      toast.error('This works with real connected orders only.')
+      toast.error(t('orders.buyerCancel.realOrdersOnly'))
       return
     }
 
-    const verb = decision === 'accept' ? 'Approve' : 'Reject'
-    const reason = order.buyerCancelReason || order.cancelReason || 'no reason given'
-    const confirmMsg =
-      decision === 'accept'
-        ? `Approve cancellation of ${order.id}?\n\nBuyer's reason: ${reason}\n\nThe order will be cancelled and the buyer refunded. This cannot be undone.`
-        : `Reject cancellation of ${order.id}?\n\nBuyer's reason: ${reason}\n\nThe order returns to fulfilment and the buyer is expected to receive it. This cannot be undone.`
+    // Keyed on the DECISION, not on an English verb. This used to build its
+    // failure message as `Failed to ${verb.toLowerCase()} cancellation.` —
+    // English morphology assembled at runtime, which no dictionary can reach.
+    const decisionKey = decision === 'accept' ? 'approve' : 'reject'
+    const reason =
+      order.buyerCancelReason || order.cancelReason || t('orders.buyerCancel.noReason')
+    const confirmMsg = t(`orders.buyerCancel.confirm.${decisionKey}`, {
+      id: order.id,
+      reason,
+    })
 
     if (!window.confirm(confirmMsg)) return
 
@@ -1685,7 +1579,7 @@ export default function Orders() {
       } = await supabase.auth.getSession()
 
       if (!session) {
-        toast.error('You must be logged in.')
+        toast.error(t('orders.loginRequired'))
         return
       }
 
@@ -1701,7 +1595,7 @@ export default function Orders() {
       await fetchOrders()
 
       if (!ok) {
-        toast.error(error || `Failed to ${verb.toLowerCase()} cancellation.`)
+        toast.error(error || t(`orders.buyerCancel.error.${decisionKey}`))
         return
       }
 
@@ -1709,13 +1603,13 @@ export default function Orders() {
       // Cancelled tab and may have auto-accepted). Show it as info, not a
       // celebratory success, so it reads as "nothing for you to do here".
       if (data?.already_resolved) {
-        toast.info(data.message || 'This cancellation was already resolved.')
+        toast.info(data.message || t('orders.buyerCancel.alreadyResolved'))
       } else {
-        toast.success(data?.message || `Cancellation ${decision === 'accept' ? 'approved' : 'rejected'}.`)
+        toast.success(data?.message || t(`orders.buyerCancel.success.${decisionKey}`))
       }
     } catch (err) {
       console.error('[buyer-cancel] request failed', err)
-      toast.error(describeRequestError(err, `Failed to ${verb.toLowerCase()} cancellation.`))
+      toast.error(describeRequestError(t, err, t(`orders.buyerCancel.error.${decisionKey}`)))
     } finally {
       setActingId(null)
     }
@@ -1728,7 +1622,7 @@ export default function Orders() {
     )
 
     if (realOrders.length === 0) {
-      toast.error('Ship works with real connected orders only.')
+      toast.error(t('orders.ship.realOrdersOnly'))
       return
     }
 
@@ -1741,9 +1635,9 @@ export default function Orders() {
       }
 
       if (succeeded > 0) {
-        toast.success(`Shipped ${succeeded} of ${realOrders.length} order(s).`)
+        toast.success(t('orders.bulk.shipped', { succeeded, total: realOrders.length }))
       } else {
-        toast.error('Failed to ship orders.')
+        toast.error(t('orders.bulk.shipError'))
       }
 
       await fetchOrders()
@@ -1761,7 +1655,7 @@ export default function Orders() {
     )
 
     if (realOrders.length === 0) {
-      toast.error('Cancel works with real connected orders only.')
+      toast.error(t('orders.cancel.realOrdersOnly'))
       return
     }
 
@@ -1782,9 +1676,9 @@ export default function Orders() {
       }
 
       if (succeeded > 0) {
-        toast.success(`Cancelled ${succeeded} of ${realOrders.length} order(s).`)
+        toast.success(t('orders.bulk.cancelled', { succeeded, total: realOrders.length }))
       } else {
-        toast.error('Failed to cancel orders.')
+        toast.error(t('orders.bulk.cancelError'))
       }
 
       await fetchOrders()
@@ -1798,7 +1692,7 @@ export default function Orders() {
   const tabCounts = useMemo(() => {
     const counts = {}
     orders.forEach((order) => {
-      if (platformFilter !== 'All' && order.platform !== platformFilter) return
+      if (platformFilter !== ALL_FILTER && order.platform !== platformFilter) return
       const tab = getOrderTab(order)
       counts[tab] = (counts[tab] ?? 0) + 1
     })
@@ -1806,10 +1700,10 @@ export default function Orders() {
   }, [orders, platformFilter])
 
   const platformCounts = useMemo(() => {
-    const counts = { All: 0, Shopee: 0, Lazada: 0, TikTok: 0, Shopify: 0 }
+    const counts = { [ALL_FILTER]: 0, Shopee: 0, Lazada: 0, TikTok: 0, Shopify: 0 }
     orders.forEach((order) => {
       if (getOrderTab(order) !== activeTab) return
-      counts.All += 1
+      counts[ALL_FILTER] += 1
       counts[order.platform] = (counts[order.platform] ?? 0) + 1
     })
     return counts
@@ -1821,7 +1715,7 @@ export default function Orders() {
   const toPackOrders = orders.filter(
     (order) =>
       getOrderTab(order) === TO_PACK_TAB &&
-      (platformFilter === 'All' || order.platform === platformFilter)
+      (platformFilter === ALL_FILTER || order.platform === platformFilter)
   )
 
   const unprintedCount = toPackOrders.filter(
@@ -1830,9 +1724,9 @@ export default function Orders() {
 
   const filteredOrders = orders.filter((order) => {
     if (getOrderTab(order) !== activeTab) return false
-    if (platformFilter !== 'All' && order.platform !== platformFilter) return false
-    if (activeTab === TO_PACK_TAB && printedFilter !== 'All') {
-      const wantPrinted = printedFilter === 'Printed'
+    if (platformFilter !== ALL_FILTER && order.platform !== platformFilter) return false
+    if (activeTab === TO_PACK_TAB && printedFilter !== ALL_FILTER) {
+      const wantPrinted = printedFilter === 'printed'
       if (Boolean(order.awbPrinted) !== wantPrinted) return false
     }
     const q = search.trim().toLowerCase()
@@ -1865,7 +1759,7 @@ export default function Orders() {
     <div className={cn('pb-24', selectionMode && 'pb-40')}>
       <div className="sticky top-0 z-10 bg-[#FAF9F6] px-4 pt-4">
         <div className="flex items-center justify-between gap-2 pb-3">
-          <h1 className="text-xl font-bold tracking-tight text-[#1F2937]">Orders</h1>
+          <h1 className="text-xl font-bold tracking-tight text-[#1F2937]">{t('orders.title')}</h1>
           <div className="flex items-center gap-2">
             {activeTab === TO_PACK_TAB && (
               <Button
@@ -1875,18 +1769,20 @@ export default function Orders() {
                 className="h-9 rounded-lg px-3 text-[13px] font-medium bg-[#2563EB] text-white hover:bg-[#2563EB]/90"
               >
                 <Printer className="h-4 w-4" />
-                Print All AWB{unprintedCount > 0 ? ` (${unprintedCount})` : ''}
+                {unprintedCount > 0
+                  ? t('orders.printAllCount', { count: unprintedCount })
+                  : t('orders.printAll')}
               </Button>
             )}
             {lastSyncedAt !== null && nowTick !== null && (
               <span className="hidden items-center gap-1.5 text-xs tabular-nums text-gray-400 sm:flex">
-                Updated {formatShortAgo(nowTick - lastSyncedAt)}
+                {t('orders.updatedAgo', { ago: formatShortAgo(nowTick - lastSyncedAt) })}
                 {hasMorePending && (
                   <span
-                    title="This store has more orders than fit in one sync — keep syncing to catch up."
+                    title={t('orders.catchingUpHint')}
                     className={cn(BADGE_CLS, 'bg-amber-500/15 text-amber-700')}
                   >
-                    Catching up
+                    {t('orders.catchingUp')}
                   </span>
                 )}
               </span>
@@ -1895,7 +1791,7 @@ export default function Orders() {
               size="sm"
               variant="outline"
               onClick={() => navigate('/scan')}
-              aria-label="Scan to check order"
+              aria-label={t('orders.scanAria')}
               className="h-9 w-9 rounded-lg border-[#E8E6E1] px-0 text-[#374151] hover:bg-[#F3F4F6] hover:text-[#1F2937]"
             >
               <ScanLine className="h-4 w-4" />
@@ -1912,20 +1808,20 @@ export default function Orders() {
               ) : (
                 <RefreshCw className="h-4 w-4" />
               )}
-              Sync
+              {t('orders.sync.button')}
             </Button>
           </div>
         </div>
         {lastSyncedAt !== null && nowTick !== null && (
           <div className="flex justify-end pb-1.5 sm:hidden">
             <span className="flex items-center gap-1.5 text-xs tabular-nums text-gray-400">
-              Updated {formatShortAgo(nowTick - lastSyncedAt)}
+              {t('orders.updatedAgo', { ago: formatShortAgo(nowTick - lastSyncedAt) })}
               {hasMorePending && (
                 <span
-                  title="This store has more orders than fit in one sync — keep syncing to catch up."
+                  title={t('orders.catchingUpHint')}
                   className={cn(BADGE_CLS, 'bg-amber-500/15 text-amber-700')}
                 >
-                  Catching up
+                  {t('orders.catchingUp')}
                 </span>
               )}
             </span>
@@ -1945,7 +1841,7 @@ export default function Orders() {
                     active ? 'border-[#2563EB] font-semibold text-[#1F2937]' : 'border-transparent font-medium text-[#6B7280]'
                   )}
                 >
-                  {tab.label}
+                  {t(`orders.tabs.${tab.key}`)}
                   {tab.badgeClass && (
                     <span
                       className={cn(
@@ -1972,8 +1868,10 @@ export default function Orders() {
       <div className="flex gap-2 overflow-x-auto px-4 py-2.5">
         {PLATFORM_FILTERS.map((platform) => {
           const active = platformFilter === platform
-          const activeClass =
-            platform === 'All' ? 'bg-[#2563EB] text-white' : PLATFORM_META[platform].chipActive
+          const isAll = platform === ALL_FILTER
+          const activeClass = isAll
+            ? 'bg-[#2563EB] text-white'
+            : PLATFORM_META[platform].chipActive
           return (
             <button
               key={platform}
@@ -1983,7 +1881,7 @@ export default function Orders() {
                 active ? activeClass : 'bg-[#F3F4F6] text-[#6B7280]'
               )}
             >
-              {platform} ({platformCounts[platform] ?? 0})
+              {isAll ? t('orders.filters.all') : platform} ({platformCounts[platform] ?? 0})
             </button>
           )
         })}
@@ -2004,7 +1902,7 @@ export default function Orders() {
                     : 'border-[#E8E6E1] bg-white text-[#6B7280]'
                 )}
               >
-                {option}
+                {t(`orders.printedFilters.${option}`)}
               </button>
             )
           })}
@@ -2017,13 +1915,13 @@ export default function Orders() {
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search order ID or buyer name"
+            placeholder={t('orders.searchPlaceholder')}
             className="h-11 !bg-white rounded-xl border-[#E8E6E1] pl-9 pr-9 text-[#1F2937] placeholder:text-gray-400"
           />
           {search && (
             <button
               onClick={() => setSearch('')}
-              aria-label="Clear search"
+              aria-label={t('orders.clearSearch')}
               className="absolute top-1/2 right-3 -translate-y-1/2 text-gray-400 hover:text-gray-600"
             >
               <X className="h-4 w-4" />
@@ -2036,8 +1934,7 @@ export default function Orders() {
         <div className="mx-4 mb-3 flex items-start gap-2 rounded-xl border border-yellow-300 bg-yellow-50 p-3">
           <Package className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600" />
           <p className="text-xs text-yellow-800">
-            Showing the {ORDERS_CEILING.toLocaleString()} most recent orders only — older ones are
-            not loaded, so counts and search below exclude them.
+            {t('orders.truncated', { count: ORDERS_CEILING.toLocaleString() })}
           </p>
         </div>
       )}
@@ -2058,8 +1955,8 @@ export default function Orders() {
               <Package className="h-6 w-6 text-gray-400" />
             </div>
             <div className="space-y-1">
-              <p className="text-sm font-semibold text-[#1F2937]">No orders yet</p>
-              <p className="text-xs text-[#6B7280]">Tap Sync above to fetch your Shopee orders</p>
+              <p className="text-sm font-semibold text-[#1F2937]">{t('orders.empty.title')}</p>
+              <p className="text-xs text-[#6B7280]">{t('orders.empty.hint')}</p>
             </div>
           </div>
         ) : filteredOrders.length === 0 ? (
@@ -2068,8 +1965,8 @@ export default function Orders() {
               <Search className="h-6 w-6 text-gray-400" />
             </div>
             <div className="space-y-1">
-              <p className="text-sm font-semibold text-[#1F2937]">No orders found</p>
-              <p className="text-xs text-[#6B7280]">Try a different search term or filter</p>
+              <p className="text-sm font-semibold text-[#1F2937]">{t('orders.noResults.title')}</p>
+              <p className="text-xs text-[#6B7280]">{t('orders.noResults.hint')}</p>
             </div>
           </div>
         ) : (
@@ -2094,7 +1991,7 @@ export default function Orders() {
       {selectionMode && (
         <div className="fixed inset-x-0 bottom-16 z-40 flex items-center justify-between gap-2 border-t border-[#E8E6E1] bg-white px-4 py-3.5 shadow-[0_-2px_8px_-2px_rgb(15_23_42_/_0.08)]">
           <span className="text-sm font-semibold tabular-nums text-[#1F2937]">
-            {selectedIds.size} selected
+            {t('orders.selectedCount', { count: selectedIds.size })}
           </span>
           <div className="flex gap-2">
             <Button
@@ -2104,7 +2001,8 @@ export default function Orders() {
               disabled={bulkPrinting}
               className={cn(ACTION_BTN_CLS, 'border-[#E8E6E1] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#1F2937]')}
             >
-              {bulkPrinting ? <Loader2 className="animate-spin" /> : <Printer />} Print Label
+              {bulkPrinting ? <Loader2 className="animate-spin" /> : <Printer />}{' '}
+              {t('orders.actions.printLabel')}
             </Button>
             <Button
               size="sm"
@@ -2112,7 +2010,8 @@ export default function Orders() {
               disabled={bulkActing === 'ship'}
               className={cn(ACTION_BTN_CLS, 'bg-[#2563EB] text-white hover:bg-[#2563EB]/90')}
             >
-              {bulkActing === 'ship' ? <Loader2 className="animate-spin" /> : <Truck />} Ship
+              {bulkActing === 'ship' ? <Loader2 className="animate-spin" /> : <Truck />}{' '}
+              {t('orders.actions.ship')}
             </Button>
             <Button
               size="sm"
@@ -2121,7 +2020,8 @@ export default function Orders() {
               disabled={bulkActing === 'cancel'}
               className={cn(ACTION_BTN_CLS, 'text-red-600 hover:bg-red-500/10 hover:text-red-600')}
             >
-              {bulkActing === 'cancel' ? <Loader2 className="animate-spin" /> : null} Cancel
+              {bulkActing === 'cancel' ? <Loader2 className="animate-spin" /> : null}{' '}
+              {t('orders.actions.cancel')}
             </Button>
           </div>
         </div>
@@ -2156,20 +2056,19 @@ export default function Orders() {
                       DEFAULT_STATUS_BADGE
                   )}
                 >
-                  {selectedOrder.status}
+                  {statusLabel(t, selectedOrder)}
                 </span>
 
                 {selectedOrder.statusKey === STATUS.CANCEL_REQUESTED && (
                   <div className="mt-4 rounded-xl bg-amber-500/10 px-3 py-3 text-xs leading-snug text-amber-800">
-                    <p className="text-sm font-semibold">Buyer requested cancellation</p>
+                    <p className="text-sm font-semibold">{t('orders.cancelRequest.title')}</p>
                     <p className="mt-1.5">
-                      <span className="text-amber-700">Reason: </span>
-                      {selectedOrder.buyerCancelReason || selectedOrder.cancelReason || 'Not provided'}
+                      <span className="text-amber-700">{t('orders.cancelRequest.reason')}: </span>
+                      {selectedOrder.buyerCancelReason ||
+                        selectedOrder.cancelReason ||
+                        t('orders.cancelRequest.notProvided')}
                     </p>
-                    <p className="mt-1.5 text-amber-700">
-                      Respond within ~2 days or Shopee automatically accepts the cancellation and
-                      refunds the buyer. Read the reason, then Approve or Reject below.
-                    </p>
+                    <p className="mt-1.5 text-amber-700">{t('orders.cancelRequest.deadline')}</p>
                   </div>
                 )}
 
@@ -2182,8 +2081,13 @@ export default function Orders() {
                 )}
 
                 <section className="mt-5">
-                  <h3 className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">Buyer</h3>
-                  <p className="mt-1.5 text-sm font-semibold text-[#1F2937]">{selectedOrder.buyer}</p>
+                  <h3 className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">
+                    {t('orders.sections.buyer')}
+                  </h3>
+                  {/* Name, phone, address, region are all Shopee DATA. */}
+                  <p className="mt-1.5 text-sm font-semibold text-[#1F2937]">
+                    {selectedOrder.buyer ?? t('orders.unknownBuyer')}
+                  </p>
                   <p className="mt-0.5 text-xs text-[#6B7280]">{selectedOrder.phone}</p>
                   <p className="text-xs text-[#6B7280]">{selectedOrder.address}</p>
                   <p className="text-xs text-[#9CA3AF]">{selectedOrder.region}</p>
@@ -2192,15 +2096,17 @@ export default function Orders() {
                 <Separator className="my-4 bg-[#E8E6E1]" />
 
                 <section>
-                  <h3 className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">Shipping</h3>
+                  <h3 className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">
+                    {t('orders.sections.shipping')}
+                  </h3>
                   <div className="mt-2.5 space-y-1.5 text-xs">
                     <div className="flex justify-between text-[#6B7280]">
-                      <span>Marketplace status</span>
-                      <span className="text-[#1F2937]">{getMarketplaceStatus(selectedOrder)}</span>
+                      <span>{t('orders.fields.marketplaceStatus')}</span>
+                      <span className="text-[#1F2937]">{getMarketplaceStatus(t, selectedOrder)}</span>
                     </div>
                     {selectedOrder.courier && (
                       <div className="flex justify-between text-[#6B7280]">
-                        <span>Logistics</span>
+                        <span>{t('orders.fields.logistics')}</span>
                         <span className="text-[#1F2937]">
                           {selectedOrder.platform}-MY-{selectedOrder.courier}
                         </span>
@@ -2208,15 +2114,15 @@ export default function Orders() {
                     )}
                     {selectedOrder.shippingMethod && (
                       <div className="flex justify-between text-[#6B7280]">
-                        <span>Arranged via</span>
+                        <span>{t('orders.arrangedVia')}</span>
                         <span className="text-[#1F2937]">
-                          {shippingMethodLabel(selectedOrder.shippingMethod)}
+                          {shippingMethodLabel(t, selectedOrder.shippingMethod)}
                         </span>
                       </div>
                     )}
                     {selectedOrder.trackingNumber && (
                       <div className="flex items-center justify-between text-[#6B7280]">
-                        <span>Tracking No.</span>
+                        <span>{t('orders.fields.trackingNo')}</span>
                         <span className="flex items-center gap-1 font-mono text-[#1F2937]">
                           {selectedOrder.trackingNumber}
                           <CopyButton text={selectedOrder.trackingNumber} />
@@ -2225,27 +2131,28 @@ export default function Orders() {
                     )}
                     {selectedOrder.paidAt && (
                       <div className="flex justify-between text-[#6B7280]">
-                        <span>Paid</span>
+                        <span>{t('orders.fields.paid')}</span>
                         <span className="text-[#1F2937]">{formatDateTime(selectedOrder.paidAt)}</span>
                       </div>
                     )}
                     {selectedOrder.packedAt && (
                       <div className="flex justify-between text-[#6B7280]">
-                        <span>Packed</span>
+                        <span>{t('orders.fields.packed')}</span>
                         <span className="text-[#1F2937]">
                           {formatDateTime(selectedOrder.packedAt)}
-                          {selectedOrder.packedBy === 'auto' ? ' (auto)' : ''}
+                          {selectedOrder.packedBy === 'auto' ? ` ${t('orders.fields.autoSuffix')}` : ''}
                         </span>
                       </div>
                     )}
                     {selectedOrder.autoPackStatus === 'failed' && (
                       <div className="rounded-lg bg-red-500/10 px-2 py-1.5 text-red-700">
-                        <p className="font-medium">⚠️ Auto-pack failed</p>
+                        <p className="font-medium">⚠️ {t('orders.autoPack.failed')}</p>
+                        {/* autoPackError is the server's own reason — verbatim. */}
                         <p className="mt-0.5 text-[11px]">
-                          {selectedOrder.autoPackError || 'Unknown error'}
+                          {selectedOrder.autoPackError || t('orders.autoPack.unknownError')}
                         </p>
                         <p className="mt-0.5 text-[11px] text-red-600">
-                          This order will not be retried automatically — use Pack below.
+                          {t('orders.autoPack.noRetry')}
                         </p>
                       </div>
                     )}
@@ -2255,20 +2162,24 @@ export default function Orders() {
                 <Separator className="my-4 bg-[#E8E6E1]" />
 
                 <section>
-                  <h3 className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">Items</h3>
+                  <h3 className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">
+                    {t('orders.sections.items')}
+                  </h3>
                   <div className="mt-2.5 space-y-2.5">
                     {selectedOrder.items.map((item, i) => (
                       <div key={i} className="flex items-center gap-3">
                         <ItemThumb
                           image={item.image}
-                          alt={item.name}
+                          alt={item.name ?? t('orders.unnamedItem')}
                           tint={PLATFORM_META[selectedOrder.platform].tint}
                           className="h-10 w-10"
                         />
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm text-[#1F2937]">{item.name}</p>
+                          <p className="truncate text-sm text-[#1F2937]">
+                            {item.name ?? t('orders.unnamedItem')}
+                          </p>
                           <p className="text-xs text-[#6B7280]">
-                            Qty: {item.qty}
+                            {t('orders.fields.qty')}: {item.qty}
                             {item.variant ? ` • ${item.variant}` : ''}
                           </p>
                         </div>
@@ -2282,15 +2193,15 @@ export default function Orders() {
 
                 <section className="space-y-1.5">
                   <div className="flex justify-between text-sm text-[#6B7280]">
-                    <span>Subtotal</span>
+                    <span>{t('orders.fields.subtotal')}</span>
                     <span className="tabular-nums">RM {selectedOrder.total.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between text-sm text-[#6B7280]">
-                    <span>Shipping</span>
+                    <span>{t('orders.fields.shippingFee')}</span>
                     <span className="tabular-nums">RM 0.00</span>
                   </div>
                   <div className="flex justify-between border-t border-[#F1F0EC] pt-1.5 text-sm font-semibold text-[#1F2937]">
-                    <span>Total</span>
+                    <span>{t('orders.fields.total')}</span>
                     <span className="tabular-nums">RM {selectedOrder.total.toFixed(2)}</span>
                   </div>
                 </section>
@@ -2298,17 +2209,19 @@ export default function Orders() {
                 <Separator className="my-4 bg-[#E8E6E1]" />
 
                 <section>
-                  <h3 className="mb-3 text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">Order Timeline</h3>
+                  <h3 className="mb-3 text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">
+                    {t('orders.sections.timeline')}
+                  </h3>
                   <OrderTimeline
                     statusKey={selectedOrder.statusKey}
-                    statusLabel={selectedOrder.status}
+                    statusLabel={statusLabel(t, selectedOrder)}
                   />
                 </section>
               </div>
 
-              {renderActions(selectedOrder, { fullWidth: true }) && (
+              {renderActions(t, selectedOrder, { fullWidth: true }) && (
                 <SheetFooter className="flex-row gap-2 border-t border-[#E8E6E1] px-4 py-4">
-                  {renderActions(selectedOrder, {
+                  {renderActions(t, selectedOrder, {
                     fullWidth: true,
                     onPrintAWB: requestPrintAWB,
                     printingId,

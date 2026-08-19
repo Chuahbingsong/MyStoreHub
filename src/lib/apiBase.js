@@ -17,11 +17,10 @@ export function apiUrl(path) {
  * still inspectable (e.g. via chrome://inspect), even though the toast text
  * stays short.
  */
-export function describeRequestError(err, fallback) {
-  if (err?.name === 'AbortError') return 'Request timed out. Try again.'
-  if (err instanceof SyntaxError) return 'Server sent an unexpected response. Try again.'
-  if (err instanceof TypeError) {
-    return 'Could not reach the server — check your connection (see console for details).'
-  }
-  return err?.message ? `${fallback} (${err.message})` : fallback
+export function describeRequestError(t, err, fallback) {
+  if (err?.name === 'AbortError') return t('errors.timeout')
+  if (err instanceof SyntaxError) return t('errors.badResponse')
+  if (err instanceof TypeError) return t('errors.unreachable')
+  // err.message is the runtime's own text — appended verbatim, never translated.
+  return err?.message ? t('errors.withDetail', { fallback, detail: err.message }) : fallback
 }

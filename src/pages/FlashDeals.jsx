@@ -30,6 +30,8 @@ import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
+import { useTranslation } from '@/lib/i18n/I18nContext'
+import { formatDuration, formatShortAgoFrom } from '@/lib/i18n/datetime'
 
 // Dense row view of Shopee flash sale sessions.
 //
@@ -49,7 +51,7 @@ import { apiUrl, describeRequestError } from '@/lib/apiBase'
 //
 // Enabled 2026-07-28 after the 2 Aug slot-ownership test passed.
 const COPY_ENABLED = true
-const COPY_DISABLED_HINT = 'Copy is coming soon — pending the 2 Aug slot-ownership test'
+const COPY_DISABLED_HINT_KEY = 'flashDeals.copyDisabledHint'
 
 // ===================== MULTI-SLOT COPY: PACING =============================
 // A copy targets ONE slot per request — api/shopee/copy-flash-sale.js runs
@@ -95,22 +97,12 @@ const RATE_MAX_RETRIES = 3
 const NEAR_TERM_MS = 48 * 3_600_000
 const MID_TERM_MS = 7 * 24 * 3_600_000
 
+// `key` is the stable identifier (slotRisk() returns it, and groups[] is keyed
+// by it); the label and note are looked up from it at render.
 const RISK_BUCKETS = [
-  {
-    key: 'near',
-    label: 'Within 48h',
-    note: 'Higher risk — the slot-ownership race with BigSeller is still untested',
-    dot: 'bg-yellow-500',
-    text: 'text-yellow-800',
-  },
-  { key: 'mid', label: '2–7 days out', note: 'Some lead time', dot: 'bg-gray-400', text: 'text-[#6B7280]' },
-  {
-    key: 'far',
-    label: '7+ days out',
-    note: 'Safest — most lead time before BigSeller would act',
-    dot: 'bg-green-500',
-    text: 'text-green-800',
-  },
+  { key: 'near', dot: 'bg-yellow-500', text: 'text-yellow-800' },
+  { key: 'mid', dot: 'bg-gray-400', text: 'text-[#6B7280]' },
+  { key: 'far', dot: 'bg-green-500', text: 'text-green-800' },
 ]
 
 function slotRisk(slot, nowMs) {
@@ -150,22 +142,28 @@ async function sleepUntil(target, stopRef) {
 
 // Shopee model status. 2 (deleted) never appears in a fetched list in practice
 // but is mapped rather than falling through to "unknown".
+//
+// Keyed by Shopee's NUMERIC enum, so these were never at risk from translation
+// — but the labels themselves were English literals. They now hold a stable
+// `key` resolved through t() at render, leaving the numeric lookup untouched.
 const MODEL_STATUS = {
-  0: { label: 'Disabled', cls: 'bg-gray-100 text-gray-600' },
-  1: { label: 'Enabled', cls: 'bg-green-100 text-green-700' },
-  2: { label: 'Deleted', cls: 'bg-gray-100 text-gray-500' },
-  4: { label: 'System rejected', cls: 'bg-red-100 text-red-700' },
-  5: { label: 'Manual rejected', cls: 'bg-red-100 text-red-700' },
+  0: { key: 'disabled', cls: 'bg-gray-100 text-gray-600' },
+  1: { key: 'enabled', cls: 'bg-green-100 text-green-700' },
+  2: { key: 'deleted', cls: 'bg-gray-100 text-gray-500' },
+  4: { key: 'systemRejected', cls: 'bg-red-100 text-red-700' },
+  5: { key: 'manualRejected', cls: 'bg-red-100 text-red-700' },
 }
 
 // Session-level status. Distinct enum from MODEL_STATUS above — a session can
 // be system-rejected while its items still read as enabled.
 const SESSION_STATUS = {
-  0: { label: 'Deleted', cls: 'bg-gray-100 text-gray-500' },
-  1: { label: 'Enabled', cls: 'bg-green-100 text-green-700' },
-  2: { label: 'Disabled', cls: 'bg-gray-100 text-gray-600' },
-  3: { label: 'System rejected', cls: 'bg-red-100 text-red-700' },
+  0: { key: 'deleted', cls: 'bg-gray-100 text-gray-500' },
+  1: { key: 'enabled', cls: 'bg-green-100 text-green-700' },
+  2: { key: 'disabled', cls: 'bg-gray-100 text-gray-600' },
+  3: { key: 'systemRejected', cls: 'bg-red-100 text-red-700' },
 }
+
+const UNKNOWN_STATUS_CLS = 'bg-gray-100 text-gray-600'
 
 // Server enforces a 60s per-session cooldown (SESSION_SYNC_COOLDOWN_MS in
 // api/_lib/flashSaleSync.js). Mirrored here only to grey the button out.
@@ -183,17 +181,6 @@ const SESSION_SELECT =
 
 function pad(n) {
   return String(n).padStart(2, '0')
-}
-
-function formatRelative(iso, nowMs) {
-  if (!iso) return 'never'
-  const diff = nowMs - new Date(iso).getTime()
-  if (diff < 60_000) return 'just now'
-  const mins = Math.floor(diff / 60_000)
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
 }
 
 /**
@@ -237,27 +224,28 @@ function liveState(sale, nowMs) {
   return 'ongoing'
 }
 
-function formatDuration(ms) {
-  if (ms <= 0) return '0m'
-  const totalMinutes = Math.floor(ms / 60000)
-  const days = Math.floor(totalMinutes / 1440)
-  const hours = Math.floor((totalMinutes % 1440) / 60)
-  const minutes = totalMinutes % 60
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${minutes}m`
-  return `${minutes}m`
-}
+// formatDuration and formatRelative both moved to lib/i18n/datetime.js — the
+// latter was a second, English-only copy of that module's formatShortAgo.
 
 function Countdown({ sale, state, nowMs }) {
+  const { t, locale } = useTranslation()
   if (state === 'ongoing') {
     const left = new Date(sale.end_time).getTime() - nowMs
-    return <span className="font-medium text-[#EE4D2D]">Ends in {formatDuration(left)}</span>
+    return (
+      <span className="font-medium text-[#EE4D2D]">
+        {t('flashDeals.endsIn', { duration: formatDuration(locale, left) })}
+      </span>
+    )
   }
   if (state === 'upcoming') {
     const until = new Date(sale.start_time).getTime() - nowMs
-    return <span className="font-medium text-[#2563EB]">Starts in {formatDuration(until)}</span>
+    return (
+      <span className="font-medium text-[#2563EB]">
+        {t('flashDeals.startsIn', { duration: formatDuration(locale, until) })}
+      </span>
+    )
   }
-  return <span className="text-gray-400">Ended</span>
+  return <span className="text-gray-400">{t('flashDeals.state.expired')}</span>
 }
 
 function Thumb({ url, className }) {
@@ -277,14 +265,10 @@ function Thumb({ url, className }) {
  * know, so the rejection wins the badge.
  */
 function StatusBadge({ sale, state }) {
+  const { t } = useTranslation()
   const rejected = sale.status === 3
-  const label = rejected
-    ? 'Rejected'
-    : state === 'ongoing'
-      ? 'Ongoing'
-      : state === 'upcoming'
-        ? 'Upcoming'
-        : 'Ended'
+  // `state` is a stable key from liveState(), never a display string.
+  const label = rejected ? t('flashDeals.state.rejected') : t(`flashDeals.state.${state}`)
 
   return (
     <span
@@ -332,6 +316,7 @@ function ItemCount({ sale, expanded, onToggle }) {
 }
 
 function ActionIcons({ sale, nowMs, syncing, onSync, onCopy, onDetails, className }) {
+  const { t } = useTranslation()
   // nowMs only ticks every 30s, so right after a sync it can still be BEHIND
   // observed_at — clamped at 0, otherwise the countdown briefly reads higher
   // than the cooldown itself (a 60s cooldown showing "63s").
@@ -348,7 +333,11 @@ function ActionIcons({ sale, nowMs, syncing, onSync, onCopy, onDetails, classNam
         type="button"
         onClick={() => onSync(sale)}
         disabled={syncing || cooling}
-        title={cooling ? `Cooling down — ${secsLeft}s` : 'Refresh this session from Shopee'}
+        title={
+          cooling
+            ? t('flashDeals.actions.coolingDown', { secs: secsLeft })
+            : t('flashDeals.actions.refresh')
+        }
         className={cn(
           base,
           syncing || cooling
@@ -369,7 +358,7 @@ function ActionIcons({ sale, nowMs, syncing, onSync, onCopy, onDetails, classNam
         type="button"
         onClick={() => onCopy(sale)}
         disabled={!COPY_ENABLED}
-        title={COPY_ENABLED ? 'Copy this session into a free slot' : COPY_DISABLED_HINT}
+        title={COPY_ENABLED ? t('flashDeals.actions.copy') : t(COPY_DISABLED_HINT_KEY)}
         className={cn(
           base,
           COPY_ENABLED
@@ -383,7 +372,7 @@ function ActionIcons({ sale, nowMs, syncing, onSync, onCopy, onDetails, classNam
       <button
         type="button"
         onClick={() => onDetails(sale)}
-        title="Open details"
+        title={t('flashDeals.actions.details')}
         className={cn(base, 'border-[#E8E6E1] bg-white text-gray-500 hover:bg-[#F3F4F6]')}
       >
         <ChevronRight className="h-4 w-4" />
@@ -418,6 +407,7 @@ function SessionRow({
   autoRenew,
   onAutoRenew,
 }) {
+  const { t } = useTranslation()
   const { date, range, nextDay } = slotRange(sale)
 
   const timeBlock = (
@@ -426,7 +416,7 @@ function SessionRow({
       <span className="text-sm tabular-nums text-[#1F2937]">{range}</span>
       {nextDay && (
         <span
-          title="Ends the next day"
+          title={t('flashDeals.endsNextDay')}
           className="rounded bg-[#F3F4F6] px-1 text-[10px] font-medium text-gray-500"
         >
           +1
@@ -439,11 +429,17 @@ function SessionRow({
     <div className="border-b border-[#E8E6E1] last:border-b-0">
       {/* ---------------------------- desktop ---------------------------- */}
       <div className={cn('hidden items-center gap-3 px-3 py-2.5 md:grid', GRID_COLS)}>
-        <Checkbox checked={selected} onChange={onSelect} label={`Select ${date} ${range}`} />
+        <Checkbox
+          checked={selected}
+          onChange={onSelect}
+          label={t('flashDeals.selectSlot', { slot: `${date} ${range}` })}
+        />
 
         <div className="min-w-0">
           {timeBlock}
-          <p className="truncate text-xs text-[#6B7280]">{sale.stores?.shop_name ?? 'Store'}</p>
+          <p className="truncate text-xs text-[#6B7280]">
+            {sale.stores?.shop_name ?? t('flashDeals.unknownStore')}
+          </p>
         </div>
 
         <span className="truncate font-mono text-[11px] text-gray-400">{sale.flash_sale_id}</span>
@@ -475,13 +471,19 @@ function SessionRow({
       {/* ----------------------------- mobile ---------------------------- */}
       <div className="flex flex-col gap-1.5 px-3 py-2.5 md:hidden">
         <div className="flex items-center gap-2">
-          <Checkbox checked={selected} onChange={onSelect} label={`Select ${date} ${range}`} />
+          <Checkbox
+            checked={selected}
+            onChange={onSelect}
+            label={t('flashDeals.selectSlot', { slot: `${date} ${range}` })}
+          />
           <div className="min-w-0 flex-1">{timeBlock}</div>
           <StatusBadge sale={sale} state={state} />
         </div>
 
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 pl-6 text-xs text-[#6B7280]">
-          <span className="max-w-[40%] truncate">{sale.stores?.shop_name ?? 'Store'}</span>
+          <span className="max-w-[40%] truncate">
+            {sale.stores?.shop_name ?? t('flashDeals.unknownStore')}
+          </span>
           <ItemCount sale={sale} expanded={expanded} onToggle={onToggleExpand} />
           <span className="flex items-center gap-1 tabular-nums">
             <Eye className="h-3.5 w-3.5 shrink-0" /> {sale.click_count ?? 0}
@@ -494,7 +496,7 @@ function SessionRow({
         <div className="flex items-center justify-between gap-2 pl-6">
           <label className="flex items-center gap-1.5 text-[11px] text-[#6B7280]">
             <Repeat className="h-3.5 w-3.5 shrink-0 text-gray-400" />
-            Auto-renew
+            {t('flashDeals.autoRenew.short')}
             <Switch checked={autoRenew} onCheckedChange={onAutoRenew} className="scale-90" />
           </label>
           <ActionIcons
@@ -512,11 +514,15 @@ function SessionRow({
 }
 
 function ItemRow({ item }) {
+  const { t } = useTranslation()
   const orig = Number(item.original_price)
   const promo = Number(item.input_promotion_price)
   const withTax = Number(item.promotion_price_with_tax)
   const pct = orig > 0 && promo > 0 ? Math.round(((orig - promo) / orig) * 100) : null
-  const status = MODEL_STATUS[item.status] ?? { label: `Status ${item.status}`, cls: 'bg-gray-100 text-gray-600' }
+  const status = MODEL_STATUS[item.status]
+  const statusLabel = status
+    ? t(`flashDeals.modelStatus.${status.key}`)
+    : t('flashDeals.unknownStatusCode', { code: item.status })
   // Shopee's criteria (get_item_criteria, criteria_id 12, category "All") require
   // min 10% off. Flagged rather than hidden: a variant sitting under the floor
   // is the reason a session gets rejected, and that should be visible here.
@@ -526,7 +532,10 @@ function ItemRow({ item }) {
     <div className="flex items-start gap-3 border-b border-[#ECECEC] py-3 last:border-b-0">
       <Thumb url={imageUrlFor(item)} className="h-12 w-12" />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm text-[#1F2937]">{item.item_name ?? 'Untitled'}</p>
+        {/* item_name / model_name are Shopee DATA — untouched. */}
+        <p className="truncate text-sm text-[#1F2937]">
+          {item.item_name ?? t('flashDeals.untitledItem')}
+        </p>
         <p className="truncate text-xs text-[#6B7280]">{item.model_name ?? '—'}</p>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
           {promo > 0 && (
@@ -544,43 +553,52 @@ function ItemRow({ item }) {
                   : 'bg-[#EE4D2D]/10 text-[#EE4D2D]'
               )}
             >
-              -{pct}%{underDiscountFloor && ' · under 10% floor'}
+              -{pct}%{underDiscountFloor && ` · ${t('flashDeals.underDiscountFloor')}`}
             </span>
           )}
         </div>
         {/* promotion_price_with_tax has been synced since day one but was never
             surfaced. Only shown when it actually differs from the input price. */}
         {withTax > 0 && Math.abs(withTax - promo) >= 0.01 && (
-          <p className="mt-1 text-[11px] text-gray-500">Buyer pays incl. tax: RM {withTax.toFixed(2)}</p>
+          <p className="mt-1 text-[11px] text-gray-500">
+            {t('flashDeals.buyerPaysInclTax')}: RM {withTax.toFixed(2)}
+          </p>
         )}
         {/* Quota, NOT "stock left" — Shopee does not expose units sold, and
             campaign_stock never decrements. See the note at the top of this file. */}
         <p className="mt-1 text-[11px] text-gray-500">
-          Promo quota: {item.campaign_stock ?? 0}
-          {item.purchase_limit > 0 && ` · max ${item.purchase_limit}/buyer`}
+          {t('flashDeals.promoQuota')}: {item.campaign_stock ?? 0}
+          {item.purchase_limit > 0 &&
+            ` · ${t('flashDeals.maxPerBuyer', { limit: item.purchase_limit })}`}
         </p>
         {/* Live product stock at last poll — deliberately labelled as such, NOT
             as campaign stock remaining, which this is not. */}
         {item.item_stock != null && (
           <p className="mt-0.5 text-[11px] text-gray-400">
-            Product stock now: {item.item_stock}
-            {item.item_stock === 0 && ' · out of stock'}
+            {t('flashDeals.productStockNow')}: {item.item_stock}
+            {item.item_stock === 0 && ` · ${t('flashDeals.outOfStock')}`}
           </p>
         )}
         {item.reject_reason && <p className="mt-1 text-[11px] text-red-600">{item.reject_reason}</p>}
       </div>
-      <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', status.cls)}>
-        {status.label}
+      <span
+        className={cn(
+          'shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium',
+          status?.cls ?? UNKNOWN_STATUS_CLS
+        )}
+      >
+        {statusLabel}
       </span>
     </div>
   )
 }
 
 function SessionDetails({ sale, nowMs }) {
-  const status = SESSION_STATUS[sale.status] ?? {
-    label: `Status ${sale.status}`,
-    cls: 'bg-gray-100 text-gray-600',
-  }
+  const { t, locale } = useTranslation()
+  const status = SESSION_STATUS[sale.status]
+  const statusLabel = status
+    ? t(`flashDeals.sessionStatus.${status.key}`)
+    : t('flashDeals.unknownStatusCode', { code: sale.status })
   // item_count is Shopee's own figure; the derived count comes from the items
   // endpoint. They disagree on expired sessions (Shopee reports
   // enabled_item_count=0 while the items endpoint still returns enabled models),
@@ -592,47 +610,53 @@ function SessionDetails({ sale, nowMs }) {
   return (
     <div className="border-b border-[#ECECEC] py-3">
       <div className="mb-2 flex items-center gap-2">
-        <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium', status.cls)}>
-          {status.label}
+        <span
+          className={cn(
+            'rounded-full px-2 py-0.5 text-[10px] font-medium',
+            status?.cls ?? UNKNOWN_STATUS_CLS
+          )}
+        >
+          {statusLabel}
         </span>
         <span className="text-[11px] text-gray-400">
-          Synced {formatRelative(sale.observed_at, nowMs)}
+          {t('flashDeals.syncedAgo', {
+            ago: formatShortAgoFrom(locale, sale.observed_at, nowMs),
+          })}
         </span>
       </div>
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px]">
         <div className="flex justify-between gap-2">
-          <dt className="text-gray-500">Items in slot</dt>
+          <dt className="text-gray-500">{t('flashDeals.details.itemsInSlot')}</dt>
           <dd className="text-[#1F2937]">{sale.item_count ?? 0}</dd>
         </div>
         <div className="flex justify-between gap-2">
-          <dt className="text-gray-500">Enabled items</dt>
+          <dt className="text-gray-500">{t('flashDeals.details.enabledItems')}</dt>
           <dd className="text-[#1F2937]">{derived ?? 0}</dd>
         </div>
         <div className="flex justify-between gap-2">
-          <dt className="text-gray-500">Variants</dt>
+          <dt className="text-gray-500">{t('flashDeals.details.variants')}</dt>
           <dd className="text-[#1F2937]">{sale.enabled_model_count ?? 0}</dd>
         </div>
         <div className="flex justify-between gap-2">
-          <dt className="text-gray-500">Shopee reports</dt>
+          <dt className="text-gray-500">{t('flashDeals.details.shopeeReports')}</dt>
           <dd className={cn(countsDisagree ? 'text-yellow-700' : 'text-[#1F2937]')}>
             {reported ?? '—'}
           </dd>
         </div>
         <div className="col-span-2 flex justify-between gap-2">
-          <dt className="text-gray-500">Flash sale ID</dt>
+          <dt className="text-gray-500">{t('flashDeals.details.flashSaleId')}</dt>
           <dd className="font-mono text-[10px] text-gray-500">{sale.flash_sale_id}</dd>
         </div>
         <div className="col-span-2 flex justify-between gap-2">
-          <dt className="text-gray-500">Time slot ID</dt>
+          <dt className="text-gray-500">{t('flashDeals.details.timeslotId')}</dt>
           <dd className="font-mono text-[10px] text-gray-500">{sale.timeslot_id ?? '—'}</dd>
         </div>
       </dl>
 
       {countsDisagree && (
         <p className="mt-2 text-[11px] text-yellow-700">
-          Shopee reports {reported} enabled item(s), but the item list returns {derived}. The item
-          list is the one to trust — Shopee zeroes this figure on ended sessions.
+          {t('flashDeals.countsDisagree', { reported, derived })}
         </p>
       )}
     </div>
@@ -644,19 +668,18 @@ function SessionDetails({ sale, nowMs }) {
 // anything: renewing means creating a flash sale on Shopee, which is the Copy
 // path, and that is disabled.
 function AutoRenewRow({ enabled, onChange }) {
+  const { t } = useTranslation()
   return (
     <div className="flex items-center justify-between gap-3 border-b border-[#ECECEC] py-3">
       <div className="min-w-0">
         <p className="flex items-center gap-1.5 text-sm text-[#1F2937]">
           <Repeat className="h-3.5 w-3.5 text-gray-400" />
-          Auto-renew this slot
+          {t('flashDeals.autoRenew.title')}
           <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
-            Preview
+            {t('flashDeals.autoRenew.previewBadge')}
           </span>
         </p>
-        <p className="mt-0.5 text-[11px] text-gray-500">
-          Not active yet — this toggle does nothing so far.
-        </p>
+        <p className="mt-0.5 text-[11px] text-gray-500">{t('flashDeals.autoRenew.notActive')}</p>
       </div>
       <Switch checked={enabled} onCheckedChange={onChange} />
     </div>
@@ -674,6 +697,7 @@ function AutoRenewRow({ enabled, onChange }) {
  * two that didn't are the whole reason to look.
  */
 function CopySlotResult({ entry, tickMs }) {
+  const { t } = useTranslation()
   const result = entry.result
   // 'failed' means we hold no verdict at all — distinct from 'unverified',
   // which means the session exists but its contents could not be read back.
@@ -699,23 +723,28 @@ function CopySlotResult({ entry, tickMs }) {
         </span>
         {entry.state === 'running' && (
           <span className="flex shrink-0 items-center gap-1 text-[10px] text-[#2563EB]">
-            <Loader2 className="h-3 w-3 animate-spin" /> Copying
+            <Loader2 className="h-3 w-3 animate-spin" /> {t('flashDeals.copy.copying')}
           </span>
         )}
         {entry.state === 'waiting' && (
           <span className="shrink-0 text-[10px] tabular-nums text-[#6B7280]">
-            {entry.waitReason === 'lock' ? 'Waiting for lock' : 'Rate limit'} · {secsLeft}s
+            {/* waitReason is a stable internal key. */}
+            {entry.waitReason === 'lock'
+              ? t('flashDeals.copy.waitingForLock')
+              : t('flashDeals.copy.rateLimit')}{' '}
+            · {secsLeft}s
           </span>
         )}
-        {entry.state === 'queued' && <span className="shrink-0 text-[10px] text-gray-400">Queued</span>}
-        {entry.state === 'skipped' && <span className="shrink-0 text-[10px] text-gray-400">Skipped</span>}
+        {entry.state === 'queued' && (
+          <span className="shrink-0 text-[10px] text-gray-400">{t('flashDeals.copy.queued')}</span>
+        )}
+        {entry.state === 'skipped' && (
+          <span className="shrink-0 text-[10px] text-gray-400">{t('flashDeals.copy.skipped')}</span>
+        )}
       </div>
 
       {entry.state === 'waiting' && entry.waitReason === 'lock' && (
-        <p className="mt-1 text-[11px] text-gray-600">
-          An earlier copy still holds this store&apos;s lock. If it was killed mid-flight the lock
-          clears on its own within 90s — this slot has not failed.
-        </p>
+        <p className="mt-1 text-[11px] text-gray-600">{t('flashDeals.copy.lockHeldNote')}</p>
       )}
 
       {status && (
@@ -726,10 +755,18 @@ function CopySlotResult({ entry, tickMs }) {
           )}
         >
           {ok
-            ? `Copied — ${result.persistedCount}/${result.sentCount} models verified`
+            ? t('flashDeals.copy.verdictCopied', {
+                persisted: result.persistedCount,
+                sent: result.sentCount,
+              })
             : status === 'failed'
-              ? 'FAILED — no flash sale confirmed'
-              : `${status === 'unverified' ? 'UNVERIFIED' : 'PARTIAL'} — ${result.persistedCount ?? '?'}/${result.sentCount} models verified`}
+              ? t('flashDeals.copy.verdictFailed')
+              : t(
+                  status === 'unverified'
+                    ? 'flashDeals.copy.verdictUnverified'
+                    : 'flashDeals.copy.verdictPartial',
+                  { persisted: result.persistedCount ?? '?', sent: result.sentCount }
+                )}
         </p>
       )}
 
@@ -739,33 +776,32 @@ function CopySlotResult({ entry, tickMs }) {
           not exist on this slot. Saying "failed" here would invite a retry that
           silently creates a duplicate. */}
       {entry.uncertain && (
-        <p className="mt-1.5 text-[11px] text-red-700">
-          The request was sent but its outcome is unknown — a session may still have been created on
-          this slot. Check Shopee before retrying it.
-        </p>
+        <p className="mt-1.5 text-[11px] text-red-700">{t('flashDeals.copy.uncertainNote')}</p>
       )}
 
       {result && (
         <p className="mt-1 text-[11px] text-gray-600">
-          New flash sale <span className="font-mono">{result.flashSaleId}</span> on slot{' '}
-          <span className="font-mono">{result.timeslotId}</span>
+          {t('flashDeals.copy.newFlashSale')} <span className="font-mono">{result.flashSaleId}</span>{' '}
+          {t('flashDeals.copy.onSlot')} <span className="font-mono">{result.timeslotId}</span>
         </p>
       )}
 
+      {/* addError / readBackError are Shopee's own text — passed through. */}
       {result?.addError && (
-        <p className="mt-1.5 text-[11px] text-red-700">Add call reported: {result.addError}</p>
+        <p className="mt-1.5 text-[11px] text-red-700">
+          {t('flashDeals.copy.addCallReported')}: {result.addError}
+        </p>
       )}
       {result?.readBackError && (
         <p className="mt-1.5 text-[11px] text-red-700">
-          Read-back failed: {result.readBackError}. What landed is unknown — inspect the session on
-          Shopee before retrying.
+          {t('flashDeals.copy.readBackFailed', { error: result.readBackError })}
         </p>
       )}
 
       {result?.missing?.length > 0 && (
         <div className="mt-2">
           <p className="text-[11px] font-medium text-yellow-900">
-            Sent but not persisted ({result.missing.length}):
+            {t('flashDeals.copy.notPersisted', { count: result.missing.length })}
           </p>
           <ul className="mt-0.5 space-y-0.5">
             {result.missing.map((m) => (
@@ -780,12 +816,15 @@ function CopySlotResult({ entry, tickMs }) {
       {result?.priceMismatches?.length > 0 && (
         <div className="mt-2">
           <p className="text-[11px] font-medium text-yellow-900">
-            Price drift ({result.priceMismatches.length}):
+            {t('flashDeals.copy.priceDrift', { count: result.priceMismatches.length })}
           </p>
           <ul className="mt-0.5 space-y-0.5">
             {result.priceMismatches.map((m) => (
               <li key={m.key} className="font-mono text-[10px] text-gray-600">
-                {m.key}: sent {Number(m.sent).toFixed(2)} → got {Number(m.persisted).toFixed(2)}
+                {m.key}: {t('flashDeals.copy.sentGot', {
+                  sent: Number(m.sent).toFixed(2),
+                  got: Number(m.persisted).toFixed(2),
+                })}
               </li>
             ))}
           </ul>
@@ -795,12 +834,12 @@ function CopySlotResult({ entry, tickMs }) {
       {result?.stockMismatches?.length > 0 && (
         <div className="mt-2">
           <p className="text-[11px] font-medium text-yellow-900">
-            Quota drift ({result.stockMismatches.length}):
+            {t('flashDeals.copy.quotaDrift', { count: result.stockMismatches.length })}
           </p>
           <ul className="mt-0.5 space-y-0.5">
             {result.stockMismatches.map((m) => (
               <li key={m.key} className="font-mono text-[10px] text-gray-600">
-                {m.key}: sent {m.sent} → got {m.persisted}
+                {m.key}: {t('flashDeals.copy.sentGot', { sent: m.sent, got: m.persisted })}
               </li>
             ))}
           </ul>
@@ -810,13 +849,14 @@ function CopySlotResult({ entry, tickMs }) {
       {result?.rejected?.length > 0 && (
         <div className="mt-2">
           <p className="text-[11px] font-medium text-red-700">
-            Rejected by Shopee ({result.rejected.length}):
+            {t('flashDeals.copy.rejectedByShopee', { count: result.rejected.length })}
           </p>
           <ul className="mt-0.5 space-y-0.5">
             {result.rejected.map((m) => (
               <li key={m.key} className="text-[10px] text-red-700">
                 <span className="font-mono">{m.key}</span>
-                {m.modelName ? ` (${m.modelName})` : ''} — {m.reason ?? `status ${m.status}`}
+                {m.modelName ? ` (${m.modelName})` : ''} —{' '}
+                {m.reason ?? t('flashDeals.unknownStatusCode', { code: m.status })}
               </li>
             ))}
           </ul>
@@ -837,6 +877,7 @@ function CopySlotResult({ entry, tickMs }) {
  * order inside each group, so picking is still predictable.
  */
 function SlotPickerDialog({ open, onOpenChange, slots, consumedSlotIds, selected, onConfirm, nowMs }) {
+  const { t, locale } = useTranslation()
   // Seeded once per mount. The caller remounts this component each time it
   // opens (see pickerSeq), which is what makes reopening to adjust a choice
   // start from the current selection instead of from empty — and it does so
@@ -874,10 +915,11 @@ function SlotPickerDialog({ open, onOpenChange, slots, consumedSlotIds, selected
           Every SheetContent in this app hardcodes bg-white for the same reason. */}
       <DialogContent className="grid max-h-[85vh] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden border border-[#E8E6E1] bg-white p-0 shadow-xl sm:max-w-md">
         <DialogHeader className="border-b border-[#E8E6E1] px-4 py-3 pr-12">
-          <DialogTitle className="text-sm text-[#1F2937]">Choose time slots</DialogTitle>
+          <DialogTitle className="text-sm text-[#1F2937]">
+            {t('flashDeals.picker.title')}
+          </DialogTitle>
           <DialogDescription className="text-[11px] text-[#6B7280]">
-            Free slots in the 18-day horizon. Pick up to {COPY_MAX_SLOTS} — each one becomes its own
-            flash sale.
+            {t('flashDeals.picker.description', { max: COPY_MAX_SLOTS })}
           </DialogDescription>
         </DialogHeader>
 
@@ -890,7 +932,7 @@ function SlotPickerDialog({ open, onOpenChange, slots, consumedSlotIds, selected
             </div>
           ) : slots.length === 0 ? (
             <p className="py-6 text-center text-xs text-gray-400">
-              No free slots in the 18-day horizon for this store.
+              {t('flashDeals.picker.noFreeSlots')}
             </p>
           ) : (
             RISK_BUCKETS.map((bucket) => {
@@ -900,10 +942,14 @@ function SlotPickerDialog({ open, onOpenChange, slots, consumedSlotIds, selected
                 <div key={bucket.key} className="mb-4 last:mb-0">
                   <div className="mb-1.5 flex items-center gap-1.5">
                     <span className={cn('h-2 w-2 shrink-0 rounded-full', bucket.dot)} />
-                    <span className={cn('text-[11px] font-medium', bucket.text)}>{bucket.label}</span>
+                    <span className={cn('text-[11px] font-medium', bucket.text)}>
+                      {t(`flashDeals.risk.${bucket.key}.label`)}
+                    </span>
                     <span className="text-[10px] text-gray-400">({rows.length})</span>
                   </div>
-                  <p className="mb-1.5 text-[10px] leading-snug text-gray-500">{bucket.note}</p>
+                  <p className="mb-1.5 text-[10px] leading-snug text-gray-500">
+                    {t(`flashDeals.risk.${bucket.key}.note`)}
+                  </p>
 
                   <div className="rounded-xl border border-[#E8E6E1] bg-white">
                     {rows.map((s) => {
@@ -942,7 +988,7 @@ function SlotPickerDialog({ open, onOpenChange, slots, consumedSlotIds, selected
                           )}
                           {consumed && (
                             <span className="ml-auto shrink-0 text-[10px] text-gray-500">
-                              just copied
+                              {t('flashDeals.picker.justCopied')}
                             </span>
                           )}
                         </label>
@@ -958,18 +1004,23 @@ function SlotPickerDialog({ open, onOpenChange, slots, consumedSlotIds, selected
         <div className="border-t border-[#E8E6E1] bg-white px-4 py-3">
           <div className="mb-2 flex items-baseline justify-between gap-2">
             <span className="text-[11px] text-[#6B7280]">
-              {picked.size} of {COPY_MAX_SLOTS} selected
+              {t('flashDeals.picker.selectedCount', {
+                picked: picked.size,
+                max: COPY_MAX_SLOTS,
+              })}
             </span>
             {picked.size > COPY_MAX_PER_WINDOW && (
               <span className="text-[10px] text-[#6B7280]">
-                ~{formatDuration(estMs)} — {COPY_MAX_PER_WINDOW}/min rate limit
+                {t('flashDeals.picker.estimate', {
+                  duration: formatDuration(locale, estMs),
+                  perMin: COPY_MAX_PER_WINDOW,
+                })}
               </span>
             )}
           </div>
           {atCap && (
             <p className="mb-2 text-[10px] text-gray-500">
-              {COPY_MAX_SLOTS} is the cap — the batch runs in this screen, and more would mean
-              waiting here far longer.
+              {t('flashDeals.picker.atCap', { max: COPY_MAX_SLOTS })}
             </p>
           )}
           <button
@@ -983,7 +1034,9 @@ function SlotPickerDialog({ open, onOpenChange, slots, consumedSlotIds, selected
                 : 'bg-[#2563EB] text-white active:bg-[#2563EB]/90'
             )}
           >
-            Confirm {picked.size > 0 ? `${picked.size} slot${picked.size === 1 ? '' : 's'}` : 'slots'}
+            {picked.size > 0
+              ? t('flashDeals.picker.confirmCount', { count: picked.size })
+              : t('flashDeals.picker.confirmEmpty')}
           </button>
         </div>
       </DialogContent>
@@ -1013,6 +1066,7 @@ function CopySheet({
   nowMs,
   tickMs,
 }) {
+  const { t } = useTranslation()
   const [slots, setSlots] = useState(null)
   const [chosen, setChosen] = useState([])
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -1093,10 +1147,10 @@ function CopySheet({
         className="!h-screen w-full gap-0 rounded-t-2xl border-[#E8E6E1] bg-white p-0"
       >
         <SheetHeader className="border-b border-[#E8E6E1] px-4 py-4 pr-12">
-          <SheetTitle className="text-[#1F2937]">Copy to free slots</SheetTitle>
+          <SheetTitle className="text-[#1F2937]">{t('flashDeals.copy.sheetTitle')}</SheetTitle>
           {sale && (
             <p className="text-xs text-[#6B7280]">
-              From {slotLabel(sale)} · {sale.stores?.shop_name}
+              {t('flashDeals.copy.fromSlot', { slot: slotLabel(sale) })} · {sale.stores?.shop_name}
             </p>
           )}
         </SheetHeader>
@@ -1104,10 +1158,7 @@ function CopySheet({
         <div className="flex-1 overflow-y-auto px-4 pb-8">
           {!COPY_ENABLED && (
             <div className="mt-3 rounded-xl border border-yellow-300 bg-yellow-50 p-3">
-              <p className="text-xs text-yellow-900">
-                ⏸️ Copy is disabled. This is a preview of what would be written — nothing is sent to
-                Shopee. Pending the 2 Aug slot-ownership test.
-              </p>
+              <p className="text-xs text-yellow-900">{t('flashDeals.copy.disabledBanner')}</p>
             </div>
           )}
 
@@ -1131,10 +1182,10 @@ function CopySheet({
             >
               <CalendarClock className="h-4 w-4 shrink-0" />
               {slots === null
-                ? 'Loading slots…'
+                ? t('flashDeals.copy.loadingSlots')
                 : chosenSlots.length === 0
-                  ? 'Choose Time Slot'
-                  : `Change slots (${chosenSlots.length})`}
+                  ? t('flashDeals.copy.chooseSlot')
+                  : t('flashDeals.copy.changeSlots', { count: chosenSlots.length })}
             </button>
 
             {chosenSlots.length > 0 && (
@@ -1154,7 +1205,7 @@ function CopySheet({
                         type="button"
                         onClick={() => setChosen((prev) => prev.filter((c) => c !== id))}
                         disabled={copying}
-                        aria-label={`Remove ${slotLabel(s)}`}
+                        aria-label={t('flashDeals.copy.removeSlot', { slot: slotLabel(s) })}
                         className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-gray-400 active:bg-[#F3F4F6] disabled:opacity-40"
                       >
                         <X className="h-3 w-3" />
@@ -1167,8 +1218,7 @@ function CopySheet({
 
             {chosenSlots.some((s) => slotRisk(s, nowMs) === 'near') && (
               <p className="mt-2 text-[11px] leading-snug text-yellow-800">
-                ⚠️ Some picks start within 48h. Whether Shopee lets us hold a slot BigSeller also
-                wants is still unobserved — the 2 Aug test hasn&apos;t run yet.
+                {t('flashDeals.copy.nearTermWarning')}
               </p>
             )}
           </div>
@@ -1177,8 +1227,8 @@ function CopySheet({
           {entries.length > 0 && (
             <div className="mt-4">
               <p className="mb-1.5 text-xs font-medium text-[#1F2937]">
-                {copying ? 'Copying…' : 'Results'} · {entries.length} slot
-                {entries.length === 1 ? '' : 's'}
+                {copying ? t('flashDeals.copy.copyingHeading') : t('flashDeals.copy.resultsHeading')}{' '}
+                · {t('flashDeals.copy.slotCount', { count: entries.length })}
               </p>
               <div className="space-y-2">
                 {entries.map((e) => (
@@ -1191,14 +1241,14 @@ function CopySheet({
           {/* -------------------- what would be copied -------------------- */}
           <div className="mt-4">
             <p className="mb-1.5 text-xs font-medium text-[#1F2937]">
-              {done ? 'Copied' : 'Will copy'} {itemIds.size} item{itemIds.size === 1 ? '' : 's'} /{' '}
-              {enabled.length} variant{enabled.length === 1 ? '' : 's'}, prices unchanged
-              {chosenSlots.length > 1 && `, into each of ${chosenSlots.length} slots`}
+              {t(done ? 'flashDeals.copy.copiedSummary' : 'flashDeals.copy.willCopySummary', {
+                items: itemIds.size,
+                variants: enabled.length,
+              })}
+              {chosenSlots.length > 1 &&
+                t('flashDeals.copy.intoEachSlot', { count: chosenSlots.length })}
             </p>
-            <p className="mb-2 text-[11px] text-gray-500">
-              Disabled and rejected variants are skipped. Prices are copied exactly — re-running a
-              price is the case proven not to trip Shopee&apos;s lowest-price rule.
-            </p>
+            <p className="mb-2 text-[11px] text-gray-500">{t('flashDeals.copy.pricesNote')}</p>
 
             {itemsLoading ? (
               <div className="space-y-1.5">
@@ -1208,7 +1258,7 @@ function CopySheet({
               </div>
             ) : enabled.length === 0 ? (
               <p className="py-4 text-center text-xs text-gray-400">
-                No enabled variants on this session — nothing to copy.
+                {t('flashDeals.copy.noEnabledVariants')}
               </p>
             ) : (
               <div className="rounded-xl border border-[#E8E6E1] bg-white shadow-card">
@@ -1218,7 +1268,9 @@ function CopySheet({
                     className="flex items-center gap-2 border-b border-[#ECECEC] px-3 py-2 last:border-b-0"
                   >
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs text-[#1F2937]">{i.item_name ?? 'Untitled'}</p>
+                      <p className="truncate text-xs text-[#1F2937]">
+                        {i.item_name ?? t('flashDeals.untitledItem')}
+                      </p>
                       <p className="truncate text-[10px] text-gray-500">{i.model_name ?? '—'}</p>
                     </div>
                     <span className="shrink-0 text-xs font-semibold tabular-nums text-[#EE4D2D]">
@@ -1242,7 +1294,7 @@ function CopySheet({
               onClick={onStop}
               className="w-full rounded-xl border border-[#E8E6E1] px-4 py-2.5 text-sm font-medium text-[#6B7280] active:bg-[#F3F4F6]"
             >
-              Stop after the current slot
+              {t('flashDeals.copy.stopAfterCurrent')}
             </button>
           ) : done ? (
             <button
@@ -1250,14 +1302,14 @@ function CopySheet({
               onClick={onClose}
               className="w-full rounded-xl bg-[#2563EB] px-4 py-2.5 text-sm font-medium text-white active:bg-[#2563EB]/90"
             >
-              Done
+              {t('flashDeals.copy.done')}
             </button>
           ) : (
             <button
               type="button"
               disabled={!canConfirm}
               onClick={() => onConfirm(sale, chosenSlots)}
-              title={COPY_ENABLED ? undefined : COPY_DISABLED_HINT}
+              title={COPY_ENABLED ? undefined : t(COPY_DISABLED_HINT_KEY)}
               className={cn(
                 'flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium transition-colors',
                 !canConfirm
@@ -1267,15 +1319,15 @@ function CopySheet({
             >
               <Check className="h-4 w-4 shrink-0" />
               {!COPY_ENABLED
-                ? 'Copy disabled'
+                ? t('flashDeals.copy.copyDisabled')
                 : chosenSlots.length === 0
-                  ? 'Choose a slot first'
-                  : `Create ${chosenSlots.length} flash deal${chosenSlots.length === 1 ? '' : 's'}`}
+                  ? t('flashDeals.copy.chooseSlotFirst')
+                  : t('flashDeals.copy.createDeals', { count: chosenSlots.length })}
             </button>
           )}
           {copying && (
             <p className="mt-1.5 text-center text-[10px] text-gray-500">
-              Keep this screen open — the batch runs here, not on the server.
+              {t('flashDeals.copy.keepOpen')}
             </p>
           )}
         </div>
@@ -1299,6 +1351,7 @@ function CopySheet({
 }
 
 export default function FlashDeals() {
+  const { t } = useTranslation()
   const [sales, setSales] = useState([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('ongoing')
@@ -1431,10 +1484,16 @@ export default function FlashDeals() {
       if (!res.ok) {
         // 429 carries retryAfterMs from whichever throttle layer fired, so the
         // message can be specific instead of a generic failure.
+        // data.error is the server's own message and is shown verbatim; only
+        // the retry hint and the fallback are ours.
         if (res.status === 429 && data.retryAfterMs) {
-          toast.error(`${data.error} Try again in ${Math.ceil(data.retryAfterMs / 1000)}s.`)
+          toast.error(
+            `${data.error} ${t('flashDeals.tryAgainIn', {
+              secs: Math.ceil(data.retryAfterMs / 1000),
+            })}`
+          )
         } else {
-          toast.error(data.error ?? 'Refresh failed.')
+          toast.error(data.error ?? t('flashDeals.refreshFailed'))
         }
         return
       }
@@ -1448,14 +1507,16 @@ export default function FlashDeals() {
 
       if (freshSale) setSales((prev) => prev.map((s) => (s.id === sale.id ? freshSale : s)))
       setItemsBySale((prev) => ({ ...prev, [sale.id]: freshItems ?? [] }))
-      toast.success(`Refreshed — ${data.enabledItemCount} item(s), ${data.models} variant(s).`)
+      toast.success(
+        t('flashDeals.refreshed', { items: data.enabledItemCount, variants: data.models })
+      )
     } catch (err) {
       console.error('[flash-deals] session sync failed', err)
-      toast.error(describeRequestError(err, 'Refresh failed.'))
+      toast.error(describeRequestError(t, err, t('flashDeals.refreshFailed')))
     } finally {
       setSyncingId(null)
     }
-  }, [])
+  }, [t])
 
   const patchEntry = useCallback((timeslotId, next) => {
     setCopyEntries((prev) => prev.map((e) => (e.timeslotId === timeslotId ? { ...e, ...next } : e)))
@@ -1507,7 +1568,11 @@ export default function FlashDeals() {
           // non-JSON body fails the parse. Either way the create may have
           // reached Shopee, so this is never reported as a clean failure.
           console.error('[flash-deals] copy request failed', id, err)
-          return { state: 'done', error: describeRequestError(err, 'Network error'), uncertain: true }
+          return {
+            state: 'done',
+            error: describeRequestError(t, err, t('flashDeals.networkError')),
+            uncertain: true,
+          }
         }
 
         // These three are refused ahead of logSyncStart, so no sync_logs row
@@ -1519,11 +1584,7 @@ export default function FlashDeals() {
 
         if (refusal === 'locked') {
           if (lockWaited >= LOCK_MAX_WAIT_MS) {
-            return {
-              state: 'done',
-              error:
-                'Another copy held this store’s lock for over 90s — it was probably killed mid-flight. This slot was never attempted; retry it.',
-            }
+            return { state: 'done', error: t('flashDeals.copy.lockTimeoutError') }
           }
           const pause = Math.max(LOCK_POLL_MS, Number(data.retryAfterMs) || 0)
           lockWaited += pause
@@ -1534,7 +1595,7 @@ export default function FlashDeals() {
 
         if (refusal === 'rate_limited' || refusal === 'rate_limiter_unavailable') {
           if (rateRetries >= RATE_MAX_RETRIES) {
-            return { state: 'done', error: `${data.error} This slot was never attempted; retry it.` }
+            return { state: 'done', error: `${data.error} ${t('flashDeals.copy.neverAttempted')}` }
           }
           rateRetries += 1
           const pause = (Number(data.retryAfterMs) || COPY_WINDOW_MS) + COPY_WINDOW_MARGIN_MS
@@ -1553,11 +1614,11 @@ export default function FlashDeals() {
         // about.
         return {
           state: 'done',
-          error: data?.error ?? `Copy failed (HTTP ${res.status})`,
+          error: data?.error ?? t('flashDeals.copy.httpError', { status: res.status }),
         }
       }
     },
-    [patchEntry]
+    [patchEntry, t]
   )
 
   /**
@@ -1635,26 +1696,29 @@ export default function FlashDeals() {
         // A summary line, never a verdict — the per-slot list is the answer and
         // stays on screen. Refetch once, not per slot.
         const parts = [
-          tally.success && `${tally.success} copied`,
-          tally.partial && `${tally.partial} partial`,
-          tally.unverified && `${tally.unverified} unverified`,
-          tally.failed && `${tally.failed} failed`,
-          tally.skipped && `${tally.skipped} skipped`,
+          tally.success && t('flashDeals.tally.copied', { count: tally.success }),
+          tally.partial && t('flashDeals.tally.partial', { count: tally.partial }),
+          tally.unverified && t('flashDeals.tally.unverified', { count: tally.unverified }),
+          tally.failed && t('flashDeals.tally.failed', { count: tally.failed }),
+          tally.skipped && t('flashDeals.tally.skipped', { count: tally.skipped }),
         ].filter(Boolean)
 
-        if (tally.success === slots.length) toast.success(`${tally.success} slot(s) copied.`)
-        else toast.error(`${parts.join(', ')} — see the per-slot results.`)
+        if (tally.success === slots.length) {
+          toast.success(t('flashDeals.tally.allCopied', { count: tally.success }))
+        } else {
+          toast.error(t('flashDeals.tally.mixed', { parts: parts.join(t('flashDeals.tally.join')) }))
+        }
 
         if (tally.success + tally.partial + tally.unverified > 0) fetchAll()
       } catch (err) {
         console.error('[flash-deals] copy batch failed', err)
-        toast.error('Copy batch failed.')
+        toast.error(t('flashDeals.copy.batchFailed'))
       } finally {
         copyStopRef.current = false
         setCopying(false)
       }
     },
-    [copyOneSlot, patchEntry, fetchAll]
+    [copyOneSlot, patchEntry, fetchAll, t]
   )
 
   const grouped = useMemo(() => {
@@ -1699,37 +1763,43 @@ export default function FlashDeals() {
   return (
     <div className="pb-24">
       <header className="sticky top-0 z-10 bg-[#FAF9F6] px-4 pt-4 pb-2">
-        <h1 className="text-xl font-bold text-[#1F2937]">⚡ Flash Deals</h1>
-        <p className="text-sm text-[#6B7280]">Shopee flash sale sessions</p>
+        <h1 className="text-xl font-bold text-[#1F2937]">⚡ {t('flashDeals.title')}</h1>
+        <p className="text-sm text-[#6B7280]">{t('flashDeals.subtitle')}</p>
       </header>
 
       <div className="mx-4 my-3 rounded-2xl border border-[#2563EB]/30 bg-[#2563EB]/10 p-3">
-        <p className="text-xs text-[#2563EB]">
-          ℹ️ Monitoring only. BigSeller creates and fills these slots — MyStore Hub reads them so you
-          can watch prices, quotas and timing in one place. Shopee doesn&apos;t report units sold, so
-          quota is the allocated amount, not stock left.
-        </p>
+        <p className="text-xs text-[#2563EB]">ℹ️ {t('flashDeals.monitoringNote')}</p>
       </div>
 
       <div className="px-4">
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList className="grid w-full grid-cols-3 bg-[#F3F4F6]">
-            <TabsTrigger value="ongoing">Live ({grouped.ongoing.length})</TabsTrigger>
-            <TabsTrigger value="upcoming">Upcoming ({grouped.upcoming.length})</TabsTrigger>
-            <TabsTrigger value="expired">Ended ({grouped.expired.length})</TabsTrigger>
+            {/* value= is the stable tab key that `grouped` is keyed by; only
+                the visible label goes through t(). */}
+            <TabsTrigger value="ongoing">
+              {t('flashDeals.tabs.ongoing')} ({grouped.ongoing.length})
+            </TabsTrigger>
+            <TabsTrigger value="upcoming">
+              {t('flashDeals.tabs.upcoming')} ({grouped.upcoming.length})
+            </TabsTrigger>
+            <TabsTrigger value="expired">
+              {t('flashDeals.tabs.expired')} ({grouped.expired.length})
+            </TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
 
       {selectedIds.size > 0 && (
         <div className="mx-4 mt-3 flex items-center justify-between rounded-xl border border-[#2563EB]/30 bg-[#2563EB]/5 px-3 py-2">
-          <span className="text-xs text-[#2563EB]">{selectedIds.size} selected</span>
+          <span className="text-xs text-[#2563EB]">
+            {t('flashDeals.selectedCount', { count: selectedIds.size })}
+          </span>
           <button
             type="button"
             onClick={() => setSelectedIds(new Set())}
             className="text-xs text-[#2563EB] underline"
           >
-            Clear
+            {t('flashDeals.clear')}
           </button>
         </div>
       )}
@@ -1743,9 +1813,12 @@ export default function FlashDeals() {
           </div>
         ) : visible.length === 0 ? (
           <p className="mt-8 text-center text-sm text-gray-500">
+            {/* The old form interpolated the TAB KEY straight into English
+                prose (`No ${tab} sessions.`), so zh-CN would have rendered the
+                raw key 'upcoming'/'expired' mid-sentence. One key per tab. */}
             {sales.length === 0
-              ? 'No flash sale data yet — it appears after the next sync.'
-              : `No ${tab === 'ongoing' ? 'live' : tab} sessions.`}
+              ? t('flashDeals.noDataYet')
+              : t(`flashDeals.emptyTab.${tab}`)}
           </p>
         ) : (
           <div className="overflow-hidden rounded-2xl border border-[#E8E6E1] bg-white shadow-card">
@@ -1757,14 +1830,14 @@ export default function FlashDeals() {
               )}
             >
               <span />
-              <span>Time slot</span>
-              <span>Flash sale ID</span>
-              <span>Items</span>
-              <span>Clicks</span>
-              <span>Remind</span>
-              <span>Status</span>
-              <span>Renew</span>
-              <span className="text-right">Actions</span>
+              <span>{t('flashDeals.columns.timeSlot')}</span>
+              <span>{t('flashDeals.columns.flashSaleId')}</span>
+              <span>{t('flashDeals.columns.items')}</span>
+              <span>{t('flashDeals.columns.clicks')}</span>
+              <span>{t('flashDeals.columns.remind')}</span>
+              <span>{t('flashDeals.columns.status')}</span>
+              <span>{t('flashDeals.columns.renew')}</span>
+              <span className="text-right">{t('flashDeals.columns.actions')}</span>
             </div>
 
             {visible.map((sale) => (
@@ -1800,7 +1873,7 @@ export default function FlashDeals() {
                       </div>
                     ) : (itemsBySale[sale.id] ?? []).length === 0 ? (
                       <p className="py-3 text-center text-xs text-gray-400">
-                        No item data synced for this session yet.
+                        {t('flashDeals.noItemData')}
                       </p>
                     ) : (
                       sortItems(itemsBySale[sale.id]).map((item) => (
@@ -1825,7 +1898,7 @@ export default function FlashDeals() {
               absolutely positioned at top-3 right-3 (see ui/sheet.jsx). */}
           <SheetHeader className="border-b border-[#E8E6E1] px-4 py-4 pr-12">
             <SheetTitle className="text-[#1F2937]">
-              {openSale ? slotLabel(openSale) : 'Session'}
+              {openSale ? slotLabel(openSale) : t('flashDeals.session')}
             </SheetTitle>
             {openSale && (
               <p className="text-xs text-[#6B7280]">
@@ -1839,12 +1912,14 @@ export default function FlashDeals() {
             {openSale && (
               <div className="flex gap-4 border-b border-[#ECECEC] py-3 text-xs text-[#6B7280]">
                 <span className="flex items-center gap-1">
-                  <Eye className="h-3.5 w-3.5" /> {openSale.click_count ?? 0} clicks
+                  <Eye className="h-3.5 w-3.5" />{' '}
+                  {t('flashDeals.clicksCount', { count: openSale.click_count ?? 0 })}
                 </span>
                 <span className="flex items-center gap-1">
-                  <Bell className="h-3.5 w-3.5" /> {openSale.remindme_count ?? 0} reminders
+                  <Bell className="h-3.5 w-3.5" />{' '}
+                  {t('flashDeals.remindersCount', { count: openSale.remindme_count ?? 0 })}
                 </span>
-                <span>{openItems.length} variants</span>
+                <span>{t('flashDeals.variantsCount', { count: openItems.length })}</span>
               </div>
             )}
             {openSale && <SessionDetails sale={openSale} nowMs={nowMs} />}
@@ -1863,16 +1938,14 @@ export default function FlashDeals() {
                 ))}
               </div>
             ) : openItems.length === 0 ? (
-              <p className="py-8 text-center text-xs text-gray-400">
-                No item data synced for this session yet.
-              </p>
+              <p className="py-8 text-center text-xs text-gray-400">{t('flashDeals.noItemData')}</p>
             ) : (
               <>
                 {rejectedCount > 0 && (
                   <div className="mt-3 flex items-center gap-1.5 rounded-lg border border-yellow-300 bg-yellow-50 px-2 py-1.5">
                     <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-yellow-600" />
                     <span className="text-[11px] text-yellow-800">
-                      {rejectedCount} variant(s) rejected by Shopee
+                      {t('flashDeals.rejectedVariants', { count: rejectedCount })}
                     </span>
                   </div>
                 )}

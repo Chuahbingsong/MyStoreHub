@@ -10,6 +10,7 @@ import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
+import { useTranslation } from '@/lib/i18n/I18nContext'
 import {
   base64ToPdfBlob,
   deliverPdf,
@@ -31,7 +32,13 @@ import {
 // still need a label. SHIPPED/COMPLETED/CANCELLED are already out the door.
 const PRINTABLE_STATUSES = ['READY_TO_SHIP', 'PROCESSED']
 
-const UNKNOWN_COURIER = 'Unknown courier'
+// The map key for orders with no courier_name. Deliberately the empty string
+// and NOT a display label: this value is a Map key, half of groupKey(), and a
+// comparison target (`isUnknownCourier`). It used to be the literal
+// 'Unknown courier', which meant translating that label would have silently
+// changed every group key — and, via slugify(), the printed PDF's filename too.
+// The label the seller reads is resolved separately, at render, through t().
+const NO_COURIER = ''
 
 const PLATFORM_BADGE = {
   shopee: 'bg-orange-500/15 text-orange-600',
@@ -60,7 +67,7 @@ function buildSections(orders, storesById) {
 
   orders.forEach((order) => {
     const storeId = order.store_id
-    const courier = order.courier_name || UNKNOWN_COURIER
+    const courier = order.courier_name || NO_COURIER
 
     if (!byStore.has(storeId)) byStore.set(storeId, new Map())
     const byCourier = byStore.get(storeId)
@@ -69,18 +76,23 @@ function buildSections(orders, storesById) {
     byCourier.get(courier).push(order)
   })
 
+  // Stays a pure function with no access to t(): everything it returns is
+  // either Shopee DATA (courier name, shop name) or null, and the placeholder
+  // labels for the nulls are resolved at render. That also keeps the printed
+  // PDF filenames — built from storeName/courier via slugify() — identical in
+  // both locales, which is what an operator filing them expects.
   return [...byStore.entries()].map(([storeId, byCourier]) => {
     const store = storesById[storeId]
     return {
       storeId,
-      storeName: store?.shop_name || (store?.shop_id ? `Shop ${store.shop_id}` : 'Unknown store'),
+      storeName: store?.shop_name || null,
       shopId: store?.shop_id ?? null,
       platform: store?.platform ?? 'shopee',
       groups: [...byCourier.entries()].map(([courier, groupOrders]) => ({
         key: groupKey(storeId, courier),
         storeId,
-        courier,
-        isUnknownCourier: courier === UNKNOWN_COURIER,
+        courier: courier || null,
+        isUnknownCourier: courier === NO_COURIER,
         orders: groupOrders,
         orderSns: groupOrders.map((o) => o.platform_order_id),
       })),
@@ -89,6 +101,7 @@ function buildSections(orders, storesById) {
 }
 
 function GroupCard({ section, group, printing, printed, expanded, onToggle, onPrint }) {
+  const { t } = useTranslation()
   const count = group.orders.length
 
   return (
@@ -101,7 +114,9 @@ function GroupCard({ section, group, printing, printed, expanded, onToggle, onPr
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <p className="truncate text-sm font-medium text-[#1F2937]">{group.courier}</p>
+            <p className="truncate text-sm font-medium text-[#1F2937]">
+              {group.courier ?? t('bulkPrint.unknownCourier')}
+            </p>
             {group.isUnknownCourier && (
               <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
             )}
@@ -111,22 +126,20 @@ function GroupCard({ section, group, printing, printed, expanded, onToggle, onPr
             onClick={() => onToggle(group.key)}
             className="mt-0.5 flex items-center gap-1 text-xs text-[#6B7280]"
           >
-            {count} order{count === 1 ? '' : 's'}
+            {t('bulkPrint.orderCount', { count })}
             <ChevronDown
               className={cn('h-3 w-3 transition-transform', expanded && 'rotate-180')}
             />
           </button>
 
           {group.isUnknownCourier && (
-            <p className="mt-1 text-[11px] text-amber-600">
-              No courier recorded — these may span channels and print as separate files.
-            </p>
+            <p className="mt-1 text-[11px] text-amber-600">{t('bulkPrint.noCourierWarning')}</p>
           )}
         </div>
 
         {printed ? (
           <span className="flex shrink-0 items-center gap-1 rounded-full bg-green-500/15 px-2.5 py-1 text-xs font-medium text-green-700">
-            <Check className="h-3.5 w-3.5" /> Printed
+            <Check className="h-3.5 w-3.5" /> {t('bulkPrint.printed')}
           </span>
         ) : (
           <Button
@@ -136,7 +149,7 @@ function GroupCard({ section, group, printing, printed, expanded, onToggle, onPr
             className="shrink-0 bg-[#2563EB] text-white hover:bg-[#2563EB]/90"
           >
             {printing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
-            {printing ? 'Printing...' : 'Print'}
+            {printing ? t('bulkPrint.printing') : t('bulkPrint.print')}
           </Button>
         )}
       </div>
@@ -159,6 +172,7 @@ function GroupCard({ section, group, printing, printed, expanded, onToggle, onPr
 
 export default function BulkPrint() {
   const navigate = useNavigate()
+  const { t } = useTranslation()
   const [sections, setSections] = useState([])
   const [loading, setLoading] = useState(true)
   const [printingKey, setPrintingKey] = useState(null)
@@ -192,7 +206,7 @@ export default function BulkPrint() {
 
     if (ordersRes.error) {
       console.error('[bulk-print] failed to load orders', ordersRes.error)
-      toast.error('Failed to load orders.')
+      toast.error(t('bulkPrint.loadError'))
       setSections([])
       setLoading(false)
       return
@@ -205,7 +219,10 @@ export default function BulkPrint() {
 
     setSections(buildSections(ordersRes.data ?? [], storesById))
     setLoading(false)
-  }, [])
+    // `t` is a dependency because the load-failure toast above reads it. It
+    // only changes identity when the locale does, so the extra refetch is one
+    // per language switch.
+  }, [t])
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -241,7 +258,10 @@ export default function BulkPrint() {
         : [...prev, { ...section, groups: [group] }]
     )
     toast.success(
-      `Printed ${printedCount} label${printedCount === 1 ? '' : 's'} — ${group.courier}`
+      t('bulkPrint.printedToast', {
+        count: printedCount,
+        courier: group.courier ?? t('bulkPrint.unknownCourier'),
+      })
     )
   }
 
@@ -269,7 +289,7 @@ export default function BulkPrint() {
       } = await supabase.auth.getSession()
 
       if (!session) {
-        toast.error('You must be logged in to print.')
+        toast.error(t('bulkPrint.loginRequired'))
         return
       }
 
@@ -286,12 +306,15 @@ export default function BulkPrint() {
 
       if (!res.ok || !data.success) {
         logPrintAwbFailure('print all unprinted', data)
-        toast.error(printAwbErrorMessage(data, 'Failed to print labels.'))
+        // printAwbErrorMessage returns Shopee's OWN per-order failure text when
+        // it has any — marketplace data, shown verbatim. Only the fallback
+        // here is ours to translate.
+        toast.error(printAwbErrorMessage(data, t('bulkPrint.printError')))
         return
       }
 
       if (!data.pdf_base64) {
-        toast.info(data.message || 'Nothing to print.')
+        toast.info(data.message || t('bulkPrint.nothingToPrint'))
         await fetchData()
         return
       }
@@ -303,7 +326,7 @@ export default function BulkPrint() {
         await deliverPdf(base64ToPdfBlob(data.pdf_base64), filename)
       } catch (err) {
         console.error('[bulk-print] merged PDF did not reach the device', err)
-        toast.error('Labels generated but could not be saved/opened on this device.')
+        toast.error(t('bulkPrint.deliveryError'))
         return
       }
 
@@ -316,24 +339,27 @@ export default function BulkPrint() {
         meta: { mergedAll: true, printedCount },
       })
 
-      toast.success(
-        `Printed ${printedCount} label${printedCount === 1 ? '' : 's'} in one file`
-      )
+      toast.success(t('bulkPrint.mergedToast', { count: printedCount }))
 
       if (data.remaining_unprinted > 0) {
-        toast.info(
-          `${data.remaining_unprinted} more order${data.remaining_unprinted === 1 ? '' : 's'} left — print again to continue.`
-        )
+        toast.info(t('bulkPrint.remainingToast', { count: data.remaining_unprinted }))
       }
 
       if (data.skipped_orders?.length) {
-        toast.info(`${data.skipped_orders.length} order(s) skipped — ${describeFailedOrders(data.skipped_orders)}`)
+        // `reason` is Shopee's own explanation, assembled by describeFailedOrders
+        // — passed through untranslated.
+        toast.info(
+          t('bulkPrint.skippedToast', {
+            count: data.skipped_orders.length,
+            reason: describeFailedOrders(data.skipped_orders),
+          })
+        )
       }
 
       await fetchData()
     } catch (err) {
       console.error('[bulk-print] print all request failed', err)
-      toast.error(describeRequestError(err, 'Failed to print labels.'))
+      toast.error(describeRequestError(t, err, t('bulkPrint.printError')))
     } finally {
       setPrintingAll(false)
     }
@@ -348,7 +374,7 @@ export default function BulkPrint() {
       } = await supabase.auth.getSession()
 
       if (!session) {
-        toast.error('You must be logged in to print.')
+        toast.error(t('bulkPrint.loginRequired'))
         return
       }
 
@@ -362,6 +388,9 @@ export default function BulkPrint() {
       })
 
       const contentType = res.headers.get('content-type') || ''
+      // slugify()'s fallbacks ('store', 'courier') now do the work the
+      // 'Unknown store'/'Unknown courier' labels used to, which keeps the
+      // filename byte-identical in both locales.
       const filename = `AWB-${slugify(section.storeName, 'store')}-${slugify(group.courier, 'courier')}-${group.orders.length}orders.pdf`
 
       let printedCount = group.orders.length
@@ -372,7 +401,7 @@ export default function BulkPrint() {
           await deliverPdf(await res.blob(), filename)
         } catch (err) {
           console.error(`[bulk-print] PDF did not reach the device for ${group.key}`, err)
-          toast.error('Labels generated but could not be saved/opened on this device.')
+          toast.error(t('bulkPrint.deliveryError'))
           return
         }
       } else {
@@ -380,14 +409,14 @@ export default function BulkPrint() {
 
         if (!res.ok || !data.success) {
           logPrintAwbFailure(`bulk print ${group.key}`, data)
-          toast.error(printAwbErrorMessage(data, 'Failed to print labels.'))
+          toast.error(printAwbErrorMessage(data, t('bulkPrint.printError')))
           return
         }
 
         const result = await downloadAwbResponse(data, filename)
         if (result.fileCount === 0) {
           logPrintAwbFailure(`bulk print ${group.key} (no pdf)`, data)
-          toast.error('Labels generated but could not be saved/opened on this device.')
+          toast.error(t('bulkPrint.deliveryError'))
           return
         }
 
@@ -395,11 +424,16 @@ export default function BulkPrint() {
         printedCount = deliveredOrderSns.length
 
         if (data.skipped_orders?.length) {
-          toast.info(`${data.skipped_orders.length} order(s) not ready — no tracking number yet.`)
+          toast.info(t('bulkPrint.notReadyToast', { count: data.skipped_orders.length }))
         }
 
         if (data.failed?.length) {
-          toast.error(`${data.failed.length} order(s) failed — ${describeFailedOrders(data.failed)}`)
+          toast.error(
+            t('bulkPrint.failedToast', {
+              count: data.failed.length,
+              reason: describeFailedOrders(data.failed),
+            })
+          )
         }
       }
 
@@ -421,7 +455,7 @@ export default function BulkPrint() {
       }
     } catch (err) {
       console.error('[bulk-print] print failed', err)
-      toast.error(describeRequestError(err, 'Failed to print labels.'))
+      toast.error(describeRequestError(t, err, t('bulkPrint.printError')))
     } finally {
       setPrintingKey(null)
     }
@@ -475,17 +509,17 @@ export default function BulkPrint() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => navigate('/orders')}
-            aria-label="Back to orders"
+            aria-label={t('bulkPrint.backToOrders')}
             className="-ml-1 rounded-lg p-1 text-[#374151] hover:bg-[#F3F4F6]"
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
           <div className="min-w-0">
-            <h1 className="text-xl font-bold text-[#1F2937]">Bulk Print AWB</h1>
+            <h1 className="text-xl font-bold text-[#1F2937]">{t('bulkPrint.title')}</h1>
             <p className="text-xs text-[#6B7280]">
               {loading
-                ? 'Loading...'
-                : `${pendingOrders} order${pendingOrders === 1 ? '' : 's'} ready to print`}
+                ? t('bulkPrint.loading')
+                : t('bulkPrint.readyToPrint', { count: pendingOrders })}
             </p>
           </div>
         </div>
@@ -503,30 +537,32 @@ export default function BulkPrint() {
       ) : totalGroups === 0 ? (
         <div className="flex flex-col items-center gap-2 px-4 py-24 text-center">
           <p className="text-2xl">🎉</p>
-          <p className="text-sm font-medium text-[#1F2937]">All labels printed</p>
-          <p className="text-xs text-[#6B7280]">Nothing is waiting for an AWB right now.</p>
+          <p className="text-sm font-medium text-[#1F2937]">{t('bulkPrint.allPrinted')}</p>
+          <p className="text-xs text-[#6B7280]">{t('bulkPrint.allPrintedHint')}</p>
           <Button
             variant="outline"
             size="sm"
             onClick={() => navigate('/orders')}
             className="mt-3 border-[#E5E7EB] text-[#374151] hover:bg-[#F3F4F6]"
           >
-            Back to Orders
+            {t('bulkPrint.backToOrdersButton')}
           </Button>
         </div>
       ) : (
         <>
           <div className="px-4 pt-3">
             <div className="rounded-xl border border-[#ECECEC] bg-white px-4 py-3 shadow-sm">
+              {/* Two counts in one sentence, so the emphasis is applied by
+                  splitting the translated string around its {{orders}} and
+                  {{groups}} placeholders rather than by concatenating
+                  fragments — word order differs between en and zh-CN. */}
               <p className="text-xs text-[#6B7280]">
-                <span className="font-semibold text-[#1F2937]">{pendingOrders}</span> order
-                {pendingOrders === 1 ? '' : 's'} across{' '}
-                <span className="font-semibold text-[#1F2937]">{totalGroups}</span> group
-                {totalGroups === 1 ? '' : 's'}
+                {t('bulkPrint.summary', {
+                  orders: pendingOrders,
+                  groups: totalGroups,
+                })}
               </p>
-              <p className="mt-1 text-[11px] text-gray-500">
-                Shopee prints one file per logistics channel, so each group is printed separately.
-              </p>
+              <p className="mt-1 text-[11px] text-gray-500">{t('bulkPrint.perChannelNote')}</p>
 
               <div className="mt-3 border-t border-[#F3F4F6] pt-3">
                 <Button
@@ -541,13 +577,15 @@ export default function BulkPrint() {
                     <Printer className="h-4 w-4" />
                   )}
                   {printingAll
-                    ? 'Preparing one file...'
-                    : `Print all unprinted as one file${mergeableCount > 0 ? ` (${mergeableCount})` : ''}`}
+                    ? t('bulkPrint.preparingMerged')
+                    : mergeableCount > 0
+                      ? t('bulkPrint.printMergedCount', { count: mergeableCount })
+                      : t('bulkPrint.printMerged')}
                 </Button>
                 <p className="mt-1.5 text-[11px] text-gray-500">
                   {mergeableCount === 0
-                    ? 'Nothing here can be merged yet — orders must be processed by Shopee before a label exists.'
-                    : 'Every Shopee label above, merged into a single PDF, sorted by courier so the printed stack is already grouped.'}
+                    ? t('bulkPrint.mergeUnavailable')
+                    : t('bulkPrint.mergeAvailable')}
                 </p>
               </div>
             </div>
@@ -566,7 +604,10 @@ export default function BulkPrint() {
                     {PLATFORM_LABELS[section.platform] ?? section.platform}
                   </span>
                   <p className="truncate text-sm font-semibold text-[#1F2937]">
-                    {section.storeName}
+                    {section.storeName ??
+                      (section.shopId
+                        ? t('bulkPrint.shopFallback', { id: section.shopId })
+                        : t('bulkPrint.unknownStore'))}
                   </p>
                   {section.shopId && (
                     <span className="shrink-0 font-mono text-[10px] text-gray-400">

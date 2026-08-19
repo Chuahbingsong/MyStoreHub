@@ -15,6 +15,7 @@ import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/i18n/I18nContext'
 import { formatRelativeToNow } from '@/lib/i18n/datetime'
+import { statusKeyFor } from '@/lib/orderStatus'
 import {
   addDaysISO,
   countsAsRevenue,
@@ -53,31 +54,28 @@ const PLATFORM_ORDER = ['Shopee', 'Lazada', 'TikTok', 'Shopify']
 // so the two pages read as one system.
 const BADGE_CLS = 'inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium leading-none'
 
-// Maps Shopee's raw order_status to a STABLE status key — never the
-// translated display label — so STATUS_CLASS and the translation dictionary
-// can both key off something that doesn't change when the locale does.
-// Rendering the label itself always goes through t('status.<key>') instead of
-// using this map's values directly (that was the previous bug: SHOPEE_STATUS_MAP
-// used to hold the English display string, and STATUS_CLASS was keyed by that
-// same string — switching locale would have translated the on-screen text
-// while STATUS_CLASS's keys stayed English, so every badge would have silently
-// fallen back to the default gray class).
+// Raw order_status -> STABLE status key. This local map is gone: it duplicated
+// (and, for UNPAID, DISAGREED with) the canonical mapping, which now lives in
+// src/lib/orderStatus.js and is shared by Orders, Scan and this page.
 //
-// Orders.jsx now uses the same pattern (see STATUS there) against the same
-// shared `status:` dictionary namespace. The keys below are a subset of that
-// vocabulary, except 'new' — see the PROVISIONAL note in the dictionaries.
-const SHOPEE_STATUS_KEY = {
-  UNPAID: 'new',
-  READY_TO_SHIP: 'toPack',
-  PROCESSED: 'packed',
-  SHIPPED: 'shipped',
-  COMPLETED: 'completed',
-  CANCELLED: 'cancelled',
-}
-
+// The disagreement it carried: UNPAID mapped to 'new' here and rendered as
+// "New", while Orders gives UNPAID its own "Unpaid" tab. One raw status, two
+// words, depending on which screen the seller was looking at. It now resolves
+// to 'unpaid' everywhere. This was always a LABEL bug only — the To Pack stat
+// below filters on READY_TO_SHIP and never counted unpaid orders.
+//
+// Rendering still goes through t('status.<key>'); STATUS_CLASS is keyed by the
+// same stable keys, never by the display string (that was the original bug:
+// translating a label would have dropped every badge to the default gray).
 const STATUS_CLASS = {
-  new: 'bg-blue-500/15 text-blue-600',
+  unpaid: 'bg-gray-200 text-gray-600',
+  invoicePending: 'bg-orange-500/15 text-orange-600',
   toPack: 'bg-yellow-600/15 text-yellow-700',
+  retryShipment: 'bg-orange-600/15 text-orange-700',
+  toConfirmReceipt: 'bg-green-500/15 text-green-600',
+  cancelRequested: 'bg-amber-500/15 text-amber-700',
+  returnRequested: 'bg-amber-500/15 text-amber-700',
+  returned: 'bg-amber-600/15 text-amber-800',
   packed: 'bg-yellow-600/15 text-yellow-700',
   shipped: 'bg-green-500/15 text-green-600',
   completed: 'bg-teal-500/15 text-teal-600',
@@ -343,12 +341,12 @@ export default function Dashboard() {
     return scopedOrders.slice(0, 5).map((row) => {
       const name = platformLabel(row.platform)
       const display = PLATFORM_DISPLAY[name] ?? PLATFORM_DISPLAY.Shopee
-      const statusKey = SHOPEE_STATUS_KEY[row.order_status] ?? null
+      const statusKey = statusKeyFor(row.platform, row.order_status)
       // Unmapped raw statuses fall back to Shopee's own raw string verbatim
       // (that's data passthrough, same treatment as an unrecognized status
       // anywhere else in the app) rather than forcing it through a
       // translation key that may not exist for it.
-      const status = statusKey ? t(`status.${statusKey}`) : row.order_status || t('status.new')
+      const status = statusKey ? t(`status.${statusKey}`) : row.order_status || ''
       const statusClass = statusKey ? (STATUS_CLASS[statusKey] ?? DEFAULT_STATUS_CLASS) : DEFAULT_STATUS_CLASS
       return {
         id: `#${row.platform_order_id}`,

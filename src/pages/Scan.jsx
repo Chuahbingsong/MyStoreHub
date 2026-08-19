@@ -8,35 +8,55 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/lib/i18n/I18nContext'
+import { statusKeyFor } from '@/lib/orderStatus'
 
 const SCANNER_ELEMENT_ID = 'scan-reader'
 
-// Where a user has to go to undo a camera denial. In the APK the WebView has no
-// browser UI at all — a denied CAMERA permission is an Android app permission,
-// revoked and restored from the system Settings app — so the web wording ("this
-// site", "browser settings") is not just wrong there, it points nowhere. Read
-// once at module scope: the platform can't change mid-session.
-const CAMERA_DENIED_HELP = Capacitor.isNativePlatform()
-  ? 'Allow camera access for MyStore Hub in Android Settings › Apps › MyStore Hub › Permissions, then try again — or type the tracking number below.'
-  : 'Allow camera access for this site in your browser settings, then reload — or type the tracking number below.'
+// Which help text a denied camera gets. In the APK the WebView has no browser
+// UI at all — a denied CAMERA permission is an Android app permission, revoked
+// and restored from the system Settings app — so the web wording ("this site",
+// "browser settings") is not just wrong there, it points nowhere. Read once at
+// module scope: the platform can't change mid-session. Only the KEY is chosen
+// here; the text itself is resolved through t() at render, because module
+// scope has no locale.
+const CAMERA_DENIED_HELP_KEY = Capacitor.isNativePlatform()
+  ? 'scan.cameraDenied.native'
+  : 'scan.cameraDenied.web'
 
 // Shared pill style — matches Orders'/Dashboard's BADGE_CLS so all three
 // pages read as one system.
 const BADGE_CLS = 'inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium leading-none'
 
+// Keyed by STABLE STATUS KEY, never by a display label.
+//
+// The previous map here was keyed by English labels ('To Pack', 'Invoice
+// Pending', ...) but the only thing ever looked up in it was
+// `result.order_status` — the platform's RAW enum (READY_TO_SHIP, PROCESSED,
+// UNPAID; shopeeSync.js / lazadaSync.js / tiktokSync.js each write their own
+// platform's value straight through). So every lookup missed, every badge fell
+// back to grey, and the raw enum was rendered to the seller as the status text.
+//
+// statusKeyFor() from lib/orderStatus.js now does the raw -> key mapping that
+// Orders and Dashboard already used, so this page finally shows real status
+// wording. Colours match Orders' STATUS_BADGE so a parcel reads the same on
+// both screens.
 const STATUS_BADGE = {
-  Unpaid: 'bg-gray-200 text-gray-600',
-  'Invoice Pending': 'bg-orange-500/15 text-orange-600',
-  'To Pack': 'bg-yellow-600/15 text-yellow-700',
-  Packed: 'bg-yellow-600/15 text-yellow-700',
-  'Retry Shipment': 'bg-orange-600/15 text-orange-700',
-  Shipped: 'bg-green-500/15 text-green-600',
-  'To Confirm Receipt': 'bg-green-500/15 text-green-600',
-  Completed: 'bg-teal-500/15 text-teal-600',
-  'Return Requested': 'bg-red-500/15 text-red-600',
-  Cancelled: 'bg-gray-200 text-gray-600',
-  Cancelling: 'bg-gray-200 text-gray-600',
+  unpaid: 'bg-gray-200 text-gray-600',
+  invoicePending: 'bg-orange-500/15 text-orange-600',
+  toPack: 'bg-yellow-600/15 text-yellow-700',
+  packed: 'bg-yellow-600/15 text-yellow-700',
+  retryShipment: 'bg-orange-600/15 text-orange-700',
+  shipped: 'bg-green-500/15 text-green-600',
+  toConfirmReceipt: 'bg-green-500/15 text-green-600',
+  completed: 'bg-teal-500/15 text-teal-600',
+  cancelRequested: 'bg-amber-500/15 text-amber-700',
+  returnRequested: 'bg-amber-500/15 text-amber-700',
+  returned: 'bg-amber-600/15 text-amber-800',
+  cancelled: 'bg-red-500/15 text-red-600',
 }
+
+const DEFAULT_STATUS_BADGE = 'bg-gray-200 text-gray-600'
 
 // A tracking_number scanned off an AWB can only ever belong to one store's
 // order, but .limit(1) (rather than .maybeSingle()) is used deliberately: a
@@ -54,6 +74,7 @@ async function findOrderBy(column, value) {
 
 export default function Scan() {
   const navigate = useNavigate()
+  const { t } = useTranslation()
   const [cameraState, setCameraState] = useState('starting') // starting | running | denied
   const [torchOn, setTorchOn] = useState(false)
   const [torchSupported, setTorchSupported] = useState(false)
@@ -100,7 +121,7 @@ export default function Scan() {
       }
     } catch (err) {
       console.error('[scan] lookup failed', err)
-      toast.error('Lookup failed — check your connection and try again.')
+      toast.error(t('scan.lookupError'))
     } finally {
       setLooking(false)
     }
@@ -244,7 +265,7 @@ export default function Scan() {
       setTorchOn(next)
     } catch (err) {
       console.error('[scan] torch toggle failed', err)
-      toast.error('Flashlight not supported on this device.')
+      toast.error(t('scan.torchUnsupported'))
     }
   }
 
@@ -264,6 +285,11 @@ export default function Scan() {
     lookupOrder(manualValue)
   }
 
+  // stores.platform is the row's own lowercase slug; order_status is whatever
+  // that platform's sync wrote.
+  const resultStatusKey = result
+    ? statusKeyFor(result.stores?.platform ?? result.platform, result.order_status)
+    : null
   const showResult = result !== null
   const showNotFound = notFoundText !== null
   const idle = !showResult && !showNotFound
@@ -274,7 +300,7 @@ export default function Scan() {
         <div className="flex items-center gap-2">
           <button
             onClick={handleBack}
-            aria-label="Back"
+            aria-label={t('scan.back')}
             className="-ml-1.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[#374151] hover:bg-[#F3F4F6]"
           >
             <ArrowLeft className="h-5 w-5" />
@@ -282,11 +308,9 @@ export default function Scan() {
           <div className="min-w-0">
             <h1 className="flex items-center gap-2 text-xl font-bold tracking-tight text-[#1F2937]">
               <ScanLine className="h-5 w-5 text-[#2563EB]" />
-              Scan to Check Order
+              {t('scan.title')}
             </h1>
-            <p className="mt-0.5 text-xs text-[#6B7280]">
-              Scan the AWB barcode to double-check contents before sealing
-            </p>
+            <p className="mt-0.5 text-xs text-[#6B7280]">{t('scan.subtitle')}</p>
           </div>
         </div>
       </header>
@@ -305,14 +329,14 @@ export default function Scan() {
                 {looking && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/70">
                     <Loader2 className="h-6 w-6 animate-spin text-white" />
-                    <p className="text-xs text-white">Looking up order…</p>
+                    <p className="text-xs text-white">{t('scan.lookingUp')}</p>
                   </div>
                 )}
                 {cameraState === 'running' && torchSupported && (
                   <button
                     type="button"
                     onClick={toggleTorch}
-                    aria-label="Toggle flashlight"
+                    aria-label={t('scan.toggleTorch')}
                     className="absolute bottom-3 right-3 flex h-10 w-10 items-center justify-center rounded-full bg-white/90 text-[#1F2937] shadow"
                   >
                     {torchOn ? <FlashlightOff className="h-5 w-5" /> : <Flashlight className="h-5 w-5" />}
@@ -323,15 +347,15 @@ export default function Scan() {
 
             {cameraState === 'denied' && (
               <div className="rounded-2xl bg-white border border-[#E8E6E1] shadow-card p-4">
-                <p className="text-sm font-medium text-[#1F2937]">Camera access is blocked</p>
-                <p className="mt-1 text-xs text-[#6B7280]">{CAMERA_DENIED_HELP}</p>
+                <p className="text-sm font-medium text-[#1F2937]">{t('scan.cameraBlocked')}</p>
+                <p className="mt-1 text-xs text-[#6B7280]">{t(CAMERA_DENIED_HELP_KEY)}</p>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={startCamera}
                   className="mt-3 h-9 rounded-lg border-[#E8E6E1] px-3 text-[13px] font-medium text-[#374151] hover:bg-[#F3F4F6] hover:text-[#1F2937]"
                 >
-                  Try camera again
+                  {t('scan.retryCamera')}
                 </Button>
               </div>
             )}
@@ -340,7 +364,7 @@ export default function Scan() {
               <Input
                 value={manualValue}
                 onChange={(e) => setManualValue(e.target.value)}
-                placeholder="Or type/paste the tracking number"
+                placeholder={t('scan.manualPlaceholder')}
                 disabled={looking}
                 className="h-11 rounded-xl border-[#E8E6E1]"
               />
@@ -349,7 +373,7 @@ export default function Scan() {
                 disabled={looking || !manualValue.trim()}
                 className="h-11 shrink-0 rounded-xl bg-[#2563EB] px-4 text-white hover:bg-[#2563EB]/90"
               >
-                Look up
+                {t('scan.lookUp')}
               </Button>
             </form>
           </>
@@ -357,15 +381,15 @@ export default function Scan() {
 
         {showNotFound && (
           <div className="rounded-2xl bg-white border border-[#E8E6E1] shadow-card p-4 text-center">
-            <p className="text-sm font-medium text-[#1F2937]">Order not found — try syncing</p>
+            <p className="text-sm font-medium text-[#1F2937]">{t('scan.notFound')}</p>
             <p className="mt-2 break-all rounded-lg bg-[#F9FAFB] px-3 py-2 text-xs text-[#6B7280]">
-              Scanned: {notFoundText}
+              {t('scan.scannedValue', { value: notFoundText })}
             </p>
             <Button
               onClick={handleScanAgain}
               className="mt-3 h-11 w-full rounded-xl bg-[#2563EB] text-white hover:bg-[#2563EB]/90"
             >
-              Scan again
+              {t('scan.scanAgain')}
             </Button>
           </div>
         )}
@@ -379,17 +403,27 @@ export default function Scan() {
                     {result.stores?.shop_name || result.platform}
                   </p>
                   <p className="truncate text-base font-semibold text-[#1F2937]">
-                    {result.buyer_name || 'Buyer'}
+                    {result.buyer_name || t('scan.unknownBuyer')}
                   </p>
                 </div>
-                <span className={cn(BADGE_CLS, 'shrink-0', STATUS_BADGE[result.order_status] ?? 'bg-gray-200 text-gray-600')}>
-                  {result.order_status || 'Unknown'}
+                {/* An unmapped status keeps showing Shopee's raw string rather
+                    than being mislabelled — same fallback as Orders' OTHER_TAB. */}
+                <span
+                  className={cn(
+                    BADGE_CLS,
+                    'shrink-0',
+                    STATUS_BADGE[resultStatusKey] ?? DEFAULT_STATUS_BADGE
+                  )}
+                >
+                  {resultStatusKey
+                    ? t(`status.${resultStatusKey}`)
+                    : result.order_status || t('scan.unknownStatus')}
                 </span>
               </div>
               <div className="mt-2.5 space-y-1 text-xs text-[#6B7280]">
-                <p>Order: {result.platform_order_id}</p>
-                <p>Package: {result.package_number || '—'}</p>
-                <p>Tracking: {result.tracking_number || '—'}</p>
+                <p>{t('scan.fields.order')}: {result.platform_order_id}</p>
+                <p>{t('scan.fields.package')}: {result.package_number || '—'}</p>
+                <p>{t('scan.fields.tracking')}: {result.tracking_number || '—'}</p>
               </div>
             </div>
 
@@ -412,19 +446,19 @@ export default function Scan() {
                   )}
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-[#1F2937]">
-                      {item.product_name || 'Unnamed item'}
+                      {item.product_name || t('scan.unnamedItem')}
                     </p>
                     {item.variant_name && (
                       <p className="truncate text-xs text-[#6B7280]">{item.variant_name}</p>
                     )}
-                    <p className="text-xs text-[#6B7280]">SKU: {item.sku || '—'}</p>
+                    <p className="text-xs text-[#6B7280]">{t('scan.fields.sku')}: {item.sku || '—'}</p>
                   </div>
                   <div className="shrink-0 text-sm font-semibold tabular-nums text-[#1F2937]">×{item.quantity ?? 1}</div>
                 </div>
               ))}
               {(result.order_items ?? []).length === 0 && (
                 <div className="rounded-2xl bg-white border border-[#E8E6E1] shadow-card p-4 text-center text-xs text-[#6B7280]">
-                  No items found for this order.
+                  {t('scan.noItems')}
                 </div>
               )}
             </div>
@@ -433,7 +467,7 @@ export default function Scan() {
               onClick={handleScanAgain}
               className="h-11 w-full rounded-xl bg-[#2563EB] text-white hover:bg-[#2563EB]/90"
             >
-              Scan another
+              {t('scan.scanAnother')}
             </Button>
           </div>
         )}
