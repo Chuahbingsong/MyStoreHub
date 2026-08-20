@@ -8,10 +8,11 @@
 -- This is a DIFFERENT question from daily_sales() (sales_reporting_migration.sql):
 -- daily_sales() answers "how much confirmed revenue has this order set
 -- progressed to" for the Sales page's 30-day trend, and deliberately EXCLUDES
--- unpaid and to-pack orders. This function answers "what does the seller need
--- to look at today" and deliberately INCLUDES some money not yet received.
--- Folding this into daily_sales() would have made the 30-day trend include
--- unconfirmed cash — kept separate on purpose. See salesReport.js.
+-- unpaid and to-pack orders. This function answers "what happened today" —
+-- effectively ALL of today's orders — and deliberately INCLUDES some money
+-- not yet received (unpaid COD). Folding this into daily_sales() would have
+-- made the 30-day trend include unconfirmed cash — kept separate on purpose.
+-- See salesReport.js.
 --
 -- SECURITY INVOKER (not DEFINER): same reasoning as daily_sales() — orders and
 -- stores carry user-scoped RLS, so a DEFINER function here would leak revenue
@@ -31,15 +32,24 @@ create index if not exists idx_orders_created_at
 -- Dashboard's "Today" value and its "Yesterday" sub-line come from the SAME
 -- query and can never disagree with each other.
 --
--- An order counts when it was created on the given KL calendar day AND EITHER:
---   (a) UNPAID, with payment_method a Cash-on-Delivery variant, OR
---   (b) sitting in the "New Orders" tab (STATUS_TO_TAB's 'new' bucket in
---       src/pages/Orders.jsx: canonical Invoice Pending + To Pack),
---       regardless of payment method.
--- (a) and (b) can't both be true for the same order in today's status maps
--- (Unpaid and Invoice-Pending/To-Pack are disjoint canonical statuses), but OR
--- is used rather than relying on that, so a future status remap can't
--- silently double-count a row.
+-- RULE (v2 — widened from the original "actionable subset only" version):
+-- an order counts when it was created on the given KL calendar day, AND it is
+-- NOT excluded by either of these:
+--   (1) CANCELLED — never counted, paid or not. A cancelled order converts to
+--       no money kept: if it was paid, the payment is refunded; if it was
+--       unpaid, it was never going to be paid. Counting it would contradict
+--       daily_sales() above, which has never counted cancellations either.
+--   (2) UNPAID and NOT Cash-on-Delivery — cash-at-counter / bank-transfer /
+--       e-wallet orders that were never paid mostly never get paid, so
+--       counting them inflates both the order count and the revenue figure.
+-- Every other status counts regardless of payment method — including UNPAID
+-- + COD, which is money not yet physically received but a real, fulfillable
+-- order (see the revenue-tile wording in src/lib/i18n and Dashboard.jsx).
+--
+-- Deliberately NOT excluded here despite carrying similar risk: Cancel
+-- Requested, Return Requested, Returned. Only CANCELLED was asked for; those
+-- three stay INCLUDED under the "everything else counts" rule until told
+-- otherwise.
 --
 -- COD PAYMENT_METHOD STRINGS — audited against live data on 2026-08-20.
 -- orders.payment_method has no enum or CHECK constraint; it's free text,
@@ -53,15 +63,19 @@ create index if not exists idx_orders_created_at
 -- rows) — a real but DIFFERENT payment method (in-store cash, not
 -- cash-on-parcel-delivery) that must never be counted as COD.
 --
--- NEW-ORDERS-TAB STATUSES — mirrors STATUS_TO_TAB's 'new' bucket via
--- SHOPEE_STATUS_MAP / TIKTOK_STATUS_MAP / LAZADA_STATUS_MAP in
--- src/lib/orderStatus.js:
---   Shopee:  INVOICE_PENDING, READY_TO_SHIP
---   TikTok:  AWAITING_SHIPMENT
---   Lazada:  pending
--- NOT Lazada's 'ready_to_ship' — that raw string maps to canonical Packed, not
--- To Pack (see the FALSE FRIEND note in daily_sales(), sales_reporting_migration.sql);
--- it is deliberately absent here for the same reason.
+-- CANCELLED STATUSES — mirrors canonical Cancelled via SHOPEE_STATUS_MAP /
+-- TIKTOK_STATUS_MAP / LAZADA_STATUS_MAP in src/lib/orderStatus.js:
+--   Shopee:  CANCELLED
+--   TikTok:  CANCELLED
+--   Lazada:  canceled, failed  ('failed' is Lazada's weakest mapping — see the
+--            long note on it in orderStatus.js — but it is canonically
+--            Cancelled today, so it's excluded here for the same reason
+--            literal CANCELLED is)
+-- UNPAID STATUSES — same canonical mapping, used only to find which of
+-- today's orders are unpaid so the COD carve-out can be applied to them:
+--   Shopee:  UNPAID
+--   TikTok:  UNPAID, ON_HOLD
+--   Lazada:  unpaid
 --
 -- TIMEZONE / DATE FIELD / row-cap rationale: identical to daily_sales() —
 -- order_created_at (timestamptz) bucketed via `at time zone 'Asia/Kuala_Lumpur'`,
@@ -106,22 +120,21 @@ as $$
            coalesce(o.total_amount, 0) as amount
     from orders o
     where o.order_created_at >= (select ts from window_start)
-      and (
-        -- (a) UNPAID + Cash on Delivery, any platform
+      -- (1) CANCELLED is never counted, paid or not.
+      and not (
+        (o.platform = 'shopee' and o.order_status = 'CANCELLED')
+        or (o.platform = 'tiktok' and o.order_status = 'CANCELLED')
+        or (o.platform = 'lazada' and o.order_status in ('canceled', 'failed'))
+      )
+      -- (2) Among what's left, exclude UNPAID orders that aren't COD.
+      -- Everything else — including UNPAID + COD — counts.
+      and not (
         (
-          lower(trim(o.payment_method)) in ('cash on delivery', 'cod')
-          and (
-            (o.platform = 'shopee' and o.order_status = 'UNPAID')
-            or (o.platform = 'tiktok' and o.order_status in ('UNPAID', 'ON_HOLD'))
-            or (o.platform = 'lazada' and o.order_status = 'unpaid')
-          )
+          (o.platform = 'shopee' and o.order_status = 'UNPAID')
+          or (o.platform = 'tiktok' and o.order_status in ('UNPAID', 'ON_HOLD'))
+          or (o.platform = 'lazada' and o.order_status = 'unpaid')
         )
-        -- (b) New Orders tab, any payment method
-        or (
-          (o.platform = 'shopee' and o.order_status in ('INVOICE_PENDING', 'READY_TO_SHIP'))
-          or (o.platform = 'tiktok' and o.order_status = 'AWAITING_SHIPMENT')
-          or (o.platform = 'lazada' and o.order_status = 'pending')
-        )
+        and lower(trim(o.payment_method)) not in ('cash on delivery', 'cod')
       )
   )
   -- per store, zero-filled across every store the caller owns

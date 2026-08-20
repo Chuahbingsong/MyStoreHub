@@ -143,15 +143,16 @@ export const ACTIONABLE_ORDERS_WINDOW_DAYS = 2
 
 /**
  * Fetches the order set behind the Dashboard's "Orders Today" and "Revenue"
- * tiles: today's (and yesterday's) unpaid-COD orders plus orders sitting in
- * the New Orders tab. See supabase/actionable_orders_migration.sql for the
- * exact filter and the payment_method strings it matches.
+ * tiles: ALL of today's (and yesterday's) orders EXCEPT cancelled orders and
+ * unpaid orders that aren't Cash on Delivery. See
+ * supabase/actionable_orders_migration.sql for the exact filter and the
+ * payment_method strings it matches.
  *
  * Deliberately a DIFFERENT rule from fetchSalesReport()/daily_sales() above —
  * this is not a revenue-recognition figure, it includes money not yet
- * received, and must never be folded into the 30-day Sales trend. Today and
- * Yesterday are both read from this one query so the tile's two lines can't
- * disagree with each other either.
+ * received (unpaid COD), and must never be folded into the 30-day Sales
+ * trend. Today and Yesterday are both read from this one query so the tile's
+ * two lines can't disagree with each other either.
  *
  * Same response shape as fetchSalesReport() (minus coverage, which this
  * doesn't need), so it works with seriesFor()/figuresForDay() unchanged.

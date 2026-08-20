@@ -270,11 +270,10 @@ export default function Dashboard() {
 
     // Orders Today + Revenue come from todays_actionable_orders() RPC, NOT
     // from scopedOrders — see supabase/actionable_orders_migration.sql. An
-    // order counts only when it's today's (Malaysia time) AND either unpaid
-    // Cash on Delivery, or sitting in the New Orders tab. Both tiles read the
-    // same query so they can never disagree, and Yesterday reads the same
-    // definition as Today, so the tile's own two lines can't contradict each
-    // other either.
+    // order counts when it's today's (Malaysia time) UNLESS it's cancelled,
+    // or unpaid with a non-COD payment method. Both tiles read the same query
+    // so they can never disagree, and Yesterday reads the same definition as
+    // Today, so the tile's own two lines can't contradict each other either.
     const series = seriesFor(actionableReport, store)
     const today = figuresForDay(series, todayKL())
     const yesterday = figuresForDay(series, addDaysISO(todayKL(), -1))
