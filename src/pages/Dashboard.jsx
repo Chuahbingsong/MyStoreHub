@@ -19,7 +19,7 @@ import { statusKeyFor } from '@/lib/orderStatus'
 import {
   addDaysISO,
   countsAsRevenue,
-  fetchSalesReport,
+  fetchActionableOrdersReport,
   figuresForDay,
   formatRM,
   seriesFor,
@@ -152,10 +152,10 @@ export default function Dashboard() {
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   // Aggregated server-side; see src/lib/salesReport.js. Null until loaded, and
-  // left null on failure so the revenue tile degrades to RM 0.00 rather than
-  // showing a figure derived some other way — two different methods producing
-  // two different numbers is exactly what this is meant to prevent.
-  const [salesReport, setSalesReport] = useState(null)
+  // left null on failure so the Orders Today / Revenue tiles degrade to 0
+  // rather than showing a figure derived some other way — two different
+  // methods producing two different numbers is exactly what this prevents.
+  const [actionableReport, setActionableReport] = useState(null)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -227,13 +227,13 @@ export default function Dashboard() {
     setProducts(productsRes.data ?? [])
 
     // Separate from the Promise.all above on purpose: if the reporting
-    // functions aren't installed yet, the rest of the dashboard must still
+    // function isn't installed yet, the rest of the dashboard must still
     // render rather than the whole page failing on a missing RPC.
     try {
-      setSalesReport(await fetchSalesReport())
+      setActionableReport(await fetchActionableOrdersReport())
     } catch (err) {
-      console.error('[dashboard] sales report unavailable', err)
-      setSalesReport(null)
+      console.error('[dashboard] actionable orders report unavailable', err)
+      setActionableReport(null)
     }
 
     setLoading(false)
@@ -265,41 +265,43 @@ export default function Dashboard() {
   )
 
   const stats = useMemo(() => {
-    const todaysOrders = scopedOrders.filter((o) => isToday(o.order_created_at))
     const toPack = scopedOrders.filter((o) => o.order_status === 'READY_TO_SHIP').length
     const lowStock = scopedProducts.filter((p) => (Number(p.stock) || 0) <= 10).length
 
-    // Revenue comes from the daily_sales() RPC, NOT from summing scopedOrders.
-    // Two reasons it had to move:
-    //   1. The client-side sum counted EVERY status, including UNPAID —
-    //      cash-at-counter orders that mostly never get paid, which inflated
-    //      the figure.
-    //   2. It bucketed "today" by the browser's clock rather than Malaysia
-    //      time, and it summed a select that PostgREST caps at 1,000 rows.
-    // Sharing one source with the Sales page is also the only way "Today" and
-    // "Yesterday" here can be guaranteed to agree with the report.
-    const series = seriesFor(salesReport, store)
+    // Orders Today + Revenue come from todays_actionable_orders() RPC, NOT
+    // from scopedOrders — see supabase/actionable_orders_migration.sql. An
+    // order counts only when it's today's (Malaysia time) AND either unpaid
+    // Cash on Delivery, or sitting in the New Orders tab. Both tiles read the
+    // same query so they can never disagree, and Yesterday reads the same
+    // definition as Today, so the tile's own two lines can't contradict each
+    // other either.
+    const series = seriesFor(actionableReport, store)
     const today = figuresForDay(series, todayKL())
     const yesterday = figuresForDay(series, addDaysISO(todayKL(), -1))
 
     return [
-      { id: 'ordersToday', label: t('dashboard.stats.ordersToday'), value: String(todaysOrders.length), valueClass: 'text-[#1F2937]' },
+      {
+        id: 'ordersToday',
+        label: t('dashboard.stats.ordersToday'),
+        value: actionableReport ? String(today.orderCount) : '0',
+        valueClass: 'text-[#1F2937]',
+      },
       {
         id: 'revenue',
         label: t('dashboard.stats.revenue'),
-        value: salesReport ? formatRM(today.revenue) : formatRevenue(0),
+        value: actionableReport ? formatRM(today.revenue) : formatRM(0),
         valueClass: 'text-[#1F2937]',
         // Bottom nav is full, so the revenue tile is the way into the report.
         to: '/sales',
         toLabel: t('sales.open'),
         // Rendered as a smaller line under the value; same series, same day
         // bucketing, so it can never disagree with the number above it.
-        sub: salesReport ? `${t('sales.yesterday')}: ${formatRM(yesterday.revenue)}` : null,
+        sub: actionableReport ? `${t('sales.yesterday')}: ${formatRM(yesterday.revenue)}` : null,
       },
       { id: 'toPack', label: t('status.toPack'), value: String(toPack), valueClass: 'text-red-600' },
       { id: 'lowStock', label: t('dashboard.stats.lowStock'), value: String(lowStock), valueClass: 'text-yellow-700' },
     ]
-  }, [scopedOrders, scopedProducts, salesReport, store, t])
+  }, [scopedOrders, scopedProducts, actionableReport, store, t])
 
   const platforms = useMemo(() => {
     const connectedSet = new Set(stores.map((s) => platformLabel(s.platform)))
@@ -422,6 +424,14 @@ export default function Dashboard() {
               <StatTile key={stat.id} stat={stat} />
             ))}
       </section>
+
+      {/* Stated in the UI rather than buried in a tooltip — same reasoning as
+          sales.basis on the Sales page: which orders count is the one
+          assumption these two figures rest on, and Revenue here includes
+          money not yet received. */}
+      <p className="px-4 pb-1 text-[11px] leading-relaxed text-gray-500">
+        {t('dashboard.stats.basis')}
+      </p>
 
       <section className="px-4">
         <h2 className="mb-2.5 font-semibold text-[#1F2937]">{t('dashboard.platforms.title')}</h2>

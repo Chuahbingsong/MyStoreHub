@@ -137,3 +137,48 @@ export function formatRM(value) {
     maximumFractionDigits: 2,
   })}`
 }
+
+// Only needs today + yesterday for the Dashboard tile pair below.
+export const ACTIONABLE_ORDERS_WINDOW_DAYS = 2
+
+/**
+ * Fetches the order set behind the Dashboard's "Orders Today" and "Revenue"
+ * tiles: today's (and yesterday's) unpaid-COD orders plus orders sitting in
+ * the New Orders tab. See supabase/actionable_orders_migration.sql for the
+ * exact filter and the payment_method strings it matches.
+ *
+ * Deliberately a DIFFERENT rule from fetchSalesReport()/daily_sales() above —
+ * this is not a revenue-recognition figure, it includes money not yet
+ * received, and must never be folded into the 30-day Sales trend. Today and
+ * Yesterday are both read from this one query so the tile's two lines can't
+ * disagree with each other either.
+ *
+ * Same response shape as fetchSalesReport() (minus coverage, which this
+ * doesn't need), so it works with seriesFor()/figuresForDay() unchanged.
+ */
+export async function fetchActionableOrdersReport({ days = ACTIONABLE_ORDERS_WINDOW_DAYS } = {}) {
+  const { data, error } = await supabase.rpc('todays_actionable_orders', { p_days: days })
+  if (error) throw error
+
+  const combined = []
+  const byStore = new Map()
+
+  for (const row of data ?? []) {
+    const entry = {
+      day: row.day,
+      revenue: Number(row.revenue) || 0,
+      orderCount: Number(row.order_count) || 0,
+    }
+    if (row.store_id == null) {
+      combined.push(entry)
+    } else {
+      if (!byStore.has(row.store_id)) byStore.set(row.store_id, [])
+      byStore.get(row.store_id).push(entry)
+    }
+  }
+
+  combined.sort((a, b) => a.day.localeCompare(b.day))
+  for (const series of byStore.values()) series.sort((a, b) => a.day.localeCompare(b.day))
+
+  return { combined, byStore }
+}

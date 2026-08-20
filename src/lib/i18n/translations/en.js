@@ -72,8 +72,10 @@ export default {
     },
     stats: {
       ordersToday: 'Orders Today',
-      revenue: 'Revenue',
+      revenue: 'Revenue (incl. unpaid)',
       lowStock: 'Low Stock',
+      basis:
+        "Counts today's unpaid Cash on Delivery orders and orders awaiting packing (Malaysia time, all platforms). Revenue includes COD money not yet received.",
     },
     platforms: {
       title: 'Platforms',

@@ -67,8 +67,9 @@ export default {
     },
     stats: {
       ordersToday: '今日订单',
-      revenue: '营业额',
+      revenue: '营业额（含未付款）',
       lowStock: '库存不足',
+      basis: '统计今日未付款的货到付款订单及待打包订单（马来西亚时间，含全平台）。营业额包含尚未收到的货到付款款项。',
     },
     platforms: {
       title: '平台',
