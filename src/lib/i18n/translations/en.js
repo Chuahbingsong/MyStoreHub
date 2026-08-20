@@ -72,7 +72,7 @@ export default {
     },
     stats: {
       ordersToday: 'Orders Today',
-      revenue: 'Revenue (incl. unpaid)',
+      revenue: 'Revenue',
       lowStock: 'Low Stock',
       basis:
         "Counts all of today's orders (Malaysia time, all platforms), except cancelled orders and unpaid orders that aren't Cash on Delivery. Revenue includes COD money not yet received.",
@@ -523,8 +523,11 @@ export default {
       // Kept as the acronym in both locales: it is what is printed on the AWB
       // and in Seller Centre, and sellers scan for it visually.
       sku: 'SKU',
+      total: 'Order Total',
     },
     noItems: 'No items found for this order.',
+    viewImage: 'View larger image',
+    closePreview: 'Close preview',
   },
   products: {
     title: 'Products',
@@ -630,6 +633,8 @@ export default {
     unknownBuyer: 'Unknown Buyer',
     unnamedItem: 'Item',
     copyTracking: 'Copy tracking number',
+    viewImage: 'View larger image',
+    closePreview: 'Close preview',
     loginRequired: 'You must be logged in.',
     arrangedVia: 'Arranged via',
     paidAt: 'Paid {{date}}',

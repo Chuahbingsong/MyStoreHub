@@ -67,7 +67,7 @@ export default {
     },
     stats: {
       ordersToday: '今日订单',
-      revenue: '营业额（含未付款）',
+      revenue: '营业额',
       lowStock: '库存不足',
       basis: '统计今日全部订单（马来西亚时间，含全平台），但排除已取消订单，以及非货到付款的未付款订单。营业额包含尚未收到的货到付款款项。',
     },
@@ -488,8 +488,11 @@ export default {
       tracking: '运单号',
       // 保留英文缩写：运单和卖家中心上印的都是 SKU，卖家靠它做视觉比对。
       sku: 'SKU',
+      total: '订单总额',
     },
     noItems: '此订单没有商品。',
+    viewImage: '查看大图',
+    closePreview: '关闭预览',
   },
   products: {
     title: '商品',
@@ -590,6 +593,8 @@ export default {
     unknownBuyer: '未知买家',
     unnamedItem: '商品',
     copyTracking: '复制运单号',
+    viewImage: '查看大图',
+    closePreview: '关闭预览',
     loginRequired: '请先登录。',
     arrangedVia: '发货方式',
     paidAt: '付款 {{date}}',

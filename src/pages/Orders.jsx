@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import {
   Sheet,
   SheetContent,
@@ -923,6 +924,7 @@ export default function Orders() {
   const [platformFilter, setPlatformFilter] = useState(ALL_FILTER)
   const [search, setSearch] = useState('')
   const [selectedOrder, setSelectedOrder] = useState(null)
+  const [previewImage, setPreviewImage] = useState(null)
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [orders, setOrders] = useState([])
@@ -2085,7 +2087,7 @@ export default function Orders() {
                     {t('orders.sections.buyer')}
                   </h3>
                   {/* Name, phone, address, region are all Shopee DATA. */}
-                  <p className="mt-1.5 text-sm font-semibold text-[#1F2937]">
+                  <p className="mt-1.5 text-lg font-bold text-[#1F2937]">
                     {selectedOrder.buyer ?? t('orders.unknownBuyer')}
                   </p>
                   <p className="mt-0.5 text-xs text-[#6B7280]">{selectedOrder.phone}</p>
@@ -2168,22 +2170,40 @@ export default function Orders() {
                   <div className="mt-2.5 space-y-2.5">
                     {selectedOrder.items.map((item, i) => (
                       <div key={i} className="flex items-center gap-3">
-                        <ItemThumb
-                          image={item.image}
-                          alt={item.name ?? t('orders.unnamedItem')}
-                          tint={PLATFORM_META[selectedOrder.platform].tint}
-                          className="h-10 w-10"
-                        />
+                        {item.image ? (
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImage(item.image)}
+                            aria-label={t('orders.viewImage')}
+                            className="shrink-0 rounded-lg transition-transform active:scale-95"
+                          >
+                            <ItemThumb
+                              image={item.image}
+                              alt={item.name ?? t('orders.unnamedItem')}
+                              tint={PLATFORM_META[selectedOrder.platform].tint}
+                              className="h-12 w-12"
+                            />
+                          </button>
+                        ) : (
+                          <ItemThumb
+                            image={item.image}
+                            alt={item.name ?? t('orders.unnamedItem')}
+                            tint={PLATFORM_META[selectedOrder.platform].tint}
+                            className="h-12 w-12"
+                          />
+                        )}
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm text-[#1F2937]">
+                          <p className="truncate text-base font-bold text-[#1F2937]">
                             {item.name ?? t('orders.unnamedItem')}
                           </p>
-                          <p className="text-xs text-[#6B7280]">
+                          <p className="text-sm font-semibold text-[#6B7280]">
                             {t('orders.fields.qty')}: {item.qty}
                             {item.variant ? ` • ${item.variant}` : ''}
                           </p>
                         </div>
-                        <p className="shrink-0 text-sm tabular-nums text-[#1F2937]">RM {item.price.toFixed(2)}</p>
+                        <p className="shrink-0 text-base font-bold tabular-nums text-[#1F2937]">
+                          RM {item.price.toFixed(2)}
+                        </p>
                       </div>
                     ))}
                   </div>
@@ -2200,7 +2220,7 @@ export default function Orders() {
                     <span>{t('orders.fields.shippingFee')}</span>
                     <span className="tabular-nums">RM 0.00</span>
                   </div>
-                  <div className="flex justify-between border-t border-[#F1F0EC] pt-1.5 text-sm font-semibold text-[#1F2937]">
+                  <div className="flex justify-between border-t border-[#F1F0EC] pt-2 text-lg font-extrabold text-[#1F2937]">
                     <span>{t('orders.fields.total')}</span>
                     <span className="tabular-nums">RM {selectedOrder.total.toFixed(2)}</span>
                   </div>
@@ -2250,6 +2270,23 @@ export default function Orders() {
         onCancel={dismissPendingAwbPrint}
         onConfirm={handleConfirmPendingAwbPrint}
       />
+
+      <Dialog open={!!previewImage} onOpenChange={(open) => !open && setPreviewImage(null)}>
+        <DialogContent
+          showCloseButton={false}
+          className="max-w-[calc(100%-2rem)] gap-0 rounded-2xl border-none bg-transparent p-0 shadow-none ring-0 sm:max-w-md"
+        >
+          <DialogTitle className="sr-only">{t('orders.closePreview')}</DialogTitle>
+          <button
+            type="button"
+            onClick={() => setPreviewImage(null)}
+            aria-label={t('orders.closePreview')}
+            className="w-full"
+          >
+            <img src={previewImage} alt="" className="w-full rounded-2xl object-contain" />
+          </button>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

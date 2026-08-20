@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Flashlight, FlashlightOff, Loader2, Package, ScanLine } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/i18n/I18nContext'
@@ -82,6 +83,7 @@ export default function Scan() {
   const [looking, setLooking] = useState(false)
   const [result, setResult] = useState(null)
   const [notFoundText, setNotFoundText] = useState(null)
+  const [previewImage, setPreviewImage] = useState(null)
 
   const scannerRef = useRef(null)
   const handledRef = useRef(false)
@@ -402,7 +404,7 @@ export default function Scan() {
                   <p className="truncate text-xs text-[#6B7280]">
                     {result.stores?.shop_name || result.platform}
                   </p>
-                  <p className="truncate text-base font-semibold text-[#1F2937]">
+                  <p className="truncate text-lg font-bold text-[#1F2937]">
                     {result.buyer_name || t('scan.unknownBuyer')}
                   </p>
                 </div>
@@ -428,39 +430,71 @@ export default function Scan() {
             </div>
 
             <div className="space-y-2.5">
-              {(result.order_items ?? []).map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center gap-3 rounded-2xl bg-white border border-[#E8E6E1] shadow-card p-3"
-                >
-                  {item.image_url ? (
-                    <img
-                      src={item.image_url}
-                      alt=""
-                      className="h-14 w-14 shrink-0 rounded-lg object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-[#F3F4F6] text-[#9CA3AF]">
-                      <Package className="h-6 w-6" />
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-[#1F2937]">
-                      {item.product_name || t('scan.unnamedItem')}
-                    </p>
-                    {item.variant_name && (
-                      <p className="truncate text-xs text-[#6B7280]">{item.variant_name}</p>
+              {(result.order_items ?? []).map((item) => {
+                const qty = item.quantity ?? 1
+                const unitPrice = Number(item.price) || 0
+                return (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-3 rounded-2xl bg-white border border-[#E8E6E1] shadow-card p-3"
+                  >
+                    {item.image_url ? (
+                      <button
+                        type="button"
+                        onClick={() => setPreviewImage(item.image_url)}
+                        aria-label={t('scan.viewImage')}
+                        className="shrink-0 rounded-lg transition-transform active:scale-95"
+                      >
+                        <img
+                          src={item.image_url}
+                          alt=""
+                          className="h-16 w-16 rounded-lg object-cover"
+                        />
+                      </button>
+                    ) : (
+                      <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-[#F3F4F6] text-[#9CA3AF]">
+                        <Package className="h-7 w-7" />
+                      </div>
                     )}
-                    <p className="text-xs text-[#6B7280]">{t('scan.fields.sku')}: {item.sku || '—'}</p>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-base font-bold text-[#1F2937]">
+                        {item.product_name || t('scan.unnamedItem')}
+                      </p>
+                      {item.variant_name && (
+                        <p className="truncate text-sm text-[#6B7280]">{item.variant_name}</p>
+                      )}
+                      <p className="truncate text-sm font-medium text-[#6B7280]">
+                        {t('scan.fields.sku')}: {item.sku || '—'}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p className="text-lg font-extrabold tabular-nums text-[#1F2937]">×{qty}</p>
+                      <p className="mt-1 text-sm font-semibold tabular-nums text-[#4B5563]">
+                        RM {unitPrice.toFixed(2)}
+                      </p>
+                      {qty > 1 && (
+                        <p className="text-base font-extrabold tabular-nums text-[#2563EB]">
+                          RM {(unitPrice * qty).toFixed(2)}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                  <div className="shrink-0 text-sm font-semibold tabular-nums text-[#1F2937]">×{item.quantity ?? 1}</div>
-                </div>
-              ))}
+                )
+              })}
               {(result.order_items ?? []).length === 0 && (
                 <div className="rounded-2xl bg-white border border-[#E8E6E1] shadow-card p-4 text-center text-xs text-[#6B7280]">
                   {t('scan.noItems')}
                 </div>
               )}
+            </div>
+
+            <div className="rounded-2xl bg-white border border-[#E8E6E1] shadow-card p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-[#6B7280]">{t('scan.fields.total')}</span>
+                <span className="text-2xl font-extrabold tabular-nums text-[#1F2937]">
+                  RM {(Number(result.total_amount) || 0).toFixed(2)}
+                </span>
+              </div>
             </div>
 
             <Button
@@ -472,6 +506,23 @@ export default function Scan() {
           </div>
         )}
       </section>
+
+      <Dialog open={!!previewImage} onOpenChange={(open) => !open && setPreviewImage(null)}>
+        <DialogContent
+          showCloseButton={false}
+          className="max-w-[calc(100%-2rem)] gap-0 rounded-2xl border-none bg-transparent p-0 shadow-none ring-0 sm:max-w-md"
+        >
+          <DialogTitle className="sr-only">{t('scan.closePreview')}</DialogTitle>
+          <button
+            type="button"
+            onClick={() => setPreviewImage(null)}
+            aria-label={t('scan.closePreview')}
+            className="w-full"
+          >
+            <img src={previewImage} alt="" className="w-full rounded-2xl object-contain" />
+          </button>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
