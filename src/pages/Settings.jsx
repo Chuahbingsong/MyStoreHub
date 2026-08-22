@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
@@ -15,6 +15,13 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { getAutoSyncOrdersEnabled, setAutoSyncOrdersEnabled } from '@/lib/preferences'
@@ -73,6 +80,7 @@ export default function Settings() {
   const [editingName, setEditingName] = useState('')
   const [savingStoreId, setSavingStoreId] = useState(null)
   const [togglingAutoPackId, setTogglingAutoPackId] = useState(null)
+  const [togglingShippingPrefId, setTogglingShippingPrefId] = useState(null)
   const [autoSyncEnabled, setAutoSyncEnabledState] = useState(() => getAutoSyncOrdersEnabled())
   // Push: source of truth is whether THIS browser currently holds a
   // subscription (read on mount). Default OFF until opted in.
@@ -387,6 +395,35 @@ export default function Settings() {
     }
   }
 
+  // Read by BOTH auto-pack and the manual Pack button (see selectShippingMethod
+  // in api/_lib/shopeeShip.js) — it decides WHICH method gets picked when an
+  // order's info_needed offers a choice, independent of auto-pack's on/off
+  // toggle above. 'none' in the UI maps to null (no preference) in the DB.
+  async function handleChangeShippingPreference(store, uiValue) {
+    const next = uiValue === 'none' ? null : uiValue
+    setTogglingShippingPrefId(store.id)
+    try {
+      const { error } = await supabase
+        .from('stores')
+        .update({ preferred_shipping_method: next })
+        .eq('id', store.id)
+
+      if (error) {
+        toast.error(t('settings.connectedStores.shippingPreference.errorToast'))
+        return
+      }
+
+      setStores((prev) =>
+        prev.map((s) => (s.id === store.id ? { ...s, preferred_shipping_method: next } : s))
+      )
+      toast.success(t('settings.connectedStores.shippingPreference.updatedToast'))
+    } catch {
+      toast.error(t('settings.connectedStores.shippingPreference.errorToast'))
+    } finally {
+      setTogglingShippingPrefId(null)
+    }
+  }
+
   function handleStartEditName(store) {
     setEditingStoreId(store.id)
     setEditingName(store.shop_name || '')
@@ -423,6 +460,15 @@ export default function Settings() {
       setSavingStoreId(null)
     }
   }
+
+  const shippingPreferenceOptions = useMemo(
+    () => [
+      { value: 'none', label: t('settings.connectedStores.shippingPreference.none') },
+      { value: 'pickup', label: t('settings.connectedStores.shippingPreference.pickup') },
+      { value: 'dropoff', label: t('settings.connectedStores.shippingPreference.dropoff') },
+    ],
+    [t]
+  )
 
   return (
     <div className="pb-24">
@@ -599,6 +645,44 @@ export default function Settings() {
                           name: store.shop_name || store.shop_id,
                         })}
                       />
+                    </div>
+                  )}
+                  {isShopee && (
+                    <div className="mt-2 flex items-center justify-between rounded-lg bg-[#F9FAFB] px-3 py-2">
+                      <div>
+                        <p className="text-xs font-medium text-[#1F2937]">
+                          {t('settings.connectedStores.shippingPreference.title')}
+                        </p>
+                        <p className="text-[11px] text-[#6B7280]">
+                          {t('settings.connectedStores.shippingPreference.description')}
+                        </p>
+                      </div>
+                      {/* Three-state (none/pickup/dropoff), so a Switch won't do —
+                          `items` is required for SelectValue to render the LABEL
+                          rather than the raw value, same contract as the Sales
+                          page's store picker. */}
+                      <Select
+                        items={shippingPreferenceOptions}
+                        value={store.preferred_shipping_method ?? 'none'}
+                        onValueChange={(value) => handleChangeShippingPreference(store, value)}
+                        disabled={togglingShippingPrefId === store.id}
+                      >
+                        <SelectTrigger
+                          className="h-8 w-[132px] shrink-0 rounded-lg border-[#E5E7EB] !bg-white text-xs text-[#1F2937]"
+                          aria-label={t('settings.connectedStores.shippingPreference.toggleAria', {
+                            name: store.shop_name || store.shop_id,
+                          })}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="border border-[#E5E7EB] bg-white text-[#1F2937]">
+                          {shippingPreferenceOptions.map((o) => (
+                            <SelectItem key={o.value} value={o.value}>
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                   )}
                   {isShopee ? (

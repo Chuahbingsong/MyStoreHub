@@ -312,7 +312,13 @@ async function handler(req, res) {
       // allowIncomplete: true — a human is present here (manual Pack button),
       // so let Shopee's own validation be the final word on an incomplete
       // info_needed rather than refusing to try. Auto-pack does not do this.
-      const { method } = await shipOrder(freshStore, order_sn, { allowIncomplete: true });
+      // preferredMethod is the store's policy and applies here too — same as
+      // auto-pack — so a manual pack doesn't contradict what auto-pack would
+      // have chosen for the same order.
+      const { method } = await shipOrder(freshStore, order_sn, {
+        allowIncomplete: true,
+        preferredMethod: store.preferred_shipping_method ?? null,
+      });
       // ship_order arranges the shipment; Shopee moves the order to PROCESSED
       // ("seller is preparing the parcel"). It only becomes SHIPPED once the
       // courier collects, which the next sync picks up.

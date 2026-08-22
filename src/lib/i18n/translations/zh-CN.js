@@ -125,6 +125,16 @@ export default {
         disabledToast: '已为该店铺关闭自动打包',
         errorToast: '更新自动打包设置失败。',
       },
+      shippingPreference: {
+        title: '首选配送方式',
+        description: '当订单可选择配送方式时使用',
+        toggleAria: '设置 {{name}} 的首选配送方式',
+        none: '无偏好',
+        pickup: '上门取件',
+        dropoff: '自行寄件',
+        updatedToast: '首选配送方式已更新',
+        errorToast: '更新配送偏好失败。',
+      },
       sync: {
         ordersButton: '同步订单',
         productsButton: '同步商品',

@@ -272,3 +272,21 @@ alter table orders add column if not exists buyer_message text;
 -- buyer_message from the eligible set, stamping auto_pack_status: 'skipped'
 -- immediately rather than waiting out the age filter.
 create index if not exists idx_orders_store_id_buyer_message on orders (store_id) where buyer_message is not null;
+
+-- Per-store shipping method preference (see api/_lib/shopeeShip.js's
+-- selectShippingMethod): honoured for orders whose info_needed offers the
+-- preferred method, falling back to pickup -> dropoff -> non_integrated
+-- priority when it doesn't or when null (no preference). non_integrated is
+-- not an allowed value — it always requires seller-supplied tracking info
+-- regardless of preference, so there is nothing to "prefer" about it.
+alter table stores add column if not exists preferred_shipping_method text;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'stores_preferred_shipping_method_check'
+  ) then
+    alter table stores add constraint stores_preferred_shipping_method_check
+      check (preferred_shipping_method in ('pickup', 'dropoff'));
+  end if;
+end $$;

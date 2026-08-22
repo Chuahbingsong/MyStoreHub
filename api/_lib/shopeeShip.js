@@ -183,9 +183,19 @@ async function getShippingParameter(store, orderSn) {
  * pickup/dropoff object: Shopee returns both objects regardless, and only
  * info_needed says which one this order's channel actually accepts. An empty
  * array is still a valid selection — it means "this method, no extra fields".
+ *
+ * Some orders name BOTH pickup and dropoff in info_needed (confirmed against
+ * live data). preferredMethod (stores.preferred_shipping_method — 'pickup',
+ * 'dropoff', or null) wins whenever info_needed actually offers it; otherwise
+ * this falls back to the pickup -> dropoff -> non_integrated priority below,
+ * same as when there is no preference at all.
  */
-function selectShippingMethod(shippingParam) {
+function selectShippingMethod(shippingParam, preferredMethod = null) {
   const infoNeeded = shippingParam.info_needed ?? {};
+
+  if (preferredMethod && Array.isArray(infoNeeded[preferredMethod])) {
+    return { method: preferredMethod, fields: infoNeeded[preferredMethod] };
+  }
 
   if (Array.isArray(infoNeeded.pickup)) return { method: 'pickup', fields: infoNeeded.pickup };
   if (Array.isArray(infoNeeded.dropoff)) return { method: 'dropoff', fields: infoNeeded.dropoff };
@@ -215,10 +225,15 @@ function selectPickupAddress(shippingParam) {
  * options.blockPickup: when true, a resolved method of 'pickup' throws
  * PickupRequiresManualError immediately — before selectPickupAddress or any
  * other auto-fill runs — instead of picking time_slot_list[0] on the
- * seller's behalf.
+ * seller's behalf. This fires purely on the RESOLVED method, so a store
+ * preferring dropoff sails through untouched whenever info_needed actually
+ * offers dropoff — only a resolved pickup ever needs the human time-slot call.
+ *
+ * options.preferredMethod: passed straight through to selectShippingMethod
+ * (see there for the fallback rule).
  */
-function buildShipOrderBody(orderSn, shippingParam, { blockPickup = false } = {}) {
-  const { method, fields } = selectShippingMethod(shippingParam);
+function buildShipOrderBody(orderSn, shippingParam, { blockPickup = false, preferredMethod = null } = {}) {
+  const { method, fields } = selectShippingMethod(shippingParam, preferredMethod);
   const body = { order_sn: orderSn };
 
   console.log(`[shopee-ship] info_needed selects method "${method ?? '(none)'}", fields: ${fields.join(', ') || '(none)'}`);
@@ -294,16 +309,27 @@ function buildShipOrderBody(orderSn, shippingParam, { blockPickup = false } = {}
  * best-effort body anyway — including the time_slot_list[0] pickup default —
  * and lets Shopee's own validation be the final word, matching prior
  * behavior exactly. Both errors are gated on this one flag so a human using
- * the manual button never sees new behavior.
+ * the manual button never sees new behavior. This is purely human-present
+ * leniency and stays manual-only — it does not decide WHICH method gets
+ * picked, only how forgiving we are once one has been.
+ *
+ * options.preferredMethod: the store's policy (stores.preferred_shipping_method
+ * — 'pickup', 'dropoff', or null), applied identically for both auto-pack and
+ * the manual Pack button. Decides WHICH method selectShippingMethod resolves
+ * to when info_needed offers a choice; independent of allowIncomplete. A
+ * preference resolving to 'dropoff' sails straight through — blockPickup only
+ * ever fires on a RESOLVED pickup, so auto-pack still proceeds normally in
+ * that case instead of throwing PickupRequiresManualError.
  *
  * Returns { data, method } — `method` is whichever of pickup/dropoff/
  * non_integrated info_needed selected (see selectShippingMethod), so callers
  * can persist it instead of it living only in the console.log lines above.
  */
-export async function shipOrder(store, orderSn, { allowIncomplete = false } = {}) {
+export async function shipOrder(store, orderSn, { allowIncomplete = false, preferredMethod = null } = {}) {
   const shippingParam = await getShippingParameter(store, orderSn);
   const { body, method, missing } = buildShipOrderBody(orderSn, shippingParam, {
     blockPickup: !allowIncomplete,
+    preferredMethod,
   });
 
   if (missing.length > 0) {

@@ -133,6 +133,16 @@ export default {
         disabledToast: 'Auto-pack disabled for this store',
         errorToast: 'Failed to update auto-pack setting.',
       },
+      shippingPreference: {
+        title: 'Preferred shipping method',
+        description: 'Used when an order offers a choice of method',
+        toggleAria: 'Set preferred shipping method for {{name}}',
+        none: 'No preference',
+        pickup: 'Pickup',
+        dropoff: 'Drop-off',
+        updatedToast: 'Preferred shipping method updated',
+        errorToast: 'Failed to update shipping preference.',
+      },
       sync: {
         ordersButton: 'Sync Orders',
         productsButton: 'Sync Products',

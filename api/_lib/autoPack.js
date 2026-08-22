@@ -145,8 +145,12 @@ export async function autoPackStore(store, options = {}) {
       // allowIncomplete defaults to false: if info_needed requires a field we
       // can't fill (e.g. a non_integrated channel's seller-supplied
       // tracking_number), skip this order rather than send a doomed request —
-      // no one is present to notice ship_order failed.
-      const { method } = await shipOrder(freshStore, orderSn);
+      // no one is present to notice ship_order failed. preferredMethod is a
+      // separate, independent concern (store policy, not leniency) — see
+      // shipOrder's docstring in shopeeShip.js.
+      const { method } = await shipOrder(freshStore, orderSn, {
+        preferredMethod: freshStore.preferred_shipping_method ?? null,
+      });
 
       await supabaseAdmin
         .from('orders')
