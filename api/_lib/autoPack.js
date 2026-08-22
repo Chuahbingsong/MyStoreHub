@@ -9,11 +9,15 @@ import {
 } from './shopeeShip.js';
 
 // A buyer who cancels an order BEFORE shipment is arranged gets an automatic,
-// no-penalty cancellation on Shopee's side. Arranging shipment closes that
-// window instantly. This delay leaves it open for a while even when
-// auto-pack is on, at effectively no cost (packing 15 minutes later doesn't
-// matter operationally).
-export const AUTO_PACK_MIN_AGE_MS = 15 * 60 * 1000;
+// no-penalty cancellation on Shopee's side. Arranging shipment (ship_order)
+// closes that window instantly. This delay leaves it open for a while even
+// when auto-pack is on. Shorter delays mean packing (and closing the
+// cancellation window on) orders that buyers might still cancel for free, so
+// this is a tradeoff between speed and that window's length, not a free
+// lever. In practice the floor is the cron interval (every 2 minutes as of
+// this writing) — any value below that behaves the same as the interval
+// itself, since orders are only ever checked once per run.
+export const AUTO_PACK_MIN_AGE_MS = 1 * 60 * 1000;
 
 // Caps how many orders one run touches per store, so a backlog (e.g.
 // auto-pack just turned on with 200 READY_TO_SHIP orders sitting around)
