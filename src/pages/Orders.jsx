@@ -1913,8 +1913,16 @@ export default function Orders() {
         </div>
       </div>
 
+      {/* Deliberately refetchOrders, NOT handleSync — pull-to-refresh must feel
+          instant (BigSeller's behaviour), not take the 5-15s/store a full
+          Shopee sync does across four stores. The sync cron already runs
+          every 2 minutes, so Supabase is rarely more than a couple of
+          minutes stale; a cache revalidation is enough for a manual pull.
+          The header Sync button is still there for a user who explicitly
+          wants to force a full Shopee sync. Do not "fix" this back to
+          handleSync. */}
       <PullToRefresh
-        onRefresh={handleSync}
+        onRefresh={refetchOrders}
         className={cn('min-h-0 flex-1 overflow-y-auto', selectionMode ? 'pb-40' : 'pb-24')}
       >
       <div className="flex gap-2 overflow-x-auto px-4 py-2.5">
