@@ -116,7 +116,17 @@ const OTHER_TAB = 'other'
 // 'To Pack' (READY_TO_SHIP) buckets into the "New Orders" tab — that's the
 // point where the seller actually needs to act (call ship_order).
 // 'Unpaid' (UNPAID) gets its own tab: it can never be packed until Shopee
-// itself flips the order to READY_TO_SHIP once the buyer pays.
+// itself flips the order to READY_TO_SHIP once the buyer pays. EXCEPT Cash
+// on Delivery: there's no payment gateway to wait on, so a COD order sitting
+// at UNPAID is just Shopee's normal brief pre-confirmation window, not a
+// buyer who hasn't paid — see isCodPayment() and getOrderTab() below. It's
+// bucketed into "New Orders" alongside READY_TO_SHIP so the seller sees it
+// where they're already looking, rather than in a tab whose whole point is
+// "nothing to do yet, still waiting on the buyer." This is purely a tab
+// placement — Pack button (STATUS.TO_PACK guard below) and auto-pack
+// (api/_lib/autoPack.js) both key off order_status === 'READY_TO_SHIP', not
+// tab, so a COD order still at UNPAID simply shows no Pack button yet,
+// exactly like INVOICE_PENDING already does in this same tab.
 // 'To Confirm Receipt' (courier has it, buyer hasn't confirmed) buckets into
 // Shipped — from the seller's point of view there's nothing left to do.
 // 'Cancel Requested' (IN_CANCEL, a BUYER-initiated cancellation awaiting the
@@ -171,9 +181,20 @@ const STATUS_TO_TAB = {
   [STATUS.CANCELLED]: 'cancelled',
 }
 
+// Mirrors the COD payment_method match in supabase/actionable_orders_migration.sql
+// (the Dashboard's "Orders Today"/Revenue carve-out) so tab placement and the
+// Dashboard agree on what counts as COD. Kept in sync manually — there's no
+// shared JS/SQL source for this, so if a platform adds a new COD spelling it
+// needs updating in both places.
+function isCodPayment(payment) {
+  const p = (payment || '').trim().toLowerCase()
+  return p === 'cash on delivery' || p === 'cod'
+}
+
 // Defensive lookup — always resolves to a real, visible tab, even for a
 // status this app has never seen before (statusKey null, see mapSupabaseOrder).
 function getOrderTab(order) {
+  if (order.statusKey === STATUS.UNPAID && isCodPayment(order.payment)) return 'new'
   return (order.statusKey ? STATUS_TO_TAB[order.statusKey] : undefined) ?? OTHER_TAB
 }
 
