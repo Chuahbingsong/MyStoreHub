@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Check, Copy, Loader2, Package, Printer, RefreshCw, ScanLine, Search, Truck, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -16,11 +17,13 @@ import {
 } from '@/components/ui/sheet'
 import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
 import PrintAwbMarkPrintedDialog from '@/components/PrintAwbMarkPrintedDialog'
+import PullToRefresh from '@/components/PullToRefresh'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import { getAutoSyncOrdersEnabled } from '@/lib/preferences'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
+import { useForegroundRefresh } from '@/hooks/useForegroundRefresh'
 import {
   deliverPdf,
   describeFailedOrders,
@@ -915,6 +918,49 @@ function OrderCard({
   )
 }
 
+const ORDERS_QUERY_KEY = ['orders', 'list']
+
+// The query function React Query calls to (re)populate ORDERS_QUERY_KEY.
+// Same selectAllPaged logic and query shape fetchOrders always used — this
+// is only a change in WHEN it runs (React Query's cache-then-refresh
+// lifecycle instead of a mount-only useEffect), not what it fetches.
+// Module-level and side-effect-free: it returns everything the component
+// needs (including hasShopeeStore, previously a ref side effect) rather than
+// calling any setState itself.
+async function fetchOrdersQuery() {
+  const [ordersRes, storesRes] = await Promise.all([
+    selectAllPaged(
+      'orders.list',
+      (from, to) =>
+        supabase
+          .from('orders')
+          .select('*, order_items(*)')
+          .order('order_created_at', { ascending: false })
+          .range(from, to),
+      { maxRows: ORDERS_CEILING }
+    ),
+    supabase.from('stores').select('id, shop_id, shop_name, platform'),
+  ])
+
+  const hasShopeeStore = (storesRes.data ?? []).some((store) => store.platform === 'shopee')
+
+  const storeNames = {}
+  ;(storesRes.data ?? []).forEach((store) => {
+    storeNames[store.id] = store.shop_name || store.shop_id
+  })
+
+  const orders =
+    !ordersRes.error && ordersRes.data
+      ? ordersRes.data.map((row) => mapSupabaseOrder(row, storeNames))
+      : []
+
+  return {
+    orders,
+    ordersTruncated: ordersRes.truncated === true,
+    hasShopeeStore,
+  }
+}
+
 export default function Orders() {
   const { t } = useTranslation()
   const { formatDateTime, formatShortAgo } = useDateTime()
@@ -927,11 +973,6 @@ export default function Orders() {
   const [previewImage, setPreviewImage] = useState(null)
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState(new Set())
-  const [orders, setOrders] = useState([])
-  // True only when the paged fetch hit ORDERS_CEILING, i.e. the list on screen
-  // really is incomplete. Surfaced to the user — never silently swallowed.
-  const [ordersTruncated, setOrdersTruncated] = useState(false)
-  const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [printingId, setPrintingId] = useState(null)
   const [bulkPrinting, setBulkPrinting] = useState(false)
@@ -955,10 +996,10 @@ export default function Orders() {
   const autoSyncErrorShownRef = useRef(false)
   const selectionModeRef = useRef(selectionMode)
   // Whether this account has at least one connected Shopee store. Defaults to
-  // true (fail open) so the very first render — before fetchOrders' stores
-  // query has resolved — doesn't skip a legitimate sync. performSync reads
-  // this via a ref (not state) since it's a useCallback with an empty dep
-  // array, same convention as the other auto-sync refs above.
+  // true (fail open) so the very first render — before the orders query's
+  // stores fetch has resolved — doesn't skip a legitimate sync. performSync
+  // reads this via a ref (not state) since it's a useCallback with an empty
+  // dep array, same convention as the other auto-sync refs above.
   const hasShopeeStoreRef = useRef(true)
 
   useEffect(() => {
@@ -982,60 +1023,65 @@ export default function Orders() {
     [setSearchParams]
   )
 
-  const fetchOrders = useCallback(async () => {
-    setLoading(true)
-    // PAGED to completeness rather than one unbounded select, which silently
-    // stopped at PostgREST's 1000-row cap and hid 244 real orders — invisible
-    // to search, tabs and filters alike, because all three run client-side over
-    // this array.
-    //
-    // Paging (not a bigger .limit()) because a bigger number is the same bug
-    // with a later fuse. This page genuinely needs every row: the tab counts,
-    // the platform counts and "Print All" are all computed across the whole
-    // set, so a windowed or server-filtered fetch would silently wrong those
-    // counts instead — a worse failure than a slow load.
-    //
-    // ORDERS_CEILING bounds the worst case. Past it the list IS incomplete, and
-    // that is surfaced in the UI (see the banner below) rather than being
-    // swallowed the way the 1000-row cap was. If this ever trips in practice,
-    // the real fix is server-side filtering with server-computed tab counts —
-    // a rewrite of this page's data model, not another number bump.
-    const [ordersRes, storesRes] = await Promise.all([
-      selectAllPaged(
-        'orders.list',
-        (from, to) =>
-          supabase
-            .from('orders')
-            .select('*, order_items(*)')
-            .order('order_created_at', { ascending: false })
-            .range(from, to),
-        { maxRows: ORDERS_CEILING }
-      ),
-      supabase.from('stores').select('id, shop_id, shop_name, platform'),
-    ])
+  // Cache-then-refresh (trial — Orders only, see queryClient.js): isPending
+  // is true only when there's genuinely nothing cached yet, so a page
+  // revisit (cache already populated from a previous mount) paints instantly
+  // with no skeleton while React Query silently revalidates in the
+  // background (isFetching, not surfaced as a spinner here).
+  //
+  // PAGED to completeness inside fetchOrdersQuery rather than one unbounded
+  // select, which silently stopped at PostgREST's 1000-row cap and hid 244
+  // real orders — invisible to search, tabs and filters alike, because all
+  // three run client-side over this array.
+  //
+  // Paging (not a bigger .limit()) because a bigger number is the same bug
+  // with a later fuse. This page genuinely needs every row: the tab counts,
+  // the platform counts and "Print All" are all computed across the whole
+  // set, so a windowed or server-filtered fetch would silently wrong those
+  // counts instead — a worse failure than a slow load.
+  //
+  // ORDERS_CEILING bounds the worst case. Past it the list IS incomplete, and
+  // that is surfaced in the UI (see the banner below) rather than being
+  // swallowed the way the 1000-row cap was. If this ever trips in practice,
+  // the real fix is server-side filtering with server-computed tab counts —
+  // a rewrite of this page's data model, not another number bump.
+  const queryClient = useQueryClient()
+  const { data: ordersData, isPending: loading } = useQuery({
+    queryKey: ORDERS_QUERY_KEY,
+    queryFn: fetchOrdersQuery,
+  })
 
-    setOrdersTruncated(ordersRes.truncated === true)
+  // useMemo (not a bare `?? []`) so the fallback empty array keeps one stable
+  // identity across renders while ordersData is still undefined — otherwise
+  // a fresh [] every render would make tabCounts/platformCounts below think
+  // `orders` changed and recompute on every render for no reason.
+  const orders = useMemo(() => ordersData?.orders ?? [], [ordersData])
+  // True only when the paged fetch hit ORDERS_CEILING, i.e. the list on screen
+  // really is incomplete. Surfaced to the user — never silently swallowed.
+  const ordersTruncated = ordersData?.ordersTruncated ?? false
 
-    // Gates performSync below — see hasShopeeStoreRef.
-    hasShopeeStoreRef.current = (storesRes.data ?? []).some((store) => store.platform === 'shopee')
-
-    const storeNames = {}
-    ;(storesRes.data ?? []).forEach((store) => {
-      storeNames[store.id] = store.shop_name || store.shop_id
-    })
-
-    if (!ordersRes.error && ordersRes.data) {
-      setOrders(ordersRes.data.map((row) => mapSupabaseOrder(row, storeNames)))
-    } else {
-      setOrders([])
-    }
-    setLoading(false)
-  }, [])
-
+  // Gates performSync below — see hasShopeeStoreRef. Synced from query data
+  // (rather than set inline in the query function) since fetchOrdersQuery is
+  // side-effect-free by design — it only returns data, React Query owns when
+  // it runs.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    fetchOrders()
-  }, [fetchOrders])
+    hasShopeeStoreRef.current = ordersData?.hasShopeeStore ?? true
+  }, [ordersData])
+
+  // Stable identity (queryClient never changes) — safe to use inside the
+  // empty-dep-array useCallbacks below (performSync/runAutoSync) the same
+  // way fetchOrders used to be, and awaiting it resolves once the refetch
+  // actually completes, same as the old awaited fetchOrders() calls.
+  const refetchOrders = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ORDERS_QUERY_KEY }),
+    [queryClient]
+  )
+
+  // Foreground refresh (trial — Orders only): re-pulls from Supabase when the
+  // app returns after being backgrounded 30s+. This refreshes the CACHE
+  // (already-synced rows), not a Shopee sync — the 60s runAutoSync timer
+  // below stays the only thing that talks to Shopee.
+  useForegroundRefresh(refetchOrders, { minBackgroundMs: 30_000 })
 
   // Shared sync core for both the manual Sync button and the 60s auto-sync
   // tick. Does the network call only — no toasts, no spinner state — so each
@@ -1109,7 +1155,7 @@ export default function Orders() {
         return
       }
 
-      await fetchOrders()
+      await refetchOrders()
       setLastSyncedAt(Date.now())
       setHasMorePending(Boolean(result.data?.hasMore))
       autoSyncErrorShownRef.current = false
@@ -1154,14 +1200,14 @@ export default function Orders() {
           autoSyncErrorShownRef.current = true
         }
         if (result.ok) {
-          await fetchOrders()
+          await refetchOrders()
           setLastSyncedAt(Date.now())
           setHasMorePending(Boolean(result.data?.hasMore))
         }
         return
       }
 
-      await fetchOrders()
+      await refetchOrders()
       setLastSyncedAt(Date.now())
       setHasMorePending(Boolean(result.data?.hasMore))
       autoSyncErrorShownRef.current = false
@@ -1170,7 +1216,7 @@ export default function Orders() {
     }
     // `t` is a dependency because the auto-sync failure toast reads it; its
     // identity only changes on a locale switch.
-  }, [performSync, fetchOrders, t])
+  }, [performSync, refetchOrders, t])
 
   // 60s auto-sync: only while this page is mounted, the tab is visible, and
   // the user has the preference on. Reads the localStorage toggle once at
@@ -1284,7 +1330,7 @@ export default function Orders() {
         accessToken: session.access_token,
         orderSnList: [order.platform_order_id],
       })
-      await fetchOrders()
+      await refetchOrders()
     } catch (err) {
       console.error('[print-awb] request failed', err)
       toast.error(describeRequestError(t, err, t('orders.printAwb.error')))
@@ -1326,7 +1372,7 @@ export default function Orders() {
 
   async function handleConfirmPendingAwbPrint() {
     await confirmPendingAwbPrint()
-    await fetchOrders()
+    await refetchOrders()
   }
 
   // tapAt: Date.now() at the button tap, from requestBulkPrintAWB above — the only caller.
@@ -1429,7 +1475,7 @@ export default function Orders() {
         )
       }
 
-      await fetchOrders()
+      await refetchOrders()
     } catch (err) {
       console.error('[bulk-print] request failed', err)
       toast.error(describeRequestError(t, err, t('orders.printAwb.bulkError')))
@@ -1465,7 +1511,7 @@ export default function Orders() {
       }
 
       toast.success(t('orders.pack.success'))
-      await fetchOrders()
+      await refetchOrders()
     } catch (err) {
       console.error('[pack-order] request failed', err)
       toast.error(describeRequestError(t, err, t('orders.pack.error')))
@@ -1498,7 +1544,7 @@ export default function Orders() {
       }
 
       if (!silent) toast.success(t('orders.ship.success'))
-      if (!skipRefetch) await fetchOrders()
+      if (!skipRefetch) await refetchOrders()
       return true
     } catch (err) {
       console.error('[ship-order] request failed', err)
@@ -1537,7 +1583,7 @@ export default function Orders() {
       }
 
       if (!silent) toast.success(t('orders.cancel.success'))
-      if (!skipRefetch) await fetchOrders()
+      if (!skipRefetch) await refetchOrders()
       return true
     } catch (err) {
       console.error('[cancel-order] request failed', err)
@@ -1594,7 +1640,7 @@ export default function Orders() {
       // Always refetch: whether it succeeded, was already resolved, or failed,
       // the order's real status may have moved — pulling it fresh clears any
       // stale row + dead buttons.
-      await fetchOrders()
+      await refetchOrders()
 
       if (!ok) {
         toast.error(error || t(`orders.buyerCancel.error.${decisionKey}`))
@@ -1642,7 +1688,7 @@ export default function Orders() {
         toast.error(t('orders.bulk.shipError'))
       }
 
-      await fetchOrders()
+      await refetchOrders()
       setSelectionMode(false)
       setSelectedIds(new Set())
     } finally {
@@ -1683,7 +1729,7 @@ export default function Orders() {
         toast.error(t('orders.bulk.cancelError'))
       }
 
-      await fetchOrders()
+      await refetchOrders()
       setSelectionMode(false)
       setSelectedIds(new Set())
     } finally {
@@ -1758,8 +1804,8 @@ export default function Orders() {
   }
 
   return (
-    <div className={cn('pb-24', selectionMode && 'pb-40')}>
-      <div className="sticky top-0 z-10 bg-[#FAF9F6] px-4 pt-4">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 bg-[#FAF9F6] px-4 pt-4">
         <div className="flex items-center justify-between gap-2 pb-3">
           <h1 className="text-xl font-bold tracking-tight text-[#1F2937]">{t('orders.title')}</h1>
           <div className="flex items-center gap-2">
@@ -1867,6 +1913,10 @@ export default function Orders() {
         </div>
       </div>
 
+      <PullToRefresh
+        onRefresh={handleSync}
+        className={cn('min-h-0 flex-1 overflow-y-auto', selectionMode ? 'pb-40' : 'pb-24')}
+      >
       <div className="flex gap-2 overflow-x-auto px-4 py-2.5">
         {PLATFORM_FILTERS.map((platform) => {
           const active = platformFilter === platform
@@ -1989,6 +2039,7 @@ export default function Orders() {
           ))
         )}
       </div>
+      </PullToRefresh>
 
       {selectionMode && (
         <div className="fixed inset-x-0 bottom-16 z-40 flex items-center justify-between gap-2 border-t border-[#E8E6E1] bg-white px-4 py-3.5 shadow-[0_-2px_8px_-2px_rgb(15_23_42_/_0.08)]">

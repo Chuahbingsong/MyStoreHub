@@ -48,6 +48,13 @@ export default {
     boost: 'Boost',
     more: 'More',
   },
+  // Shared pull-to-refresh indicator (src/components/PullToRefresh.jsx) —
+  // not owned by any one page, same precedent as status/errors above.
+  pullToRefresh: {
+    pull: 'Pull to refresh',
+    release: 'Release to refresh',
+    refreshing: 'Refreshing…',
+  },
   login: {
     subtitle: 'Seller Management Dashboard',
     emailLabel: 'Email',

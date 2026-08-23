@@ -43,6 +43,11 @@ export default {
     products: '商品',
     more: '更多',
   },
+  pullToRefresh: {
+    pull: '下拉刷新',
+    release: '松开刷新',
+    refreshing: '正在刷新…',
+  },
   login: {
     subtitle: '卖家管理后台',
     emailLabel: '邮箱',
