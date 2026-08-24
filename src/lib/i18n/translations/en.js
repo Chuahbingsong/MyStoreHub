@@ -630,7 +630,7 @@ export default {
     // Stated in the UI rather than buried in a tooltip: which orders count is
     // the single assumption a revenue figure rests on.
     basis:
-      'Counts processed, shipped, to-confirm, completed and retry-ship orders. Excludes unpaid, cancelled and returns. Days run 00:00–24:00 Malaysia time.',
+      'Counts processed, shipped, to-confirm, completed and retry-ship orders. Excludes unpaid, cancelled and returns. Grouped by payment date (order date if payment date isn’t recorded). Days run 00:00–24:00 Malaysia time.',
     error: 'Could not load the sales report. The database function may not be installed yet.',
   },
   orders: {

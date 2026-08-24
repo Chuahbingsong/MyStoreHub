@@ -23,6 +23,12 @@
 create index if not exists idx_orders_created_at
   on orders (order_created_at);
 
+-- Already created by actionable_orders_migration.sql; included here too so
+-- this file is runnable standalone. Backs the coalesce(paid_at, ...) window
+-- filter below the same way idx_orders_created_at backs the old plain filter.
+create index if not exists idx_orders_paid_at
+  on orders (paid_at);
+
 -- ---------------------------------------------------------------------------
 -- daily_sales(p_days)
 --
@@ -31,15 +37,16 @@ create index if not exists idx_orders_created_at
 -- sums anything.
 --
 -- TIMEZONE — the thing most likely to be got wrong later:
---   order_created_at is timestamptz. A naive ::date cast would bucket by UTC,
---   which shifts every boundary 8 hours and puts orders placed between 00:00
---   and 08:00 Malaysia time into the PREVIOUS day. On this account that is
---   162 of 1,290 orders (12.6%) landing on the wrong day, and it makes
+--   The date field (see DATE FIELD below) is timestamptz. A naive ::date cast
+--   would bucket by UTC, which shifts every boundary 8 hours and puts orders
+--   placed between 00:00 and 08:00 Malaysia time into the PREVIOUS day. On
+--   this account that was 162 of 1,290 orders (12.6%) landing on the wrong
+--   day when this was audited against order_created_at, and it makes
 --   "yesterday" simply wrong.
---   `order_created_at at time zone 'Asia/Kuala_Lumpur'` converts the
---   timestamptz to local wall-clock time in KL; ::date then takes the KL
---   calendar day. Named zone, not a hardcoded +8, so it stays correct if
---   Malaysia ever observes DST again (it did until 1935).
+--   `... at time zone 'Asia/Kuala_Lumpur'` converts the timestamptz to local
+--   wall-clock time in KL; ::date then takes the KL calendar day. Named zone,
+--   not a hardcoded +8, so it stays correct if Malaysia ever observes DST
+--   again (it did until 1935).
 --
 -- WHAT COUNTS AS A SALE — PER PLATFORM, because order_status holds each
 -- platform's RAW vocabulary (see api/_lib/*Sync.js: every sync writes the
@@ -90,13 +97,46 @@ create index if not exists idx_orders_created_at
 -- (it appears in the dashboard's platform grid but has no sync and no status
 -- map anywhere yet).
 --
--- The mirror of these lists in src/lib/salesReport.js is for display only and
--- follows this file; SQL is the source of truth.
+-- These lists are SQL-only now — src/lib/salesReport.js used to carry a
+-- display-only mirror (COUNTED_STATUSES_BY_PLATFORM / countsAsRevenue), but
+-- its one caller (the Dashboard's platform breakdown cards) was rewritten to
+-- read todays_actionable_orders()'s own per-store rows instead, so the JS
+-- copy was deleted rather than left to drift. This file is the only place
+-- this status rule is expressed.
 --
--- DATE FIELD:
---   order_created_at, NOT paid_at. paid_at is null on 166 of 1,290 orders
---   (12.9%) because Shopee returns pay_time: 0, so keying on it would silently
---   drop an eighth of all revenue.
+-- DATE FIELD (changed 2026-08-24 to match todays_actionable_orders() — see
+-- actionable_orders_migration.sql for the full audit this is based on):
+--   coalesce(paid_at, order_created_at), NOT plain order_created_at. Intent:
+--   an order counted here lands on the day it was PAID, so this report and
+--   the Dashboard's "Orders Today"/"Revenue" tiles bucket the SAME order onto
+--   the SAME day — tapping through from one to the other no longer means
+--   comparing two different calendars.
+--
+--   The fallback to order_created_at is load-bearing, not cosmetic:
+--     - Lazada: paid_at is ALWAYS null (its order API has no payment-time
+--       field — see api/_lib/lazadaSync.js). Every Lazada order counted here
+--       falls back to order_created_at, permanently.
+--     - COD (any platform) between PROCESSED/SHIPPED and completion: the
+--       platform only sets paid_at once it confirms cash was collected, which
+--       is at COMPLETED/DELIVERED/TO_CONFIRM_RECEIVE, days after the order
+--       was created (median 2, up to 9, in the 2026-08-24 audit) — so a COD
+--       order sitting in PROCESSED/SHIPPED (both counted statuses above) has
+--       no paid_at yet and also falls back to order_created_at.
+--     - Non-COD Shopee/TikTok: paid_at is set same-day as order_created_at
+--       (0% null in the audit), so the coalesce is a no-op there.
+--   Net effect versus the old order_created_at-only rule: no change for
+--   Lazada, no change for in-flight COD, no change for non-COD orders: the
+--   only orders that move are completed COD orders, which shift from their
+--   order-day to their (later) payment-day.
+--
+--   That shift is RETROACTIVE, the same caveat todays_actionable_orders()
+--   documents: a COD order in PROCESSED/SHIPPED counts today via the
+--   order_created_at fallback (paid_at still null); once it completes and
+--   the platform sets paid_at, a later query of THIS SAME p_days window can
+--   move that order to a different day, changing that earlier day's total.
+--   Anyone reconciling day-by-day against this function's past output should
+--   know a re-run is not guaranteed to reproduce an earlier run's per-day
+--   split for orders that completed in between.
 --
 -- Days with no sales come back as zeros rather than missing rows, so the chart
 -- has no phantom gaps and the caller never has to fill them.
@@ -134,7 +174,7 @@ as $$
          ) d
   ),
   -- The first instant of the window, back in timestamptz, so the WHERE clause
-  -- can still use the index on order_created_at instead of forcing a per-row
+  -- can still use the index on the date field instead of forcing a per-row
   -- timezone conversion across the whole table.
   window_start as (
     select ((bounds.today_kl - (bounds.n_days - 1))::timestamp
@@ -142,11 +182,15 @@ as $$
     from bounds
   ),
   scoped as (
-    select (o.order_created_at at time zone 'Asia/Kuala_Lumpur')::date as day,
+    select (coalesce(o.paid_at, o.order_created_at) at time zone 'Asia/Kuala_Lumpur')::date as day,
            o.store_id,
            coalesce(o.total_amount, 0) as amount
     from orders o
-    where o.order_created_at >= (select ts from window_start)
+    -- Filtered on the SAME coalesced expression as the bucket above, not
+    -- order_created_at alone: a COD order created up to 9 days ago can have
+    -- paid_at land inside this window, and filtering on order_created_at
+    -- would prune it out of the scan before the bucket logic ever saw it.
+    where coalesce(o.paid_at, o.order_created_at) >= (select ts from window_start)
       and (
         -- Shopee v2 order_status (SHOPEE_STATUS_MAP in src/pages/Orders.jsx)
         (o.platform = 'shopee' and o.order_status in (

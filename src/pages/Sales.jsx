@@ -21,8 +21,18 @@ import {
 } from '@/lib/salesReport'
 
 // Sales report. Every figure here comes from the daily_sales() RPC via
-// src/lib/salesReport.js — the same path the Dashboard's revenue tile uses, so
-// the two can never disagree. Nothing on this page sums orders client-side.
+// src/lib/salesReport.js. Nothing on this page sums orders client-side.
+//
+// This is a DIFFERENT, narrower question than the Dashboard's "Orders Today" /
+// "Revenue" tiles (todays_actionable_orders() RPC, see
+// supabase/actionable_orders_migration.sql): this page counts confirmed
+// revenue only — paid AND at least packed, unpaid and cancelled always
+// excluded — while the Dashboard also counts unpaid COD and to-pack orders as
+// "happened today". So today's figure here can be LOWER than the Dashboard's,
+// by design; see sales.basis below for the exact rule shown in the UI.
+// Both now bucket days the same way — coalesce(paid_at, order_created_at) —
+// so an order that appears in both reports always lands on the same day; the
+// two can still disagree on COUNT, just never on WHICH DAY.
 
 /**
  * ONE series, not four.

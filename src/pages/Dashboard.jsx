@@ -18,7 +18,6 @@ import { formatRelativeToNow } from '@/lib/i18n/datetime'
 import { statusKeyFor } from '@/lib/orderStatus'
 import {
   addDaysISO,
-  countsAsRevenue,
   fetchActionableOrdersReport,
   figuresForDay,
   formatRM,
@@ -82,17 +81,6 @@ const STATUS_CLASS = {
   cancelled: 'bg-red-500/15 text-red-600',
 }
 const DEFAULT_STATUS_CLASS = 'bg-gray-500/15 text-gray-600'
-
-function isToday(value) {
-  if (!value) return false
-  const d = new Date(value)
-  const now = new Date()
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  )
-}
 
 function formatRevenue(amount) {
   return `RM ${Math.round(amount).toLocaleString('en-MY')}`
@@ -166,9 +154,8 @@ export default function Dashboard() {
     // 1244 orders — and raising that number would just move the fuse.
     //
     // Instead each thing the dashboard actually derives is fetched as its own
-    // BOUNDED query, so cost is O(today + pending + 5·stores) and never grows
-    // with lifetime order count:
-    //   - today's orders  -> the stat tiles and per-platform breakdown
+    // BOUNDED query, so cost is O(pending + 5·stores) and never grows with
+    // lifetime order count:
     //   - READY_TO_SHIP   -> the "to pack" tile (previously counted across the
     //                        truncated page, so an old unshipped order past row
     //                        1000 would have gone uncounted)
@@ -176,23 +163,17 @@ export default function Dashboard() {
     //                        global limit because the store filter is applied
     //                        client-side; the global newest 5 is always a
     //                        subset of the union of each store's newest 5.
+    // The stat tiles and per-platform breakdown need no client-side order
+    // fetch at all — both read todays_actionable_orders() below, which is
+    // already bounded (days x (stores + 1) rows) and KL-timezone-correct in a
+    // way a client-side "today" boundary isn't.
     const storesRes = await supabase
       .from('stores')
       .select('id, platform, shop_name, shop_id')
       .order('created_at', { ascending: false })
     const storeRows = storesRes.data ?? []
 
-    const todayStart = new Date()
-    todayStart.setHours(0, 0, 0, 0)
-
-    const [todayRes, toPackRes, recentResults, productsRes] = await Promise.all([
-      selectAllPaged('dashboard.orders.today', (from, to) =>
-        supabase
-          .from('orders')
-          .select(ORDER_COLUMNS)
-          .gte('order_created_at', todayStart.toISOString())
-          .range(from, to)
-      ),
+    const [toPackRes, recentResults, productsRes] = await Promise.all([
       selectAllPaged('dashboard.orders.toPack', (from, to) =>
         supabase.from('orders').select(ORDER_COLUMNS).eq('order_status', 'READY_TO_SHIP').range(from, to)
       ),
@@ -211,10 +192,9 @@ export default function Dashboard() {
       ),
     ])
 
-    // The three order sets overlap (a READY_TO_SHIP order placed today appears
-    // in all of them), so merge on id before anything counts them.
+    // The two order sets overlap (a READY_TO_SHIP order can also be one of a
+    // store's 5 newest), so merge on id before anything counts them.
     const byId = new Map()
-    for (const row of todayRes.data ?? []) byId.set(row.id, row)
     for (const row of toPackRes.data ?? []) byId.set(row.id, row)
     for (const res of recentResults) for (const row of res.data ?? []) byId.set(row.id, row)
 
@@ -263,6 +243,13 @@ export default function Dashboard() {
     () => (store === 'all' ? products : products.filter((p) => p.store_id === store)),
     [products, store]
   )
+  // Feeds the platform breakdown below — a store belongs to exactly one
+  // platform, so scoping the RPC's per-store rows to this list before
+  // grouping by platform is equivalent to filtering orders by store.
+  const scopedStores = useMemo(
+    () => (store === 'all' ? stores : stores.filter((s) => s.id === store)),
+    [stores, store]
+  )
 
   const stats = useMemo(() => {
     const toPack = scopedOrders.filter((o) => o.order_status === 'READY_TO_SHIP').length
@@ -306,27 +293,28 @@ export default function Dashboard() {
 
   const platforms = useMemo(() => {
     const connectedSet = new Set(stores.map((s) => platformLabel(s.platform)))
-    const todaysOrders = scopedOrders.filter((o) => isToday(o.order_created_at))
+    const today = todayKL()
 
+    // Reuses todays_actionable_orders()'s per-store rows — the exact same
+    // data the top "Orders Today" / "Revenue" tiles read via seriesFor() —
+    // rather than re-deriving "today" and "counts as revenue" from
+    // scopedOrders with a second, separately-maintained rule. A store maps
+    // to exactly one platform, so summing each platform's stores' today
+    // figures reproduces the same coalesce(paid_at, order_created_at)
+    // bucketing and the same CANCELLED / non-COD-UNPAID exclusions the top
+    // tiles use, and the cards are therefore GUARANTEED to sum to the tile
+    // above them rather than merely usually agreeing with it.
     return PLATFORM_ORDER.map((name) => {
       const display = PLATFORM_DISPLAY[name]
-      const forPlatform = todaysOrders.filter((o) => platformLabel(o.platform) === name)
-      const count = forPlatform.length
-      // Same rule daily_sales() applies to the revenue tile above — see
-      // countsAsRevenue in src/lib/salesReport.js. This sum used to include
-      // EVERY status, so a card could claim revenue for a cancelled or unpaid
-      // order that the tile (correctly) left out, and the two would disagree
-      // for reasons no one could see. The counts beside them stay unfiltered
-      // on purpose: "orders today" is a different question from "revenue
-      // today", and the tile pair at the top of the page splits it the same
-      // way.
-      //
-      // Summing client-side is safe HERE and only here: today's orders are
-      // fetched in full via selectAllPaged, so there is no 1,000-row cap to
-      // silently truncate the way an all-time sum would.
-      const revenue = forPlatform.reduce(
-        (sum, o) => sum + (countsAsRevenue(o) ? Number(o.total_amount) || 0 : 0),
-        0
+      const forPlatform = scopedStores.filter((s) => platformLabel(s.platform) === name)
+      const { count, revenue } = forPlatform.reduce(
+        (acc, s) => {
+          const figures = figuresForDay(seriesFor(actionableReport, s.id), today)
+          acc.count += figures.orderCount
+          acc.revenue += figures.revenue
+          return acc
+        },
+        { count: 0, revenue: 0 }
       )
       return {
         name,
@@ -338,7 +326,7 @@ export default function Dashboard() {
         connected: connectedSet.has(name),
       }
     })
-  }, [stores, scopedOrders, t])
+  }, [stores, scopedStores, actionableReport, t])
 
   const recentOrders = useMemo(() => {
     return scopedOrders.slice(0, 5).map((row) => {
