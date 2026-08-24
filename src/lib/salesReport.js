@@ -143,10 +143,14 @@ export const ACTIONABLE_ORDERS_WINDOW_DAYS = 2
 
 /**
  * Fetches the order set behind the Dashboard's "Orders Today" and "Revenue"
- * tiles: ALL of today's (and yesterday's) orders EXCEPT cancelled orders and
- * unpaid orders that aren't Cash on Delivery. See
- * supabase/actionable_orders_migration.sql for the exact filter and the
- * payment_method strings it matches.
+ * tiles: ALL of today's (and yesterday's) PAID orders EXCEPT cancelled orders
+ * and unpaid orders that aren't Cash on Delivery. "Today" is keyed off
+ * coalesce(paid_at, order_created_at) — an order paid today counts today
+ * regardless of when it was placed — falling back to order_created_at for
+ * orders with no paid_at (all of Lazada, and in-flight COD before it's
+ * confirmed collected). See supabase/actionable_orders_migration.sql for the
+ * exact filter, the coalesce rationale, and the payment_method strings it
+ * matches.
  *
  * Deliberately a DIFFERENT rule from fetchSalesReport()/daily_sales() above —
  * this is not a revenue-recognition figure, it includes money not yet
