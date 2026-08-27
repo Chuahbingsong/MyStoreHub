@@ -1,6 +1,7 @@
 import webpush from 'web-push';
 import { supabaseAdmin } from './supabaseAdmin.js';
 import { acquireSyncLock, logSyncStart, logSyncComplete } from './shopeeSync.js';
+import { isNewOrderStatus, NEW_ORDER_CANDIDATE_RAW_STATUSES } from '../../src/lib/orderStatus.js';
 
 // Server-side Web Push sender, run from the cron path (api/cron/sync-all.js)
 // after a store's orders have been synced into Supabase. Sends ONE batched
@@ -19,16 +20,31 @@ import { acquireSyncLock, logSyncStart, logSyncComplete } from './shopeeSync.js'
 // own deadline, so there is no cross-store aggregation point to hook without
 // complicating the once-only stamping.
 
-// Shopee order_status values that count as "a new, actionable order" — the ones
-// that land in the Orders page "New Orders" tab. UNPAID is deliberately
-// excluded: an order sitting unpaid isn't yet something to act on.
-const NEW_ORDER_STATUSES = ['READY_TO_SHIP', 'INVOICE_PENDING'];
+// "New, actionable order" now means exactly what the Orders page's New
+// Orders tab means — see isNewOrderStatus() / isNewOrderStatusKey() in
+// src/lib/orderStatus.js, the ONE definition both the client tab routing
+// (getOrderTab() in src/pages/Orders.jsx) and this notifier read, so they
+// can't drift apart. That includes READY_TO_SHIP / INVOICE_PENDING (and the
+// TikTok/Lazada equivalents) as before, PLUS UNPAID orders paid Cash on
+// Delivery: Shopee's brief pre-confirmation window, not a buyer who hasn't
+// paid. A non-COD UNPAID order (e.g. cash at a physical store) still stays
+// silent until it actually leaves UNPAID.
+//
+// NEW_ORDER_CANDIDATE_RAW_STATUSES is a SUPERSET fetch filter (every raw
+// status that COULD qualify, across all three platforms) — the precise
+// per-row check happens below via isNewOrderStatus(), because whether an
+// UNPAID row qualifies depends on its payment_method, which no static status
+// list can encode.
 
 // Per-event cap. The COUNT shown in a batched notification MUST equal the
 // number of orders actually stamped this run — otherwise an order could be
-// counted here and again next run. Capping the candidate set caps both
-// together: any overflow simply becomes the next run's own (also once-only)
-// notification with its own smaller count.
+// counted here and again next run. For cancellations, and for the
+// READY_TO_SHIP/INVOICE_PENDING half of "new", capping the candidate SQL
+// fetch caps the stamped/notified count directly: any overflow simply
+// becomes the next run's own (also once-only) notification with its own
+// smaller count. The UNPAID+COD half is filtered again in JS afterwards (see
+// isNewOrderStatus below), so for that slice this caps candidates INSPECTED,
+// not guaranteed-stamped — see the note on newOrderCandidates.
 const MAX_NOTIFY_PER_RUN = 50;
 
 // Notification copy, per locale. Lives here rather than the React i18n layer in
@@ -199,17 +215,36 @@ export async function notifyStore(store, options = {}) {
   const logId = await logSyncStart(store.id, 'push');
 
   try {
-    // New actionable orders: never notified, currently in a "new" status.
-    const { data: newOrders, error: newErr } = await supabaseAdmin
+    // New actionable orders: never notified, currently in a status that COULD
+    // qualify (see NEW_ORDER_CANDIDATE_RAW_STATUSES above). Fetches
+    // platform/order_status/payment_method too, because the UNPAID+COD half
+    // of the rule can't be expressed as a static status list — it's resolved
+    // per-row by isNewOrderStatus() right after.
+    //
+    // NOTE: this candidate set is capped at MAX_NOTIFY_PER_RUN BEFORE the
+    // per-row filter runs, so a store with more than that many long-stale,
+    // never-resolving non-COD-UNPAID orders (e.g. cash-at-store orders no one
+    // ever collects) could in theory crowd out genuinely new orders created
+    // after them. Not a concern at current volumes; revisit if it ever is.
+    const { data: newOrderCandidates, error: newErr } = await supabaseAdmin
       .from('orders')
-      .select('id')
+      .select('id, platform, order_status, payment_method')
       .eq('store_id', store.id)
       .is('notified_new_at', null)
-      .in('order_status', NEW_ORDER_STATUSES)
+      .in('order_status', NEW_ORDER_CANDIDATE_RAW_STATUSES)
       .order('order_created_at', { ascending: true })
       .limit(MAX_NOTIFY_PER_RUN);
 
     if (newErr) throw new Error(`load new-order candidates: ${newErr.message}`);
+
+    // The precise rule — same one getOrderTab() applies on the Orders page —
+    // narrows the superset down to orders that actually belong in New Orders.
+    // Everything filtered out here (non-COD UNPAID) is left with
+    // notified_new_at still null, so it's picked back up once its status or
+    // payment info actually changes.
+    const newOrders = (newOrderCandidates ?? []).filter((o) =>
+      isNewOrderStatus(o.platform, o.order_status, o.payment_method)
+    );
 
     // Buyer-initiated cancellation requests: never notified, still in flight.
     const { data: cancelOrders, error: cancelErr } = await supabaseAdmin

@@ -207,3 +207,73 @@ export const RAW_STATUS_MAP_BY_PLATFORM = {
 export function statusKeyFor(platform, rawStatus) {
   return RAW_STATUS_MAP_BY_PLATFORM[platform]?.[rawStatus] ?? null
 }
+
+// Canonical status keys that land in Orders' "New Orders" tab via the plain
+// (non-UNPAID) path — mirrors the STATUS_TO_TAB entries in Orders.jsx that
+// read 'new'. UNPAID is handled separately below because it needs the COD
+// carve-out, not a static membership check.
+const NEW_TAB_STATUS_KEYS = new Set([STATUS.INVOICE_PENDING, STATUS.TO_PACK])
+
+// COD payment_method strings, case-insensitive/trimmed — audited against live
+// data (see supabase/actionable_orders_migration.sql): Shopee 'Cash on
+// Delivery', TikTok 'Cash on delivery', Lazada 'COD'. This is the ONE
+// definition Orders.jsx's tab routing, the Dashboard/report SQL, and the push
+// notifier all read — kept in sync with the SQL copy manually, since there's
+// no shared JS/SQL source.
+export function isCodPayment(payment) {
+  const p = (payment || '').trim().toLowerCase()
+  return p === 'cash on delivery' || p === 'cod'
+}
+
+/**
+ * The "New Orders" tab rule Orders.jsx's getOrderTab() applies, taking an
+ * already-resolved canonical status key. UNPAID orders only count as "new"
+ * when they're COD: no payment gateway to wait on, so a COD order sitting at
+ * UNPAID is just Shopee's brief pre-confirmation window, not a buyer who
+ * hasn't paid yet (see the fuller comment on getOrderTab in Orders.jsx).
+ */
+export function isNewOrderStatusKey(statusKey, paymentMethod) {
+  if (statusKey === STATUS.UNPAID) return isCodPayment(paymentMethod)
+  return NEW_TAB_STATUS_KEYS.has(statusKey)
+}
+
+/**
+ * Same rule as isNewOrderStatusKey, starting from a raw platform status
+ * instead of a pre-resolved key — for callers (api/_lib/pushNotify.js) that
+ * only have platform + the row's raw order_status, not a mapped UI row.
+ */
+export function isNewOrderStatus(platform, rawStatus, paymentMethod) {
+  return isNewOrderStatusKey(statusKeyFor(platform, rawStatus), paymentMethod)
+}
+
+// Raw platform status strings (any platform) whose canonical key is one of
+// `keys` — the inverse of statusKeyFor. Used where a caller needs a SQL
+// `.in()` candidate list rather than a single-row lookup.
+function rawStatusesForKeys(...keys) {
+  const keySet = new Set(keys)
+  const raws = new Set()
+  for (const map of Object.values(RAW_STATUS_MAP_BY_PLATFORM)) {
+    for (const [raw, key] of Object.entries(map)) {
+      if (keySet.has(key)) raws.add(raw)
+    }
+  }
+  return [...raws]
+}
+
+/**
+ * Every raw status (any platform) that CAN put an order in the "New Orders"
+ * tab: the raw spellings of INVOICE_PENDING / TO_PACK (READY_TO_SHIP,
+ * AWAITING_SHIPMENT, pending, ...) plus every raw UNPAID spelling (UNPAID,
+ * unpaid, ON_HOLD, ...). UNPAID only actually counts once isCodPayment()
+ * narrows it down to COD — same two-step rule isNewOrderStatusKey applies.
+ *
+ * This is a SUPERSET, not the final answer: it exists so a SQL `.in()` query
+ * (api/_lib/pushNotify.js) can fetch a candidate list from the database
+ * before doing the precise per-row isNewOrderStatus() check in JS, without
+ * hardcoding a second copy of "which raw strings mean what".
+ */
+export const NEW_ORDER_CANDIDATE_RAW_STATUSES = rawStatusesForKeys(
+  STATUS.INVOICE_PENDING,
+  STATUS.TO_PACK,
+  STATUS.UNPAID
+)

@@ -39,7 +39,7 @@ import {
 } from '@/lib/awbPrintPrompt'
 import { useTranslation } from '@/lib/i18n/I18nContext'
 import { useDateTime } from '@/lib/i18n/datetime'
-import { STATUS, statusKeyFor } from '@/lib/orderStatus'
+import { STATUS, statusKeyFor, isNewOrderStatusKey } from '@/lib/orderStatus'
 
 const AUTO_SYNC_INTERVAL_MS = 60_000
 
@@ -181,20 +181,16 @@ const STATUS_TO_TAB = {
   [STATUS.CANCELLED]: 'cancelled',
 }
 
-// Mirrors the COD payment_method match in supabase/actionable_orders_migration.sql
-// (the Dashboard's "Orders Today"/Revenue carve-out) so tab placement and the
-// Dashboard agree on what counts as COD. Kept in sync manually — there's no
-// shared JS/SQL source for this, so if a platform adds a new COD spelling it
-// needs updating in both places.
-function isCodPayment(payment) {
-  const p = (payment || '').trim().toLowerCase()
-  return p === 'cash on delivery' || p === 'cod'
-}
+// isCodPayment/isNewOrderStatusKey now live in src/lib/orderStatus.js — the
+// push notifier (api/_lib/pushNotify.js) needs the exact same "is this a New
+// Order" rule so a COD order notifies as soon as it appears here instead of
+// waiting for Shopee to flip it to READY_TO_SHIP, and keeping a second copy
+// of the COD match here is exactly the drift that file's header warns about.
 
 // Defensive lookup — always resolves to a real, visible tab, even for a
 // status this app has never seen before (statusKey null, see mapSupabaseOrder).
 function getOrderTab(order) {
-  if (order.statusKey === STATUS.UNPAID && isCodPayment(order.payment)) return 'new'
+  if (order.statusKey && isNewOrderStatusKey(order.statusKey, order.payment)) return 'new'
   return (order.statusKey ? STATUS_TO_TAB[order.statusKey] : undefined) ?? OTHER_TAB
 }
 
