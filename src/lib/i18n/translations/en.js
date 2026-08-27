@@ -715,6 +715,7 @@ export default {
       timeline: 'Order Timeline',
     },
     fields: {
+      shop: 'Shop',
       marketplaceStatus: 'Marketplace status',
       logistics: 'Logistics',
       trackingNo: 'Tracking No.',

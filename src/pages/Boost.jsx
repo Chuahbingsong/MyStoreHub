@@ -5,7 +5,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SHEET_CLOSE_SAFE_TOP,
+} from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
@@ -291,9 +297,10 @@ export default function Boost() {
       <Sheet open={!!editingStore} onOpenChange={(open) => !open && setEditingStoreId(null)}>
         <SheetContent
           side="bottom"
+          closeButtonClassName={SHEET_CLOSE_SAFE_TOP}
           className="!h-screen w-full gap-0 rounded-t-2xl border-[#ECECEC] bg-white p-0"
         >
-          <SheetHeader className="border-b border-[#ECECEC] px-4 py-4">
+          <SheetHeader className="border-b border-[#ECECEC] px-4 pb-4 pt-safe-header pr-12">
             <SheetTitle className="text-[#1F2937]">
               {t('boost.rotationTitle', {
                 store: editingStore?.shop_name || t('boost.unnamedStore'),

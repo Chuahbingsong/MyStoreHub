@@ -675,6 +675,7 @@ export default {
       timeline: '订单进度',
     },
     fields: {
+      shop: '店铺',
       marketplaceStatus: '平台状态',
       logistics: '物流',
       trackingNo: '运单号',

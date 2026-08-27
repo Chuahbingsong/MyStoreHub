@@ -85,4 +85,11 @@
   .pb-nav-safe {
     padding-bottom: calc(5rem + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
   }
+
+  /* Full-screen bottom sheets (`!h-screen`, e.g. the Orders detail sheet)
+     have their header flush against the top of the viewport, same as
+     AppShell — plus the header's own 1rem top padding on top of the inset. */
+  .pt-safe-header {
+    padding-top: calc(var(--safe-area-inset-top, env(safe-area-inset-top, 0px)) + 1rem);
+  }
 }

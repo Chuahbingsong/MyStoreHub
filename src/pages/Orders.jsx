@@ -14,6 +14,7 @@ import {
   SheetFooter,
   SheetHeader,
   SheetTitle,
+  SHEET_CLOSE_SAFE_TOP,
 } from '@/components/ui/sheet'
 import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
 import PrintAwbMarkPrintedDialog from '@/components/PrintAwbMarkPrintedDialog'
@@ -874,8 +875,8 @@ function OrderCard({
           </div>
         )}
 
-        <div className="mt-3 flex items-center gap-2.5">
-          {order.items.slice(0, 3).map((item, i) => (
+        <div className="mt-3 flex items-center gap-2.5 overflow-x-auto pb-0.5">
+          {order.items.map((item, i) => (
             <ItemThumb
               key={i}
               image={item.image}
@@ -884,8 +885,8 @@ function OrderCard({
               className="h-10 w-10"
             />
           ))}
-          <p className="truncate text-xs leading-snug text-[#6B7280]">{itemsSummary(t, order.items)}</p>
         </div>
+        <p className="mt-1.5 truncate text-xs leading-snug text-[#6B7280]">{itemsSummary(t, order.items)}</p>
 
         {order.courier && (
           <div className="mt-2.5 flex flex-wrap items-center gap-2">
@@ -2108,11 +2109,12 @@ export default function Orders() {
       <Sheet open={!!selectedOrder} onOpenChange={(open) => !open && setSelectedOrder(null)}>
         <SheetContent
           side="bottom"
+          closeButtonClassName={SHEET_CLOSE_SAFE_TOP}
           className="!h-screen w-full gap-0 rounded-t-2xl border-[#E8E6E1] bg-white p-0"
         >
           {selectedOrder && (
             <>
-              <SheetHeader className="border-b border-[#E8E6E1] px-4 py-4">
+              <SheetHeader className="border-b border-[#E8E6E1] px-4 pb-4 pt-safe-header pr-12">
                 <SheetTitle className="flex items-center gap-2 text-base text-[#1F2937]">
                   <span
                     className={cn(
@@ -2124,6 +2126,16 @@ export default function Orders() {
                   </span>
                   <span className="font-mono text-sm text-[#6B7280]">{selectedOrder.id}</span>
                 </SheetTitle>
+                {selectedOrder.storeName && (
+                  <p className="flex items-baseline gap-1.5">
+                    <span className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">
+                      {t('orders.fields.shop')}
+                    </span>
+                    <span className="truncate text-sm font-bold text-[#1F2937]">
+                      {selectedOrder.storeName}
+                    </span>
+                  </p>
+                )}
               </SheetHeader>
 
               <div className="flex-1 overflow-y-auto px-4 py-4">
@@ -2272,14 +2284,21 @@ export default function Orders() {
                           <p className="truncate text-base font-bold text-[#1F2937]">
                             {item.name ?? t('orders.unnamedItem')}
                           </p>
-                          <p className="text-sm font-semibold text-[#6B7280]">
-                            {t('orders.fields.qty')}: {item.qty}
-                            {item.variant ? ` • ${item.variant}` : ''}
+                          {item.variant && (
+                            <p className="truncate text-sm text-[#6B7280]">{item.variant}</p>
+                          )}
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p
+                            className="text-lg font-extrabold tabular-nums text-[#1F2937]"
+                            aria-label={`${t('orders.fields.qty')} ${item.qty}`}
+                          >
+                            x{item.qty}
+                          </p>
+                          <p className="mt-1 text-sm font-semibold tabular-nums text-[#4B5563]">
+                            RM {item.price.toFixed(2)}
                           </p>
                         </div>
-                        <p className="shrink-0 text-base font-bold tabular-nums text-[#1F2937]">
-                          RM {item.price.toFixed(2)}
-                        </p>
                       </div>
                     ))}
                   </div>
@@ -2296,9 +2315,11 @@ export default function Orders() {
                     <span>{t('orders.fields.shippingFee')}</span>
                     <span className="tabular-nums">RM 0.00</span>
                   </div>
-                  <div className="flex justify-between border-t border-[#F1F0EC] pt-2 text-lg font-extrabold text-[#1F2937]">
-                    <span>{t('orders.fields.total')}</span>
-                    <span className="tabular-nums">RM {selectedOrder.total.toFixed(2)}</span>
+                  <div className="flex items-center justify-between border-t border-[#F1F0EC] pt-2.5">
+                    <span className="text-sm font-semibold text-[#6B7280]">{t('orders.fields.total')}</span>
+                    <span className="text-2xl font-extrabold tabular-nums text-[#1F2937]">
+                      RM {selectedOrder.total.toFixed(2)}
+                    </span>
                   </div>
                 </section>
 

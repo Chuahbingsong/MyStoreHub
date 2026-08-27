@@ -5,6 +5,12 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { XIcon } from "lucide-react"
 
+// Close-button offset for a full-screen (`!h-screen`) bottom sheet, whose
+// popup reaches the very top of the viewport — pass as closeButtonClassName
+// so the X drops below the status bar instead of the default top-3.
+export const SHEET_CLOSE_SAFE_TOP =
+  "top-[calc(var(--safe-area-inset-top,env(safe-area-inset-top,0px))+0.75rem)]"
+
 function Sheet({
   ...props
 }) {
@@ -49,6 +55,7 @@ function SheetContent({
   children,
   side = "right",
   showCloseButton = true,
+  closeButtonClassName,
   ...props
 }) {
   return (
@@ -67,7 +74,11 @@ function SheetContent({
           <SheetPrimitive.Close
             data-slot="sheet-close"
             render={
-              <Button variant="ghost" className="absolute top-3 right-3" size="icon-sm" />
+              <Button
+                variant="ghost"
+                className={cn("absolute top-3 right-3", closeButtonClassName)}
+                size="icon-sm"
+              />
             }>
             <XIcon />
             <span className="sr-only">Close</span>

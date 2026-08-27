@@ -23,7 +23,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SHEET_CLOSE_SAFE_TOP,
+} from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { supabase } from '@/lib/supabase'
@@ -1144,9 +1150,10 @@ function CopySheet({
       <SheetContent
         side="bottom"
         showCloseButton={!copying}
+        closeButtonClassName={SHEET_CLOSE_SAFE_TOP}
         className="!h-screen w-full gap-0 rounded-t-2xl border-[#E8E6E1] bg-white p-0"
       >
-        <SheetHeader className="border-b border-[#E8E6E1] px-4 py-4 pr-12">
+        <SheetHeader className="border-b border-[#E8E6E1] px-4 pb-4 pt-safe-header pr-12">
           <SheetTitle className="text-[#1F2937]">{t('flashDeals.copy.sheetTitle')}</SheetTitle>
           {sale && (
             <p className="text-xs text-[#6B7280]">
@@ -1892,11 +1899,12 @@ export default function FlashDeals() {
       <Sheet open={!!openSale} onOpenChange={(open) => !open && setOpenSaleId(null)}>
         <SheetContent
           side="bottom"
+          closeButtonClassName={SHEET_CLOSE_SAFE_TOP}
           className="!h-screen w-full gap-0 rounded-t-2xl border-[#E8E6E1] bg-white p-0"
         >
           {/* pr-12 keeps the header clear of the sheet's own close X, which is
               absolutely positioned at top-3 right-3 (see ui/sheet.jsx). */}
-          <SheetHeader className="border-b border-[#E8E6E1] px-4 py-4 pr-12">
+          <SheetHeader className="border-b border-[#E8E6E1] px-4 pb-4 pt-safe-header pr-12">
             <SheetTitle className="text-[#1F2937]">
               {openSale ? slotLabel(openSale) : t('flashDeals.session')}
             </SheetTitle>
