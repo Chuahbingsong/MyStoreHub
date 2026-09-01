@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '../_lib/supabaseAdmin.js';
-import { syncStoreOrders, syncStoreProducts } from '../_lib/shopeeSync.js';
+import { syncStoreOrders, syncStoreProducts, logSyncStart, logSyncComplete } from '../_lib/shopeeSync.js';
 import { autoPackStore } from '../_lib/autoPack.js';
 import { autoBoostStore } from '../_lib/autoBoost.js';
 import { syncStoreFlashSales } from '../_lib/flashSaleSync.js';
@@ -21,6 +21,21 @@ export const config = { maxDuration: 60 };
 // single store, not the sum of all of them, so this budget only needs to
 // cover one store's worth of work (with margin for the final response).
 const TIME_BUDGET_MS = 50_000;
+
+// Deliberately narrow: only the last few days, and few enough orders per
+// store that even a slow store can't eat the whole budget. This cron's job
+// is to keep recent orders fresh, not to backfill history — the foreground
+// sync (api/shopee/sync.js) covers the wider window.
+const ORDER_SYNC_DAYS = 3;
+const MAX_ORDERS_PER_STORE = 50;
+
+// Auto-pack needs real round-trip time before it's worth starting at all —
+// acquiring the lock, querying candidates, and shipping even one order are
+// all network calls. autoPackStore's own per-order deadline check only
+// writes a sync_logs row once it has actually started an order, so with
+// less than this left, a store could be silently skipped every tick with no
+// trace anywhere. This guard is what leaves that trace instead.
+const AUTO_PACK_MIN_TIME_MS = 5_000;
 
 function isAuthorized(req) {
   const secret = process.env.CRON_SECRET;
@@ -258,7 +273,11 @@ async function handler(req, res) {
     // signature of a hard timeout) and their own concurrency lock — no need
     // to duplicate that bookkeeping here.
     try {
-      const orderResult = await syncStoreOrders(store, { deadline });
+      const orderResult = await syncStoreOrders(store, {
+        deadline,
+        days: ORDER_SYNC_DAYS,
+        maxOrders: MAX_ORDERS_PER_STORE,
+      });
       orders = orderResult.orders.length;
       if (!orderResult.locked) touched = true;
     } catch (err) {
@@ -297,14 +316,36 @@ async function handler(req, res) {
     // it never gets a fresh time window of its own. Orders sync above just
     // refreshed this store's local order_status, so auto-pack reads that
     // fresh data rather than calling Shopee's order list again.
+    //
+    // Gated on a minimum reserve (AUTO_PACK_MIN_TIME_MS), not just "any time
+    // left": acquiring the lock, querying candidates, and shipping even one
+    // order are all real round trips, so starting with only a sliver of the
+    // budget left almost never packs anything anyway. When there isn't
+    // enough left, this defers the whole store rather than starting work it
+    // can't finish, and leaves its own sync_logs row — autoPackStore only
+    // logs once it has actually attempted an order, so without this the
+    // deferral would otherwise be invisible.
     let packed = 0;
-    if (store.auto_pack_enabled && Date.now() < deadline) {
-      try {
-        const packResult = await autoPackStore(store, { deadline });
-        packed = packResult.packed;
-      } catch (err) {
-        console.error('[cron/sync-all] auto-pack failed for store', store.id, err);
-        errors.push({ storeId: store.id, type: 'auto_pack', error: err.message });
+    if (store.auto_pack_enabled) {
+      const timeLeft = deadline - Date.now();
+      if (timeLeft < AUTO_PACK_MIN_TIME_MS) {
+        console.log(
+          `[cron/sync-all] [${store.id}] auto-pack deferred, ${timeLeft}ms left (need ${AUTO_PACK_MIN_TIME_MS}ms)`,
+        );
+        const logId = await logSyncStart(store.id, 'auto_pack');
+        await logSyncComplete(
+          logId,
+          'success',
+          `Deferred: ${timeLeft}ms left in shared budget, need >=${AUTO_PACK_MIN_TIME_MS}ms`,
+        );
+      } else {
+        try {
+          const packResult = await autoPackStore(store, { deadline });
+          packed = packResult.packed;
+        } catch (err) {
+          console.error('[cron/sync-all] auto-pack failed for store', store.id, err);
+          errors.push({ storeId: store.id, type: 'auto_pack', error: err.message });
+        }
       }
     }
 

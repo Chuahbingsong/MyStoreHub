@@ -845,6 +845,12 @@ async function backfillTrackingNumbers(store, deadline) {
  * per request and pass the same value into every call, so the budget is
  * shared across stores instead of granted fresh to each. Defaults to a fresh
  * SYNC_TIME_BUDGET_MS window for standalone callers.
+ *
+ * options.maxOrders: caps how many non-terminal orders get their full detail
+ * fetched (and written) in this call, on top of the time budget above — a
+ * belt-and-suspenders limit for callers (e.g. the cron path) that want a hard
+ * per-store ceiling regardless of how much time is left. Undefined means no
+ * cap, matching prior behavior.
  */
 export async function syncStoreOrders(store, options = {}) {
   const days = options.days ?? DEFAULT_ORDER_TIME_RANGE_DAYS;
@@ -876,9 +882,12 @@ export async function syncStoreOrders(store, options = {}) {
     }
 
     const terminalSns = await fetchTerminalOrderSns(store.id, orderSnList);
-    const toFetch = orderSnList.filter((sn) => !terminalSns.has(sn));
+    const toFetchAll = orderSnList.filter((sn) => !terminalSns.has(sn));
+    const toFetch =
+      options.maxOrders != null ? toFetchAll.slice(0, options.maxOrders) : toFetchAll;
+    const cappedByMaxOrders = toFetch.length < toFetchAll.length;
     console.log(
-      `[shopee-sync] [${store.id}] ${terminalSns.size} already terminal (skipped), ${toFetch.length} to fetch at ${elapsed()}`,
+      `[shopee-sync] [${store.id}] ${terminalSns.size} already terminal (skipped), ${toFetch.length} to fetch at ${elapsed()}${cappedByMaxOrders ? ` (capped from ${toFetchAll.length} by maxOrders=${options.maxOrders})` : ''}`,
     );
 
     // Loaded once per sync for the order-item image fallback.
@@ -907,7 +916,7 @@ export async function syncStoreOrders(store, options = {}) {
     }
 
     const detailHasMore = batchesProcessed < batches.length;
-    const hasMore = listHasMore || detailHasMore;
+    const hasMore = listHasMore || detailHasMore || cappedByMaxOrders;
 
     // TEMP BACKFILL (see flag near the top of this file): logged distinctly
     // and folded into the persisted sync_logs summary below (not just
