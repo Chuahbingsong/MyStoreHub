@@ -723,7 +723,7 @@ function OrderTimeline({ statusKey, statusLabel }) {
   )
 }
 
-function CopyButton({ text }) {
+function CopyButton({ text, size = 'h-3.5 w-3.5' }) {
   const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
   return (
@@ -738,7 +738,7 @@ function CopyButton({ text }) {
       aria-label={t('orders.copyTracking')}
       className="text-gray-400 hover:text-gray-600"
     >
-      {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+      {copied ? <Check className={cn(size, 'text-green-600')} /> : <Copy className={size} />}
     </button>
   )
 }
@@ -2213,9 +2213,9 @@ export default function Orders() {
                     {selectedOrder.trackingNumber && (
                       <div className="flex items-center justify-between text-[#6B7280]">
                         <span>{t('orders.fields.trackingNo')}</span>
-                        <span className="flex items-center gap-1 font-mono text-[#1F2937]">
+                        <span className="flex items-center gap-1.5 font-mono text-base font-bold tracking-wide tabular-nums text-[#1F2937]">
                           {selectedOrder.trackingNumber}
-                          <CopyButton text={selectedOrder.trackingNumber} />
+                          <CopyButton text={selectedOrder.trackingNumber} size="h-5 w-5" />
                         </span>
                       </div>
                     )}

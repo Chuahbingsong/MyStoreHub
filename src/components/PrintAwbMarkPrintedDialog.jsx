@@ -22,24 +22,27 @@ export default function PrintAwbMarkPrintedDialog({ open, count = 1, onCancel, o
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="border border-[#E8E6E1] bg-white sm:max-w-sm">
+      <DialogContent className="border border-[#E8E6E1] bg-white p-6 sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-base text-[#1F2937]">
+          <DialogTitle className="text-lg text-[#1F2937]">
             {t('printAwb.markPrinted.title', { count })}
           </DialogTitle>
-          <DialogDescription className="text-[12px] text-[#6B7280]">
+          <DialogDescription className="text-sm text-[#6B7280]">
             {t('printAwb.markPrinted.description')}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="mt-2 flex justify-end gap-2">
-          <Button variant="outline" size="sm" onClick={onCancel}>
+        <div className="mt-4 flex justify-end gap-6">
+          <Button
+            variant="outline"
+            onClick={onCancel}
+            className="h-12 rounded-xl px-6 text-base font-semibold"
+          >
             {t('printAwb.cancel')}
           </Button>
           <Button
-            size="sm"
             onClick={onConfirm}
-            className="bg-[#2563EB] text-white hover:bg-[#2563EB]/90"
+            className="h-12 rounded-xl bg-[#2563EB] px-6 text-base font-semibold text-white hover:bg-[#2563EB]/90"
           >
             {t('printAwb.confirmButton')}
           </Button>

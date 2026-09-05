@@ -425,8 +425,10 @@ export default function Scan() {
               <div className="mt-2.5 space-y-1 text-xs text-[#6B7280]">
                 <p>{t('scan.fields.order')}: {result.platform_order_id}</p>
                 <p>{t('scan.fields.package')}: {result.package_number || '—'}</p>
-                <p>{t('scan.fields.tracking')}: {result.tracking_number || '—'}</p>
               </div>
+              <p className="mt-1.5 font-mono text-lg font-bold tracking-wide tabular-nums text-[#1F2937]">
+                {t('scan.fields.tracking')}: {result.tracking_number || '—'}
+              </p>
             </div>
 
             <div className="space-y-2.5">
