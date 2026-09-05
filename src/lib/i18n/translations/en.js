@@ -541,6 +541,7 @@ export default {
       // and in Seller Centre, and sellers scan for it visually.
       sku: 'SKU',
       total: 'Order Total',
+      paid: 'Paid',
     },
     noItems: 'No items found for this order.',
     viewImage: 'View larger image',

@@ -504,6 +504,7 @@ export default {
       // 保留英文缩写：运单和卖家中心上印的都是 SKU，卖家靠它做视觉比对。
       sku: 'SKU',
       total: '订单总额',
+      paid: '付款时间',
     },
     noItems: '此订单没有商品。',
     viewImage: '查看大图',

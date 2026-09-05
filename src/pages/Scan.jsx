@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/i18n/I18nContext'
+import { useDateTime } from '@/lib/i18n/datetime'
 import { statusKeyFor } from '@/lib/orderStatus'
 
 const SCANNER_ELEMENT_ID = 'scan-reader'
@@ -76,6 +77,7 @@ async function findOrderBy(column, value) {
 export default function Scan() {
   const navigate = useNavigate()
   const { t } = useTranslation()
+  const { formatDateTime } = useDateTime()
   const [cameraState, setCameraState] = useState('starting') // starting | running | denied
   const [torchOn, setTorchOn] = useState(false)
   const [torchSupported, setTorchSupported] = useState(false)
@@ -292,6 +294,11 @@ export default function Scan() {
   const resultStatusKey = result
     ? statusKeyFor(result.stores?.platform ?? result.platform, result.order_status)
     : null
+  // paid_at is null on a meaningful share of Shopee orders (see autoPack.js's
+  // paid_at ?? order_created_at fallback) — formatDateTime already returns
+  // undefined rather than "Invalid Date" for a null/unparseable value, so
+  // this row just disappears instead of rendering empty.
+  const paidAtLabel = result ? formatDateTime(result.paid_at) : undefined
   const showResult = result !== null
   const showNotFound = notFoundText !== null
   const idle = !showResult && !showNotFound
@@ -429,6 +436,11 @@ export default function Scan() {
                 <p className="text-xs text-[#6B7280]">
                   {t('scan.fields.package')}: {result.package_number || '—'}
                 </p>
+                {paidAtLabel && (
+                  <p className="text-xs text-[#6B7280]">
+                    {t('scan.fields.paid')}: {paidAtLabel}
+                  </p>
+                )}
               </div>
               <p className="mt-1.5 font-mono text-lg font-bold tracking-wide tabular-nums text-[#1F2937]">
                 {t('scan.fields.tracking')}: {result.tracking_number || '—'}

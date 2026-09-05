@@ -73,7 +73,7 @@ function RevenueChart({ series, coverageFirstDay, t, locale }) {
 
   if (series.length === 0 || max <= 0) {
     return (
-      <p className="py-10 text-center text-xs text-gray-400">{t('sales.chart.noSales')}</p>
+      <p className="py-10 text-center text-sm text-gray-400">{t('sales.chart.noSales')}</p>
     )
   }
 
@@ -87,16 +87,16 @@ function RevenueChart({ series, coverageFirstDay, t, locale }) {
       <div className="mb-1 h-8">
         {active ? (
           <div className="inline-flex items-baseline gap-2 rounded-lg bg-[#1F2937] px-2.5 py-1.5">
-            <span className="text-[11px] text-white/70">{dayLabel(active.day)}</span>
-            <span className="text-xs font-semibold tabular-nums text-white">
+            <span className="text-xs text-white/70">{dayLabel(active.day)}</span>
+            <span className="text-sm font-semibold tabular-nums text-white">
               {formatRM(active.revenue)}
             </span>
-            <span className="text-[11px] tabular-nums text-white/70">
+            <span className="text-xs tabular-nums text-white/70">
               {active.orderCount} {t('sales.table.orders').toLowerCase()}
             </span>
           </div>
         ) : (
-          <span className="text-[11px] text-gray-400">
+          <span className="text-xs text-gray-400">
             {t('sales.table.date')} · {t('sales.table.revenue')}
           </span>
         )}
@@ -254,8 +254,8 @@ export default function Sales() {
             <ArrowLeft className="h-5 w-5" />
           </Link>
           <div>
-            <h1 className="text-xl font-bold text-[#1F2937]">{t('sales.title')}</h1>
-            <p className="text-sm text-[#6B7280]">{t('sales.subtitle')}</p>
+            <h1 className="text-2xl font-bold text-[#1F2937]">{t('sales.title')}</h1>
+            <p className="text-base text-[#6B7280]">{t('sales.subtitle')}</p>
           </div>
         </div>
       </header>
@@ -279,8 +279,8 @@ export default function Sales() {
 
       {error ? (
         <div className="mx-4 mt-3 rounded-2xl border border-red-200 bg-red-50 p-3">
-          <p className="text-xs text-red-700">{t('sales.error')}</p>
-          <p className="mt-1 font-mono text-[10px] text-red-500">{error.message}</p>
+          <p className="text-sm text-red-700">{t('sales.error')}</p>
+          <p className="mt-1 font-mono text-xs text-red-500">{error.message}</p>
         </div>
       ) : loading ? (
         <div className="mt-3 space-y-3 px-4">
@@ -294,12 +294,12 @@ export default function Sales() {
           {coverage == null || coverage.orderCount === 0 ? (
             <div className="mx-4 mt-3 flex gap-2 rounded-2xl border border-yellow-300 bg-yellow-50 p-3">
               <Info className="h-4 w-4 shrink-0 text-yellow-600" />
-              <p className="text-xs text-yellow-900">{t('sales.coverage.none')}</p>
+              <p className="text-sm text-yellow-900">{t('sales.coverage.none')}</p>
             </div>
           ) : missingLeadingDays > 0 ? (
             <div className="mx-4 mt-3 flex gap-2 rounded-2xl border border-yellow-300 bg-yellow-50 p-3">
               <Info className="h-4 w-4 shrink-0 text-yellow-600" />
-              <p className="text-xs text-yellow-900">
+              <p className="text-sm text-yellow-900">
                 {t('sales.coverage.partial', {
                   date: dayLabelLong(coverage.firstDay),
                   days: missingLeadingDays,
@@ -314,20 +314,20 @@ export default function Sales() {
               other two are short enough to share a row. */}
           <section className="mt-3 grid grid-cols-2 gap-2 px-4 md:grid-cols-4">
             <div className="col-span-2 rounded-2xl border border-[#E8E6E1] bg-white p-3 shadow-card md:col-span-2">
-              <p className="text-[11px] text-[#6B7280]">{t('sales.totals.revenue')}</p>
-              <p className="mt-0.5 text-2xl font-bold tabular-nums text-[#1F2937]">
+              <p className="text-sm text-[#6B7280]">{t('sales.totals.revenue')}</p>
+              <p className="mt-0.5 text-3xl font-bold tabular-nums text-[#1F2937]">
                 {formatRM(totals.revenue)}
               </p>
             </div>
             <div className="rounded-2xl border border-[#E8E6E1] bg-white p-3 shadow-card">
-              <p className="truncate text-[11px] text-[#6B7280]">{t('sales.totals.orders')}</p>
-              <p className="mt-0.5 text-base font-bold tabular-nums text-[#1F2937]">
+              <p className="truncate text-xs text-[#6B7280]">{t('sales.totals.orders')}</p>
+              <p className="mt-0.5 text-lg font-bold tabular-nums text-[#1F2937]">
                 {totals.orders.toLocaleString('en-MY')}
               </p>
             </div>
             <div className="rounded-2xl border border-[#E8E6E1] bg-white p-3 shadow-card">
-              <p className="truncate text-[11px] text-[#6B7280]">{t('sales.totals.avgPerDay')}</p>
-              <p className="mt-0.5 text-base font-bold tabular-nums text-[#1F2937]">
+              <p className="truncate text-xs text-[#6B7280]">{t('sales.totals.avgPerDay')}</p>
+              <p className="mt-0.5 text-lg font-bold tabular-nums text-[#1F2937]">
                 {formatRM(totals.avgPerDay)}
               </p>
             </div>
@@ -335,7 +335,7 @@ export default function Sales() {
 
           {/* ---- chart ---- */}
           <section className="mx-4 mt-3 rounded-2xl border border-[#E8E6E1] bg-white p-3 shadow-card">
-            <h2 className="mb-1 text-sm font-semibold text-[#1F2937]">{t('sales.chart.title')}</h2>
+            <h2 className="mb-1 text-base font-semibold text-[#1F2937]">{t('sales.chart.title')}</h2>
             <RevenueChart
               series={series}
               coverageFirstDay={coverage?.firstDay ?? null}
@@ -346,34 +346,34 @@ export default function Sales() {
 
           {/* ---- daily figures (the table view the chart's values live in) ---- */}
           <section className="mx-4 mt-3 overflow-hidden rounded-2xl border border-[#E8E6E1] bg-white shadow-card">
-            <h2 className="border-b border-[#E8E6E1] px-3 py-2.5 text-sm font-semibold text-[#1F2937]">
+            <h2 className="border-b border-[#E8E6E1] px-3 py-2.5 text-base font-semibold text-[#1F2937]">
               {t('sales.table.title')}
             </h2>
-            <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 border-b border-[#E8E6E1] bg-[#FAF9F6] px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-gray-500">
+            <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 border-b border-[#E8E6E1] bg-[#FAF9F6] px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-gray-500">
               <span>{t('sales.table.date')}</span>
               <span className="text-right">{t('sales.table.revenue')}</span>
-              <span className="w-10 text-right">{t('sales.table.orders')}</span>
+              <span className="w-12 text-right">{t('sales.table.orders')}</span>
             </div>
             {rows.length === 0 ? (
-              <p className="py-6 text-center text-xs text-gray-400">{t('sales.table.noData')}</p>
+              <p className="py-6 text-center text-sm text-gray-400">{t('sales.table.noData')}</p>
             ) : (
               rows.map((d) => {
                 const beforeHistory = coverage?.firstDay != null && d.day < coverage.firstDay
                 return (
                   <div
                     key={d.day}
-                    className="grid grid-cols-[1fr_auto_auto] items-center gap-x-3 border-b border-[#ECECEC] px-3 py-2 last:border-b-0"
+                    className="grid grid-cols-[1fr_auto_auto] items-center gap-x-3 border-b border-[#ECECEC] px-3 py-2.5 last:border-b-0"
                   >
-                    <span className="truncate text-xs text-[#1F2937]">{dayLabelLong(d.day)}</span>
+                    <span className="truncate text-sm text-[#1F2937]">{dayLabelLong(d.day)}</span>
                     {beforeHistory ? (
-                      <span className="col-span-2 text-right text-[11px] italic text-gray-400">
+                      <span className="col-span-2 text-right text-xs italic text-gray-400">
                         {t('sales.table.beforeHistory')}
                       </span>
                     ) : (
                       <>
                         <span
                           className={cn(
-                            'text-right text-xs font-medium tabular-nums',
+                            'text-right text-base font-semibold tabular-nums',
                             d.revenue > 0 ? 'text-[#1F2937]' : 'text-gray-300'
                           )}
                         >
@@ -381,7 +381,7 @@ export default function Sales() {
                         </span>
                         <span
                           className={cn(
-                            'w-10 text-right text-xs tabular-nums',
+                            'w-12 text-right text-sm font-medium tabular-nums',
                             d.orderCount > 0 ? 'text-[#6B7280]' : 'text-gray-300'
                           )}
                         >
@@ -395,7 +395,7 @@ export default function Sales() {
             )}
           </section>
 
-          <p className="mx-4 mt-3 text-[11px] leading-relaxed text-gray-500">{t('sales.basis')}</p>
+          <p className="mx-4 mt-3 text-xs leading-relaxed text-gray-500">{t('sales.basis')}</p>
         </>
       )}
     </div>
