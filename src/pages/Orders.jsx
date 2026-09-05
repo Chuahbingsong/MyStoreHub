@@ -30,6 +30,7 @@ import {
   describeFailedOrders,
   downloadAwbResponse,
   logPrintAwbFailure,
+  PRINTABLE_PLATFORMS,
   printAwbErrorMessage,
 } from '@/lib/awb'
 import {
@@ -1784,8 +1785,15 @@ export default function Orders() {
       (platformFilter === ALL_FILTER || order.platform === platformFilter)
   )
 
+  // order.platform here is the display label ('Shopee'), not the raw slug
+  // PRINTABLE_PLATFORMS is written in — see mapSupabaseOrder's PLATFORM_LABELS
+  // lookup above.
   const unprintedCount = toPackOrders.filter(
-    (order) => order.platform_order_id && order.store_id && !order.awbPrinted
+    (order) =>
+      order.platform_order_id &&
+      order.store_id &&
+      !order.awbPrinted &&
+      PRINTABLE_PLATFORMS.includes(order.platform?.toLowerCase())
   ).length
 
   const filteredOrders = orders.filter((order) => {

@@ -18,6 +18,7 @@ import {
   describeFailedOrders,
   isNativePlatform,
   logPrintAwbFailure,
+  PRINTABLE_PLATFORMS,
   printAwbErrorMessage,
   slugify,
 } from '@/lib/awb'
@@ -195,6 +196,11 @@ export default function BulkPrint() {
           .from('orders')
           .select('*')
           .in('order_status', PRINTABLE_STATUSES)
+          // This app can only produce a label for these platforms — see
+          // PRINTABLE_PLATFORMS in lib/awb.js for why TikTok and Lazada are
+          // excluded. Filtering here (rather than after the fetch) keeps a
+          // large TikTok/Lazada backlog from eating into the 1000-row page cap.
+          .in('platform', PRINTABLE_PLATFORMS)
           .not('platform_order_id', 'is', null)
           // Tolerates legacy rows where the column is null rather than false.
           .not('awb_printed', 'is', true)
@@ -494,10 +500,12 @@ export default function BulkPrint() {
   )
 
   // What the merged print would actually cover. Narrower than pendingOrders:
-  // Shopee only, and only PROCESSED — a READY_TO_SHIP order cannot have a
-  // shipping document created yet, so it is not printable in any form.
+  // PRINTABLE_PLATFORMS only (fetchData's query already restricts to these,
+  // so this filter is mostly a no-op safety net), and only PROCESSED — a
+  // READY_TO_SHIP order cannot have a shipping document created yet, so it is
+  // not printable in any form.
   const mergeableOrders = sections
-    .filter((s) => s.platform === 'shopee')
+    .filter((s) => PRINTABLE_PLATFORMS.includes(s.platform))
     .flatMap((s) => s.groups)
     .flatMap((g) => g.orders)
     .filter((o) => o.order_status === 'PROCESSED')

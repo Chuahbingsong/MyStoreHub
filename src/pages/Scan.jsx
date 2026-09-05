@@ -422,9 +422,13 @@ export default function Scan() {
                     : result.order_status || t('scan.unknownStatus')}
                 </span>
               </div>
-              <div className="mt-2.5 space-y-1 text-xs text-[#6B7280]">
-                <p>{t('scan.fields.order')}: {result.platform_order_id}</p>
-                <p>{t('scan.fields.package')}: {result.package_number || '—'}</p>
+              <div className="mt-2.5 space-y-1">
+                <p className="text-base font-bold text-[#1F2937]">
+                  {t('scan.fields.order')}: {result.platform_order_id}
+                </p>
+                <p className="text-xs text-[#6B7280]">
+                  {t('scan.fields.package')}: {result.package_number || '—'}
+                </p>
               </div>
               <p className="mt-1.5 font-mono text-lg font-bold tracking-wide tabular-nums text-[#1F2937]">
                 {t('scan.fields.tracking')}: {result.tracking_number || '—'}

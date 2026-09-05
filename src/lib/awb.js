@@ -4,6 +4,15 @@ import { Filesystem, Directory } from '@capacitor/filesystem'
 import { FileOpener } from '@capacitor-community/file-opener'
 import { apiUrl } from '@/lib/apiBase'
 
+// Platforms whose orders this app can actually print a label for — read by
+// both the "Print All AWB" count (Orders.jsx) and the print flow itself
+// (BulkPrint.jsx) so the two never drift apart. TikTok and Lazada orders are
+// deliberately excluded: TikTok's label API is only reachable in the narrow
+// window between packing and courier pickup, and Lazada's document endpoint
+// returns an HTML label rather than the PDF this app's print pipeline
+// expects. Add a platform here once its own print-awb endpoint is wired up.
+export const PRINTABLE_PLATFORMS = ['shopee']
+
 // Browsers throttle or block a burst of downloads fired back to back.
 export const DOWNLOAD_STAGGER_MS = 800
 
