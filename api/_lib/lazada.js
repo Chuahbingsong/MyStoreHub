@@ -5,11 +5,39 @@ export const LAZADA_APP_KEY = (process.env.LAZADA_APP_KEY || '').trim();
 export const LAZADA_APP_SECRET = (process.env.LAZADA_APP_SECRET || '').trim();
 export const LAZADA_REDIRECT_URI = (process.env.LAZADA_REDIRECT_URI || '').trim();
 
+// Only the token endpoints (auth/token/create, auth/token/refresh) live here.
+// /oauth/authorize does NOT — see LAZADA_COUNTRY_AUTH_HOSTS below.
 export const LAZADA_AUTH_HOST = 'https://auth.lazada.com';
 export const LAZADA_API_HOST = 'https://api.lazada.com/rest';
 
 export const LAZADA_TOKEN_CREATE_PATH = '/auth/token/create';
 export const LAZADA_TOKEN_REFRESH_PATH = '/auth/token/refresh';
+
+// As of ~September 2026, hitting https://auth.lazada.com/oauth/authorize as a
+// top-level browser navigation gets 302-redirected into the seller's country
+// gateway (e.g. api.lazada.com.my) and that redirect drops every query param
+// except response_type — the authorize call then fails with "Missing
+// parameter" before the user ever sees a login screen. This didn't happen as
+// recently as August, so it's a change on Lazada's side, not ours. The fix is
+// to send the browser straight to the country gateway's own /oauth/authorize
+// and skip the redirect (and the param-stripping) entirely. Same host list as
+// lazadaSync.js's COUNTRY_GATEWAYS (which already talks to these hosts
+// directly for order sync, confirmed live via a throwaway probe endpoint) —
+// keep both lists in sync if Lazada adds a country.
+const LAZADA_COUNTRY_AUTH_HOSTS = {
+  MY: 'https://api.lazada.com.my',
+  SG: 'https://api.lazada.sg',
+  TH: 'https://api.lazada.co.th',
+  ID: 'https://api.lazada.co.id',
+  PH: 'https://api.lazada.com.ph',
+  VN: 'https://api.lazada.vn',
+};
+
+export const DEFAULT_LAZADA_COUNTRY = 'MY';
+
+export function getLazadaAuthHost(country) {
+  return LAZADA_COUNTRY_AUTH_HOSTS[country] || LAZADA_COUNTRY_AUTH_HOSTS[DEFAULT_LAZADA_COUNTRY];
+}
 
 /**
  * Lazada Open Platform request signature. Unlike TikTok's generateSign (which

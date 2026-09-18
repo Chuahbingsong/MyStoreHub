@@ -299,6 +299,9 @@ export default function Scan() {
   // undefined rather than "Invalid Date" for a null/unparseable value, so
   // this row just disappears instead of rendering empty.
   const paidAtLabel = result ? formatDateTime(result.paid_at) : undefined
+  // Most orders have never been printed, so awb_printed_at is null far more
+  // often than paid_at — same undefined-for-null behaviour from formatDateTime.
+  const printedAtLabel = result ? formatDateTime(result.awb_printed_at) : undefined
   const showResult = result !== null
   const showNotFound = notFoundText !== null
   const idle = !showResult && !showNotFound
@@ -439,6 +442,11 @@ export default function Scan() {
                 {paidAtLabel && (
                   <p className="text-xs text-[#6B7280]">
                     {t('scan.fields.paid')}: {paidAtLabel}
+                  </p>
+                )}
+                {printedAtLabel && (
+                  <p className="text-xs text-[#6B7280]">
+                    {t('scan.fields.printed')}: {printedAtLabel}
                   </p>
                 )}
               </div>

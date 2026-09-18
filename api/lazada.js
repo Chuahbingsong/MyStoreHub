@@ -4,6 +4,8 @@ import {
   LAZADA_REDIRECT_URI,
   LAZADA_AUTH_HOST,
   LAZADA_TOKEN_CREATE_PATH,
+  DEFAULT_LAZADA_COUNTRY,
+  getLazadaAuthHost,
   generateSign,
 } from './_lib/lazada.js';
 import { supabaseAdmin } from './_lib/supabaseAdmin.js';
@@ -84,13 +86,32 @@ async function handleAuth(req, res) {
     `lazada_oauth_user=${user.id}:${userSig}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
   ]);
 
+  // Reconnecting an existing shop should send the browser to the same
+  // country gateway that shop already syncs through (lazadaSync.js's
+  // COUNTRY_GATEWAYS); a brand-new connection has no lazada_shops row yet, so
+  // it falls back to DEFAULT_LAZADA_COUNTRY.
+  const { data: existingShop, error: shopLookupError } = await supabaseAdmin
+    .from('lazada_shops')
+    .select('country')
+    .eq('user_id', user.id)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (shopLookupError) {
+    console.warn('[lazada/auth] failed to look up existing lazada_shops country, defaulting to', DEFAULT_LAZADA_COUNTRY, shopLookupError);
+  }
+
+  const country = existingShop?.country || DEFAULT_LAZADA_COUNTRY;
+  const authHost = getLazadaAuthHost(country);
+
   const authUrl =
-    `${LAZADA_AUTH_HOST}/oauth/authorize?response_type=code&force_auth=true` +
+    `${authHost}/oauth/authorize?response_type=code&force_auth=true` +
     `&client_id=${encodeURIComponent(LAZADA_APP_KEY)}` +
     `&redirect_uri=${encodeURIComponent(LAZADA_REDIRECT_URI)}` +
     `&state=${state}`;
 
-  console.log('[lazada/auth] constructed authUrl:', authUrl);
+  console.log('[lazada/auth] resolved country:', country, '— constructed authUrl:', authUrl);
 
   // JSON, not a redirect — see api/tiktok.js's handleAuth for why: verifying
   // the session above needs a fetch() call with an Authorization header,

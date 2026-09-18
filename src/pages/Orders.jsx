@@ -2242,6 +2242,12 @@ export default function Orders() {
                         </span>
                       </div>
                     )}
+                    {selectedOrder.awbPrintedAt && (
+                      <div className="flex justify-between text-[#6B7280]">
+                        <span>{t('orders.fields.printed')}</span>
+                        <span className="text-[#1F2937]">{formatDateTime(selectedOrder.awbPrintedAt)}</span>
+                      </div>
+                    )}
                     {selectedOrder.autoPackStatus === 'failed' && (
                       <div className="rounded-lg bg-red-500/10 px-2 py-1.5 text-red-700">
                         <p className="font-medium">⚠️ {t('orders.autoPack.failed')}</p>
