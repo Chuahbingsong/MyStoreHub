@@ -1074,6 +1074,10 @@ function CopySheet({
 }) {
   const { t } = useTranslation()
   const [slots, setSlots] = useState(null)
+  // Distinct from `slots === []`: a query failure must never be indistinguishable
+  // from a genuinely empty result, or a broken query silently looks like "no free
+  // slots" with nothing telling the user their store isn't actually fully booked.
+  const [slotsError, setSlotsError] = useState(null)
   const [chosen, setChosen] = useState([])
   const [pickerOpen, setPickerOpen] = useState(false)
   // Bumped on every open so the picker remounts and re-seeds its checkboxes.
@@ -1087,36 +1091,54 @@ function CopySheet({
   const saleId = sale?.id ?? null
   const storeId = sale?.store_id ?? null
 
+  const loadSlots = useCallback(async () => {
+    setSlots(null)
+    setSlotsError(null)
+    setChosen([])
+    setPickerOpen(false)
+    const nowIso = new Date().toISOString()
+    const [
+      { data: allSlots, error: slotsErr },
+      { data: taken, error: takenErr },
+    ] = await Promise.all([
+      selectAllPaged('flashDeals.slots', (from, to) =>
+        supabase
+          .from('flash_sale_slots')
+          .select('timeslot_id, start_time, end_time')
+          .gt('start_time', nowIso)
+          .order('start_time')
+          .range(from, to)
+      ),
+      supabase.from('flash_sales').select('timeslot_id').eq('store_id', storeId),
+    ])
+    const err = slotsErr || takenErr
+    if (err) {
+      console.error('[flash-deals] failed to load free slots', err)
+      return { error: err }
+    }
+    // Occupancy is per-store: another shop holding this slot is irrelevant.
+    const takenIds = new Set((taken ?? []).map((t) => String(t.timeslot_id)))
+    return { slots: (allSlots ?? []).filter((s) => !takenIds.has(String(s.timeslot_id))) }
+  }, [storeId])
+
   useEffect(() => {
     if (!open || !saleId) return
     let cancelled = false
 
     ;(async () => {
-      setSlots(null)
-      setChosen([])
-      setPickerOpen(false)
-      const nowIso = new Date().toISOString()
-      const [{ data: allSlots }, { data: taken }] = await Promise.all([
-        selectAllPaged('flashDeals.slots', (from, to) =>
-          supabase
-            .from('flash_sale_slots')
-            .select('timeslot_id, start_time, end_time')
-            .gt('start_time', nowIso)
-            .order('start_time')
-            .range(from, to)
-        ),
-        supabase.from('flash_sales').select('timeslot_id').eq('store_id', storeId),
-      ])
+      const result = await loadSlots()
       if (cancelled) return
-      // Occupancy is per-store: another shop holding this slot is irrelevant.
-      const takenIds = new Set((taken ?? []).map((t) => String(t.timeslot_id)))
-      setSlots((allSlots ?? []).filter((s) => !takenIds.has(String(s.timeslot_id))))
+      if (result.error) {
+        setSlotsError(result.error.message || t('flashDeals.copy.loadSlotsError'))
+      } else {
+        setSlots(result.slots)
+      }
     })()
 
     return () => {
       cancelled = true
     }
-  }, [open, saleId, storeId])
+  }, [open, saleId, loadSlots, t])
 
   const enabled = useMemo(() => (items ?? []).filter((i) => i.status === 1), [items])
   const itemIds = useMemo(() => new Set(enabled.map((i) => i.item_id)), [enabled])
@@ -1171,29 +1193,53 @@ function CopySheet({
 
           {/* ------------------- 1. choose the slots ------------------- */}
           <div className="mt-3">
-            <button
-              type="button"
-              onClick={() => {
-                setPickerSeq((n) => n + 1)
-                setPickerOpen(true)
-              }}
-              disabled={copying || slots === null}
-              className={cn(
-                'flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium transition-colors',
-                copying || slots === null
-                  ? 'cursor-not-allowed bg-[#F3F4F6] text-gray-400'
-                  : chosenSlots.length > 0
-                    ? 'border border-[#2563EB]/30 bg-[#2563EB]/5 text-[#2563EB] active:bg-[#2563EB]/10'
-                    : 'bg-[#2563EB] text-white active:bg-[#2563EB]/90'
-              )}
-            >
-              <CalendarClock className="h-4 w-4 shrink-0" />
-              {slots === null
-                ? t('flashDeals.copy.loadingSlots')
-                : chosenSlots.length === 0
-                  ? t('flashDeals.copy.chooseSlot')
-                  : t('flashDeals.copy.changeSlots', { count: chosenSlots.length })}
-            </button>
+            {slotsError ? (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-3">
+                <p className="text-xs font-medium text-red-700">
+                  {t('flashDeals.copy.loadSlotsError')}
+                </p>
+                <p className="mt-0.5 text-[11px] text-red-700">{slotsError}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    loadSlots().then((result) => {
+                      if (result.error) {
+                        setSlotsError(result.error.message || t('flashDeals.copy.loadSlotsError'))
+                      } else {
+                        setSlots(result.slots)
+                      }
+                    })
+                  }}
+                  className="mt-2 text-[11px] font-medium text-red-700 underline underline-offset-2"
+                >
+                  {t('flashDeals.copy.retry')}
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setPickerSeq((n) => n + 1)
+                  setPickerOpen(true)
+                }}
+                disabled={copying || slots === null}
+                className={cn(
+                  'flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium transition-colors',
+                  copying || slots === null
+                    ? 'cursor-not-allowed bg-[#F3F4F6] text-gray-400'
+                    : chosenSlots.length > 0
+                      ? 'border border-[#2563EB]/30 bg-[#2563EB]/5 text-[#2563EB] active:bg-[#2563EB]/10'
+                      : 'bg-[#2563EB] text-white active:bg-[#2563EB]/90'
+                )}
+              >
+                <CalendarClock className="h-4 w-4 shrink-0" />
+                {slots === null
+                  ? t('flashDeals.copy.loadingSlots')
+                  : chosenSlots.length === 0
+                    ? t('flashDeals.copy.chooseSlot')
+                    : t('flashDeals.copy.changeSlots', { count: chosenSlots.length })}
+              </button>
+            )}
 
             {chosenSlots.length > 0 && (
               <div className="mt-2.5 flex flex-wrap gap-1.5">

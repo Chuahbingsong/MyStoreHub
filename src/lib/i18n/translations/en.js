@@ -378,6 +378,8 @@ export default {
       disabledBanner:
         '⏸️ Copy is disabled. This is a preview of what would be written — nothing is sent to Shopee. Pending the 2 Aug slot-ownership test.',
       loadingSlots: 'Loading slots…',
+      loadSlotsError: "Couldn't load free slots.",
+      retry: 'Retry',
       chooseSlot: 'Choose Time Slot',
       changeSlots: 'Change slots ({{count}})',
       removeSlot: 'Remove {{slot}}',

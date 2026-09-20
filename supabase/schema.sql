@@ -290,3 +290,28 @@ begin
       check (preferred_shipping_method in ('pickup', 'dropoff'));
   end if;
 end $$;
+
+-- flash_sale_slots: cached get_time_slot_id output (Shopee's bookable
+-- flash-sale windows). Shop-independent — the same fixed windows come back
+-- for every shop — so rows are keyed on timeslot_id alone. Horizon is ~18
+-- days: Shopee truncates there even when a wider window is requested (see
+-- syncFlashSaleSlots in api/_lib/flashSaleSync.js, which upserts here with
+-- onConflict: timeslot_id). Read by the Copy sheet's free-slot picker
+-- (src/pages/FlashDeals.jsx, CopySheet) as flash_sale_slots minus this
+-- store's already-booked flash_sales.timeslot_id.
+--
+-- This table was defined in supabase/flash_deals_migration.sql but never
+-- actually run against either the old or new Supabase project — its absence
+-- is why the Copy dialog always reported "No free slots": the query errored,
+-- selectAllPaged returned {data: null}, and the UI rendered that as zero
+-- slots. Recorded here too so schema.sql (the consolidated table-shape
+-- reference) matches what the code needs.
+create table if not exists flash_sale_slots (
+  timeslot_id text primary key,
+  start_time timestamptz not null,
+  end_time timestamptz not null,
+  observed_at timestamptz default now()
+);
+
+create index if not exists idx_flash_sale_slots_start
+  on flash_sale_slots (start_time);

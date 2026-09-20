@@ -357,6 +357,8 @@ export default {
       disabledBanner:
         '⏸️ 复制功能已停用。这只是将要写入内容的预览 —— 不会发送到 Shopee。有待 8 月 2 日时段归属测试结果。',
       loadingSlots: '正在加载时段…',
+      loadSlotsError: '无法加载空闲时段。',
+      retry: '重试',
       chooseSlot: '选择时段',
       changeSlots: '更改时段（{{count}}）',
       removeSlot: '移除 {{slot}}',
