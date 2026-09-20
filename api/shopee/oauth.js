@@ -83,9 +83,14 @@ async function handleCallback(req, res) {
   const { access_token, refresh_token, expire_in } = tokenData;
   const tokenExpiresAt = new Date(Date.now() + expire_in * 1000).toISOString();
 
+  // Known shortcut: Shopee's OAuth redirect has no session-carrying mechanism
+  // (unlike TikTok/Lazada, which verify the session via an HMAC-signed cookie
+  // through the flow), so we can't attribute the store to the connecting user
+  // here. Hardcoding user_id until this is replaced with the same HMAC-cookie
+  // approach — out of scope for this migration.
   const { error: dbError } = await supabaseAdmin.from('stores').upsert(
     {
-      user_id: '82ccf862-7385-4e73-aa8a-df2923e3c4dd',
+      user_id: '7cf22914-0bd8-4743-89d5-a870199fb3e8',
       platform: 'shopee',
       shop_id: String(shop_id),
       access_token,
