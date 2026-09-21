@@ -908,11 +908,16 @@ function OrderCard({
           </div>
         )}
 
-        {(order.paidAt || order.packedAt) && (
-          <div className="mt-2 flex gap-4 text-[11px] tabular-nums text-gray-500">
+        {(order.paidAt || order.packedAt || order.awbPrintedAt) && (
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] tabular-nums text-gray-500">
             {order.paidAt && <span>{t('orders.paidAt', { date: formatDateTime(order.paidAt) })}</span>}
             {order.packedAt && (
               <span>{t('orders.packedAt', { date: formatDateTime(order.packedAt) })}</span>
+            )}
+            {order.awbPrintedAt && (
+              <span>
+                {t('orders.fields.printed')}: {formatDateTime(order.awbPrintedAt)}
+              </span>
             )}
           </div>
         )}
