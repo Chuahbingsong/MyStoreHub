@@ -47,18 +47,12 @@ function resolveDay(param, today) {
   return param && DAY_RE.test(param) && param >= oldest && param <= today ? param : today
 }
 
-function OrderRow({ order, day, t, formatDateTime }) {
+function OrderRow({ order, t, formatDateTime }) {
   const name = platformLabel(order.platform)
   const display = PLATFORM_DISPLAY[name]
   const statusKey = statusKeyFor(order.platform, order.status)
   const statusLabel = statusKey ? t(`status.${statusKey}`) : order.status || ''
   const statusClass = statusKey ? (STATUS_CLASS[statusKey] ?? DEFAULT_STATUS_CLASS) : DEFAULT_STATUS_CLASS
-
-  // The confusing case: an order counted on a day it wasn't placed. Compare
-  // KL calendar days (todayKL shifts to Malaysia time) and only call it out
-  // when they differ, so ordinary same-day orders stay quiet.
-  const placedOtherDay = order.createdAt && todayKL(Date.parse(order.createdAt)) !== day
-  const placedLabel = placedOtherDay ? formatDateTime(order.createdAt) : undefined
 
   return (
     <div className="border-b border-[#E8E6E1] px-3.5 py-3 last:border-b-0">
@@ -87,13 +81,8 @@ function OrderRow({ order, day, t, formatDateTime }) {
       </div>
 
       <p className="mt-1.5 text-xs text-[#6B7280]">
-        {t(`revenueBreakdown.countedOn.${order.bucketField}`)} · {formatDateTime(order.bucketAt)}
+        {t('revenueBreakdown.placed', { date: formatDateTime(order.createdAt) })}
       </p>
-      {placedLabel && (
-        <p className="mt-0.5 text-xs font-medium text-amber-700">
-          {t('revenueBreakdown.placed', { date: placedLabel })}
-        </p>
-      )}
     </div>
   )
 }
@@ -295,7 +284,7 @@ export default function RevenueBreakdown() {
                 <p className="py-8 text-center text-sm text-gray-500">{t('revenueBreakdown.empty')}</p>
               ) : (
                 data.orders.map((order) => (
-                  <OrderRow key={order.id} order={order} day={day} t={t} formatDateTime={formatDateTime} />
+                  <OrderRow key={order.id} order={order} t={t} formatDateTime={formatDateTime} />
                 ))
               )}
             </section>

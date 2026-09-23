@@ -23,9 +23,11 @@
 create index if not exists idx_orders_created_at
   on orders (order_created_at);
 
--- Already created by actionable_orders_migration.sql; included here too so
--- this file is runnable standalone. Backs the coalesce(paid_at, ...) window
--- filter below the same way idx_orders_created_at backs the old plain filter.
+-- No longer used: daily_sales() and actionable_order_rows() now both window on
+-- order_created_at (indexed above), so nothing reads paid_at for pruning. Kept
+-- only because earlier versions of these migrations created it — this file
+-- stays a no-op against a database that already has it. Safe to drop:
+--   drop index if exists idx_orders_paid_at;
 create index if not exists idx_orders_paid_at
   on orders (paid_at);
 
@@ -104,39 +106,31 @@ create index if not exists idx_orders_paid_at
 -- copy was deleted rather than left to drift. This file is the only place
 -- this status rule is expressed.
 --
--- DATE FIELD (changed 2026-08-24 to match todays_actionable_orders() — see
--- actionable_orders_migration.sql for the full audit this is based on):
---   coalesce(paid_at, order_created_at), NOT plain order_created_at. Intent:
---   an order counted here lands on the day it was PAID, so this report and
---   the Dashboard's "Orders Today"/"Revenue" tiles bucket the SAME order onto
---   the SAME day — tapping through from one to the other no longer means
---   comparing two different calendars.
+-- DATE FIELD — ORDER PLACEMENT date (changed 2026-09-23; before that it was
+-- coalesce(paid_at, order_created_at), i.e. payment date, since 2026-08-24):
+--   order_created_at only, converted to Asia/Kuala_Lumpur. Matches
+--   todays_actionable_orders() / actionable_order_rows() (see
+--   actionable_orders_migration.sql), so the Dashboard tiles and this report
+--   put the SAME order on the SAME day. Under the payment-date rule an order
+--   placed on the 18th and paid on the 20th counted on the 20th here but the
+--   18th on the Dashboard — two calendars for one order. Measured impact when
+--   this was changed: 123 of 772 orders in the previous 30 days moved day.
 --
---   The fallback to order_created_at is load-bearing, not cosmetic:
---     - Lazada: paid_at is ALWAYS null (its order API has no payment-time
---       field — see api/_lib/lazadaSync.js). Every Lazada order counted here
---       falls back to order_created_at, permanently.
---     - COD (any platform) between PROCESSED/SHIPPED and completion: the
---       platform only sets paid_at once it confirms cash was collected, which
---       is at COMPLETED/DELIVERED/TO_CONFIRM_RECEIVE, days after the order
---       was created (median 2, up to 9, in the 2026-08-24 audit) — so a COD
---       order sitting in PROCESSED/SHIPPED (both counted statuses above) has
---       no paid_at yet and also falls back to order_created_at.
---     - Non-COD Shopee/TikTok: paid_at is set same-day as order_created_at
---       (0% null in the audit), so the coalesce is a no-op there.
---   Net effect versus the old order_created_at-only rule: no change for
---   Lazada, no change for in-flight COD, no change for non-COD orders: the
---   only orders that move are completed COD orders, which shift from their
---   order-day to their (later) payment-day.
+--   Also fixes two problems the coalesce carried inside this one series:
+--     - It mixed meanings: Lazada has no paid_at at all (its order API has no
+--       payment-time field — see api/_lib/lazadaSync.js) so Lazada counted by
+--       order date, while Shopee/TikTok COD counted by payment date.
+--     - It was unstable: a COD order in PROCESSED/SHIPPED counted on its order
+--       day via the fallback, then jumped to a later day once the platform set
+--       paid_at at completion, changing an earlier day's total on re-query.
+--       order_created_at never changes, so a day's orders are now stable (the
+--       STATUS filter above can still move an order in or out as it progresses).
 --
---   That shift is RETROACTIVE, the same caveat todays_actionable_orders()
---   documents: a COD order in PROCESSED/SHIPPED counts today via the
---   order_created_at fallback (paid_at still null); once it completes and
---   the platform sets paid_at, a later query of THIS SAME p_days window can
---   move that order to a different day, changing that earlier day's total.
---   Anyone reconciling day-by-day against this function's past output should
---   know a re-run is not guaranteed to reproduce an earlier run's per-day
---   split for orders that completed in between.
+--   The status list above is untouched: this report still counts only paid-and-
+--   at-least-packed orders. So an order placed today that has not yet reached a
+--   counted status is absent from today's bar until it progresses, then appears
+--   on the day it was PLACED — an earlier day's bar can grow afterwards.
+--   paid_at is no longer read by this function.
 --
 -- Days with no sales come back as zeros rather than missing rows, so the chart
 -- has no phantom gaps and the caller never has to fill them.
@@ -182,15 +176,13 @@ as $$
     from bounds
   ),
   scoped as (
-    select (coalesce(o.paid_at, o.order_created_at) at time zone 'Asia/Kuala_Lumpur')::date as day,
+    select (o.order_created_at at time zone 'Asia/Kuala_Lumpur')::date as day,
            o.store_id,
            coalesce(o.total_amount, 0) as amount
     from orders o
-    -- Filtered on the SAME coalesced expression as the bucket above, not
-    -- order_created_at alone: a COD order created up to 9 days ago can have
-    -- paid_at land inside this window, and filtering on order_created_at
-    -- would prune it out of the scan before the bucket logic ever saw it.
-    where coalesce(o.paid_at, o.order_created_at) >= (select ts from window_start)
+    -- Same column as the bucket above, so the window can never prune an order
+    -- the bucket would have kept, and the index on it is usable directly.
+    where o.order_created_at >= (select ts from window_start)
       and (
         -- Shopee v2 order_status (SHOPEE_STATUS_MAP in src/pages/Orders.jsx)
         (o.platform = 'shopee' and o.order_status in (

@@ -212,10 +212,9 @@ export default function Dashboard() {
 
     // Orders Today + Revenue come from todays_actionable_orders() RPC, NOT
     // from scopedOrders — see supabase/actionable_orders_migration.sql. An
-    // order counts on the day it was PAID (Malaysia time) — falling back to
-    // order_created_at when paid_at is null, which is most of Lazada and any
-    // COD order not yet confirmed collected — UNLESS it's cancelled, or
-    // unpaid with a non-COD payment method. Both tiles read the same query
+    // order counts on the day it was PLACED (order_created_at, Malaysia
+    // time), so "Orders Today" means orders received today — UNLESS it's
+    // cancelled, or unpaid with a non-COD payment method. Both tiles read the same query
     // so they can never disagree, and Yesterday reads the same definition as
     // Today, so the tile's own two lines can't contradict each other either.
     const series = seriesFor(actionableReport, store)
@@ -258,8 +257,7 @@ export default function Dashboard() {
     // rather than re-deriving "today" and "counts as revenue" from
     // scopedOrders with a second, separately-maintained rule. A store maps
     // to exactly one platform, so summing each platform's stores' today
-    // figures reproduces the same coalesce(paid_at, order_created_at)
-    // bucketing and the same CANCELLED / non-COD-UNPAID exclusions the top
+    // figures reproduces the same order_created_at bucketing and the same CANCELLED / non-COD-UNPAID exclusions the top
     // tiles use, and the cards are therefore GUARANTEED to sum to the tile
     // above them rather than merely usually agreeing with it.
     return PLATFORM_ORDER.map((name) => {

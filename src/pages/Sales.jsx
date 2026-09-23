@@ -30,9 +30,9 @@ import {
 // excluded — while the Dashboard also counts unpaid COD and to-pack orders as
 // "happened today". So today's figure here can be LOWER than the Dashboard's,
 // by design; see sales.basis below for the exact rule shown in the UI.
-// Both now bucket days the same way — coalesce(paid_at, order_created_at) —
-// so an order that appears in both reports always lands on the same day; the
-// two can still disagree on COUNT, just never on WHICH DAY.
+// Both bucket days the same way — order_created_at (placement day, Malaysia
+// time) — so an order that appears in both reports always lands on the same
+// day; the two can still disagree on COUNT, just never on WHICH DAY.
 
 /**
  * ONE series, not four.

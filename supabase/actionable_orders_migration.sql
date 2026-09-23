@@ -26,9 +26,10 @@
 create index if not exists idx_orders_created_at
   on orders (order_created_at);
 
--- Supports the bucketing/window change below: the day an order counts on is
--- now keyed off paid_at first, so a query pruning on that column needs an
--- index on it too, not just order_created_at.
+-- Not used by anything any more — this file's functions and daily_sales() all
+-- window on order_created_at (indexed above). Kept so re-running against a
+-- database that already has it is a no-op; safe to drop
+-- (see sales_reporting_migration.sql).
 create index if not exists idx_orders_paid_at
   on orders (paid_at);
 
@@ -40,40 +41,29 @@ create index if not exists idx_orders_paid_at
 -- Dashboard's "Today" value and its "Yesterday" sub-line come from the SAME
 -- query and can never disagree with each other.
 --
--- DATE FIELD — PAYMENT date, not order date (changed 2026-08-24):
--- an order buckets on coalesce(paid_at, order_created_at), not plain
--- order_created_at. Intent: "orders paid today", so a COD order collected
--- today counts today even if it was placed days earlier, across every
--- payment method (not just cash-at-counter).
+-- DATE FIELD — ORDER PLACEMENT date (changed 2026-09-23; from 2026-08-24 to
+-- then it was coalesce(paid_at, order_created_at), i.e. payment date):
+-- an order buckets on order_created_at only, converted to Asia/Kuala_Lumpur.
+-- Intent: "Orders Today" means orders RECEIVED today. Under payment-date
+-- bucketing an order placed on the 18th but paid (e.g. a COD order confirmed
+-- collected) on the 20th counted on the 20th, so the tile did not mean what it
+-- said. paid_at no longer influences which day an order lands on.
 --
--- The coalesce to order_created_at is NOT a cosmetic fallback, it is load-
--- bearing — paid_at is null far more often than it's an edge case:
---   - Lazada: paid_at is ALWAYS null. Lazada's order API has no payment-time
---     field at all (see the mapping comment in api/_lib/lazadaSync.js) — this
---     is a permanent platform gap, not a sync bug, so every Lazada order
---     falls back to order_created_at indefinitely.
---   - COD (any platform), while still in fulfilment: Shopee/TikTok only set
---     paid_at once the order reaches COMPLETED/DELIVERED/TO_CONFIRM_RECEIVE —
---     i.e. when the platform confirms cash was collected, NOT when it ships.
---     Audited against live data on 2026-08-24: median 2 days, up to 9, after
---     order_created_at, and orders still sitting in SHIPPED/PROCESSED have no
---     paid_at yet. Those fall back to order_created_at until they complete.
---   - Non-COD Shopee/TikTok: paid_at is set same-day as order_created_at
---     (0% null in the same audit), so the coalesce is a no-op for these —
---     switching to paid_at changes nothing here.
--- Net effect of this change: it's a no-op for Lazada, a no-op for in-flight
--- COD, a no-op for non-COD orders, and reassigns a COMPLETED COD order from
--- its order-day to its completion-day. That reassignment is retroactive: an
--- order counted today via the order_created_at fallback (paid_at still null)
--- can, days later once the platform sets paid_at, silently move to a
--- different day's bucket on the next query — so a past day's total read here
--- is not guaranteed stable if re-queried later. Accepted trade for "paid
--- today" being literally true; do not build reconciliation against historical
--- reads of this function without accounting for that drift.
+-- Side benefit: an order's day can no longer move after the fact. Under the
+-- payment-date rule, a COD order counted via the order_created_at fallback
+-- would silently jump to a later day once the platform set paid_at, so past
+-- days' totals could change on re-query. order_created_at never changes, so a
+-- day's membership is now stable (its STATUS-based exclusions below can still
+-- change — e.g. an order later cancelled drops out).
+--
+-- daily_sales() (sales_reporting_migration.sql) buckets the same way, so the
+-- Dashboard and the Sales page put a given order on the same day. They can
+-- still differ on COUNT/amount: daily_sales() only counts paid-and-packed
+-- statuses, this counts everything actionable.
 --
 -- RULE (status filter — unchanged by the above, still status-based, not
--- date-based): an order counts when its (now payment-)day falls in the
--- window, AND it is NOT excluded by either of these:
+-- date-based): an order counts when its placement day falls in the window,
+-- AND it is NOT excluded by either of these:
 --   (1) CANCELLED — never counted, paid or not. A cancelled order converts to
 --       no money kept: if it was paid, the payment is refunded; if it was
 --       unpaid, it was never going to be paid. Counting it would contradict
@@ -122,12 +112,10 @@ create index if not exists idx_orders_paid_at
 -- would cap at 1,000 rows.
 --
 -- DATE FIELD used for both the bucket AND the window filter is
--- coalesce(o.paid_at, o.order_created_at) — see the long note above. The
--- window filter has to use the SAME coalesced expression as the bucket, not
--- order_created_at: a COD order created up to 9 days ago can have paid_at
--- fall inside today's window, and filtering on order_created_at alone would
--- exclude it from the scan before the bucket logic ever sees it, silently
--- dropping a payment that landed today.
+-- o.order_created_at — see the note above. Both use the same column so the
+-- window can never prune an order the bucket would have kept. An order with a
+-- NULL order_created_at matches neither and is not counted (sales_coverage()
+-- likewise ignores them); the sync writes this column for every order.
 -- ---------------------------------------------------------------------------
 -- ---------------------------------------------------------------------------
 -- actionable_order_rows(p_days)  — THE RULE, expressed exactly once.
@@ -141,9 +129,9 @@ create index if not exists idx_orders_paid_at
 -- drift from the tile — there is no second copy of the filter to fall out of
 -- step. Change the rule HERE and both follow.
 --
--- bucket_field records WHICH column the order was bucketed on ('paid_at', or
--- 'order_created_at' when paid_at is null — see the coalesce note above), so
--- the breakdown can show why an order counts on a day it wasn't placed.
+-- bucket_field / bucket_at are kept for return-shape compatibility. Since the
+-- switch to order-placement bucketing they are constant: bucket_field is always
+-- 'order_created_at' and bucket_at always equals o_created_at.
 --
 -- Output columns are prefixed (o_*, bucket_*) so they never shadow the table's
 -- own columns inside this SQL body.
@@ -186,11 +174,11 @@ as $$
          o.payment_method,
          coalesce(o.total_amount, 0)::numeric,
          o.order_created_at,
-         case when o.paid_at is not null then 'paid_at' else 'order_created_at' end,
-         coalesce(o.paid_at, o.order_created_at),
-         (coalesce(o.paid_at, o.order_created_at) at time zone 'Asia/Kuala_Lumpur')::date
+         'order_created_at'::text,
+         o.order_created_at,
+         (o.order_created_at at time zone 'Asia/Kuala_Lumpur')::date
   from orders o
-  where coalesce(o.paid_at, o.order_created_at) >= (select ts from window_start)
+  where o.order_created_at >= (select ts from window_start)
     -- (1) CANCELLED is never counted, paid or not.
     and not (
       (o.platform = 'shopee' and o.order_status = 'CANCELLED')
