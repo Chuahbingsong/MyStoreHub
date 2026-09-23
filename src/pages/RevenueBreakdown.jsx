@@ -174,8 +174,8 @@ export default function RevenueBreakdown() {
       <header className="px-4 pt-4 pb-2">
         <div className="flex items-center gap-2">
           <Link
-            to="/dashboard"
-            aria-label={t('nav.dashboard')}
+            to="/sales"
+            aria-label={t('sales.title')}
             className="-ml-1 flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 hover:bg-[#F3F4F6]"
           >
             <ArrowLeft className="h-5 w-5" />
@@ -290,12 +290,6 @@ export default function RevenueBreakdown() {
             </section>
 
             <p className="mx-4 mt-3 text-xs leading-relaxed text-gray-500">{t('dashboard.stats.basis')}</p>
-            <Link
-              to="/sales"
-              className="mx-4 mt-2 inline-block text-sm font-medium text-[#2563EB]"
-            >
-              {t('revenueBreakdown.salesLink')}
-            </Link>
           </>
         )}
       </PullToRefresh>

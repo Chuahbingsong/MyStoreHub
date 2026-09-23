@@ -123,13 +123,6 @@ export default {
       label: 'Shipping methods',
       description: 'Pick which couriers each store offers at checkout',
     },
-    // The Sales report's home now that the Dashboard Revenue tile opens the
-    // revenue breakdown instead (the bottom nav has no free slot).
-    salesReport: {
-      title: 'Reports',
-      label: 'Sales report',
-      description: 'Confirmed daily revenue for the last 30 days',
-    },
     connectedStores: {
       title: 'Connected Stores',
       empty: 'No stores connected yet',
@@ -632,6 +625,16 @@ export default {
       orders: 'Orders',
       noData: 'No data yet.',
       beforeHistory: 'Before synced history',
+      viewOrdersAria: 'View orders for {{date}}',
+    },
+    // Link to the order-by-order list (src/pages/RevenueBreakdown.jsx). The
+    // list follows the Dashboard's counting rule, which includes orders this
+    // report excludes — the description says so rather than promising the two
+    // add up.
+    breakdown: {
+      title: 'Revenue breakdown',
+      description:
+        'The individual orders counted in the Dashboard figure. Includes orders this report leaves out, so totals can differ.',
     },
     coverage: {
       partial:
@@ -649,7 +652,6 @@ export default {
   revenueBreakdown: {
     title: 'Revenue breakdown',
     subtitle: 'Every order counted in the Dashboard figure',
-    open: 'View revenue breakdown',
     allStores: 'All Stores',
     total: 'Revenue',
     orderCount_one: '{{count}} order',
@@ -665,7 +667,6 @@ export default {
     placed: 'Placed {{date}}',
     empty: 'No orders are counted on this day.',
     error: 'Could not load the revenue breakdown. The database function may not be installed yet.',
-    salesLink: 'Sales report →',
   },
   orders: {
     title: 'Orders',

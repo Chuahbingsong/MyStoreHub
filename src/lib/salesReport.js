@@ -210,3 +210,18 @@ export async function fetchRevenueBreakdown({ day, storeId = 'all' }) {
     figures: figuresForDay(seriesFor(report, storeId), day),
   }
 }
+
+/**
+ * URL of the Revenue breakdown page for a given view, so the Sales page can
+ * open it on the SAME store (and day, when it has one) instead of resetting to
+ * all-stores/today. Defaults are omitted from the query string — the page
+ * treats a missing `store`/`day` as all-stores/today — which keeps a plain
+ * link clean.
+ */
+export function revenueBreakdownPath({ day, storeId } = {}) {
+  const params = new URLSearchParams()
+  if (storeId && storeId !== 'all') params.set('store', storeId)
+  if (day && day !== todayKL()) params.set('day', day)
+  const query = params.toString()
+  return query ? `/revenue?${query}` : '/revenue'
+}

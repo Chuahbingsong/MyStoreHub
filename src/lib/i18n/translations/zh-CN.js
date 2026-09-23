@@ -113,12 +113,6 @@ export default {
       label: '配送方式',
       description: '选择各店铺在结账时提供的快递',
     },
-    // 销售报表的入口 —— 仪表盘营业额卡片现在打开营业额明细。
-    salesReport: {
-      title: '报表',
-      label: '销售报表',
-      description: '近 30 天每日已确认营业额',
-    },
     connectedStores: {
       title: '已连接店铺',
       empty: '尚未连接任何店铺',
@@ -588,6 +582,13 @@ export default {
       orders: '订单数',
       noData: '暂无数据。',
       beforeHistory: '早于已同步记录',
+      viewOrdersAria: '查看 {{date}} 的订单',
+    },
+    // 通往逐笔订单列表的入口。该列表按仪表盘的统计规则，包含本报表不计入的订单，
+    // 因此说明中直接写明合计可能不同。
+    breakdown: {
+      title: '营业额明细',
+      description: '仪表盘数字所包含的每一笔订单。包含本报表未计入的订单，因此合计可能不同。',
     },
     coverage: {
       partial:
@@ -602,7 +603,6 @@ export default {
   revenueBreakdown: {
     title: '营业额明细',
     subtitle: '仪表盘数字所包含的每一笔订单',
-    open: '查看营业额明细',
     allStores: '全部店铺',
     total: '营业额',
     orderCount_one: '{{count}} 个订单',
@@ -618,7 +618,6 @@ export default {
     placed: '下单于 {{date}}',
     empty: '这一天没有计入的订单。',
     error: '无法加载营业额明细，数据库函数可能尚未安装。',
-    salesLink: '销售报表 →',
   },
   orders: {
     buyerMessage: {

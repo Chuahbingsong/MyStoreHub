@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, Info } from 'lucide-react'
+import { ArrowLeft, ChevronRight, Info, ReceiptText } from 'lucide-react'
 import {
   Select,
   SelectContent,
@@ -17,6 +17,7 @@ import {
   coverageFor,
   fetchSalesReport,
   formatRM,
+  revenueBreakdownPath,
   seriesFor,
 } from '@/lib/salesReport'
 
@@ -33,6 +34,10 @@ import {
 // Both bucket days the same way — order_created_at (placement day, Malaysia
 // time) — so an order that appears in both reports always lands on the same
 // day; the two can still disagree on COUNT, just never on WHICH DAY.
+
+// The daily table's column template, shared by the header and every row so they
+// can't drift. Last column is the chevron that says "tap to open this day's orders".
+const ROW_GRID = 'grid grid-cols-[1fr_auto_auto_1rem] items-center gap-x-3 px-3'
 
 /**
  * ONE series, not four.
@@ -333,6 +338,29 @@ export default function Sales() {
             </div>
           </section>
 
+          {/* ---- order-level breakdown ----
+              Opens on the store selected above. The description says out loud
+              that the list follows the Dashboard's rule, not this report's:
+              it includes orders this report leaves out (unpaid COD, not yet
+              packed), so a day's total there can differ from the row here. */}
+          <Link
+            to={revenueBreakdownPath({ storeId: store })}
+            className="mx-4 mt-3 flex items-center gap-3 rounded-2xl border border-[#E8E6E1] bg-white p-3 shadow-card transition-transform active:scale-[0.98]"
+          >
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#2563EB]/15">
+              <ReceiptText className="h-5 w-5 text-[#2563EB]" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold text-[#1F2937]">
+                {t('sales.breakdown.title')}
+              </span>
+              <span className="mt-0.5 block text-xs leading-snug text-[#6B7280]">
+                {t('sales.breakdown.description')}
+              </span>
+            </span>
+            <ChevronRight className="h-5 w-5 shrink-0 text-[#2563EB]" />
+          </Link>
+
           {/* ---- chart ---- */}
           <section className="mx-4 mt-3 rounded-2xl border border-[#E8E6E1] bg-white p-3 shadow-card">
             <h2 className="mb-1 text-base font-semibold text-[#1F2937]">{t('sales.chart.title')}</h2>
@@ -349,47 +377,60 @@ export default function Sales() {
             <h2 className="border-b border-[#E8E6E1] px-3 py-2.5 text-base font-semibold text-[#1F2937]">
               {t('sales.table.title')}
             </h2>
-            <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 border-b border-[#E8E6E1] bg-[#FAF9F6] px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-gray-500">
+            <div className={cn(ROW_GRID, 'border-b border-[#E8E6E1] bg-[#FAF9F6] py-1.5 text-[11px] font-medium uppercase tracking-wide text-gray-500')}>
               <span>{t('sales.table.date')}</span>
               <span className="text-right">{t('sales.table.revenue')}</span>
               <span className="w-12 text-right">{t('sales.table.orders')}</span>
+              <span aria-hidden="true" />
             </div>
             {rows.length === 0 ? (
               <p className="py-6 text-center text-sm text-gray-400">{t('sales.table.noData')}</p>
             ) : (
               rows.map((d) => {
                 const beforeHistory = coverage?.firstDay != null && d.day < coverage.firstDay
-                return (
-                  <div
-                    key={d.day}
-                    className="grid grid-cols-[1fr_auto_auto] items-center gap-x-3 border-b border-[#ECECEC] px-3 py-2.5 last:border-b-0"
-                  >
-                    <span className="truncate text-sm text-[#1F2937]">{dayLabelLong(d.day)}</span>
-                    {beforeHistory ? (
-                      <span className="col-span-2 text-right text-xs italic text-gray-400">
+                const rowClass = cn(ROW_GRID, 'border-b border-[#ECECEC] py-2.5 last:border-b-0')
+
+                // Before synced history there is nothing to open, so that row
+                // stays a plain div.
+                if (beforeHistory) {
+                  return (
+                    <div key={d.day} className={rowClass}>
+                      <span className="truncate text-sm text-[#1F2937]">{dayLabelLong(d.day)}</span>
+                      <span className="col-span-3 text-right text-xs italic text-gray-400">
                         {t('sales.table.beforeHistory')}
                       </span>
-                    ) : (
-                      <>
-                        <span
-                          className={cn(
-                            'text-right text-base font-semibold tabular-nums',
-                            d.revenue > 0 ? 'text-[#1F2937]' : 'text-gray-300'
-                          )}
-                        >
-                          {formatRM(d.revenue)}
-                        </span>
-                        <span
-                          className={cn(
-                            'w-12 text-right text-sm font-medium tabular-nums',
-                            d.orderCount > 0 ? 'text-[#6B7280]' : 'text-gray-300'
-                          )}
-                        >
-                          {d.orderCount}
-                        </span>
-                      </>
-                    )}
-                  </div>
+                    </div>
+                  )
+                }
+
+                // Tapping a day opens the breakdown on that day AND the store
+                // selected above, rather than resetting to today/all stores.
+                return (
+                  <Link
+                    key={d.day}
+                    to={revenueBreakdownPath({ day: d.day, storeId: store })}
+                    aria-label={t('sales.table.viewOrdersAria', { date: dayLabelLong(d.day) })}
+                    className={cn(rowClass, 'transition-colors active:bg-[#FAF9F6]')}
+                  >
+                    <span className="truncate text-sm text-[#1F2937]">{dayLabelLong(d.day)}</span>
+                    <span
+                      className={cn(
+                        'whitespace-nowrap text-right text-base font-semibold tabular-nums',
+                        d.revenue > 0 ? 'text-[#1F2937]' : 'text-gray-300'
+                      )}
+                    >
+                      {formatRM(d.revenue)}
+                    </span>
+                    <span
+                      className={cn(
+                        'w-12 text-right text-sm font-medium tabular-nums',
+                        d.orderCount > 0 ? 'text-[#6B7280]' : 'text-gray-300'
+                      )}
+                    >
+                      {d.orderCount}
+                    </span>
+                    <ChevronRight className="h-4 w-4 text-[#2563EB]" />
+                  </Link>
                 )
               })
             )}

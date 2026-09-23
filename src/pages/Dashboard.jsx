@@ -233,12 +233,10 @@ export default function Dashboard() {
         label: t('dashboard.stats.revenue'),
         value: actionableReport ? formatRM(today.revenue) : formatRM(0),
         valueClass: 'text-[#1F2937]',
-        // Opens the order-by-order list behind this exact figure. The store
-        // filter travels with it so the list's total matches THIS tile, not
-        // the all-stores one. The Sales report moved to Settings (bottom nav
-        // is full) and is linked from the breakdown page too.
-        to: store === 'all' ? '/revenue' : `/revenue?store=${store}`,
-        toLabel: t('revenueBreakdown.open'),
+        // Bottom nav is full, so the revenue tile is the way into the report.
+        // The order-by-order breakdown is one tap further, from the Sales page.
+        to: '/sales',
+        toLabel: t('sales.open'),
         // Rendered as a smaller line under the value; same series, same day
         // bucketing, so it can never disagree with the number above it.
         sub: actionableReport ? `${t('sales.yesterday')}: ${formatRM(yesterday.revenue)}` : null,
