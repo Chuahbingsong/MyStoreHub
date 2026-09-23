@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
+  ChartColumn,
   Check,
   ChevronRight,
   Loader2,
@@ -518,6 +519,26 @@ export default function Settings() {
             </span>
             <span className="block text-xs text-[#6B7280]">
               {t('settings.shipping.description')}
+            </span>
+          </span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-[#9CA3AF]" />
+        </button>
+      </section>
+
+      <section className="px-4 py-3">
+        <h2 className="mb-2 font-semibold text-[#1F2937]">{t('settings.salesReport.title')}</h2>
+        <button
+          type="button"
+          onClick={() => navigate('/sales')}
+          className="flex w-full items-center gap-3 rounded-xl border border-[#ECECEC] bg-white p-4 text-left shadow-sm transition-colors hover:bg-[#FAFAF9]"
+        >
+          <ChartColumn className="h-5 w-5 shrink-0 text-[#6B7280]" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium text-[#1F2937]">
+              {t('settings.salesReport.label')}
+            </span>
+            <span className="block text-xs text-[#6B7280]">
+              {t('settings.salesReport.description')}
             </span>
           </span>
           <ChevronRight className="h-4 w-4 shrink-0 text-[#9CA3AF]" />

@@ -11,6 +11,7 @@ import FlashDeals from '@/pages/FlashDeals'
 import Inventory from '@/pages/Inventory'
 import Analytics from '@/pages/Analytics'
 import Sales from '@/pages/Sales'
+import RevenueBreakdown from '@/pages/RevenueBreakdown'
 import Settings from '@/pages/Settings'
 import Scan from '@/pages/Scan'
 import Shipping from '@/pages/Shipping'
@@ -34,6 +35,14 @@ function App() {
           element={
             <AppShell>
               <Sales />
+            </AppShell>
+          }
+        />
+        <Route
+          path="/revenue"
+          element={
+            <AppShell>
+              <RevenueBreakdown />
             </AppShell>
           }
         />

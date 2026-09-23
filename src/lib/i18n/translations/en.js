@@ -123,6 +123,13 @@ export default {
       label: 'Shipping methods',
       description: 'Pick which couriers each store offers at checkout',
     },
+    // The Sales report's home now that the Dashboard Revenue tile opens the
+    // revenue breakdown instead (the bottom nav has no free slot).
+    salesReport: {
+      title: 'Reports',
+      label: 'Sales report',
+      description: 'Confirmed daily revenue for the last 30 days',
+    },
     connectedStores: {
       title: 'Connected Stores',
       empty: 'No stores connected yet',
@@ -636,6 +643,34 @@ export default {
     basis:
       'Counts processed, shipped, to-confirm, completed and retry-ship orders. Excludes unpaid, cancelled and returns. Grouped by payment date (order date if payment date isn’t recorded). Days run 00:00–24:00 Malaysia time.',
     error: 'Could not load the sales report. The database function may not be installed yet.',
+  },
+  // The order-by-order list behind the Dashboard Revenue tile. Opened by
+  // tapping that tile; see src/pages/RevenueBreakdown.jsx.
+  revenueBreakdown: {
+    title: 'Revenue breakdown',
+    subtitle: 'Every order counted in the Dashboard figure',
+    open: 'View revenue breakdown',
+    allStores: 'All Stores',
+    total: 'Revenue',
+    orderCount_one: '{{count}} order',
+    orderCount_other: '{{count}} orders',
+    today: 'Today',
+    prevDay: 'Previous day',
+    nextDay: 'Next day',
+    dayPicker: 'Choose a day',
+    matches: 'Matches the Dashboard figure',
+    mismatch:
+      'The Dashboard shows {{expected}} ({{orders}}) for this day, but this list adds up differently. It may be incomplete — pull to refresh.',
+    // Which date field put the order on this day. paid_at is the normal case;
+    // order_created_at is the fallback when no payment time is recorded.
+    countedOn: {
+      paid_at: 'Counted on paid time',
+      order_created_at: 'Counted on order time — no paid time recorded',
+    },
+    placed: 'Placed {{date}}',
+    empty: 'No orders are counted on this day.',
+    error: 'Could not load the revenue breakdown. The database function may not be installed yet.',
+    salesLink: 'Sales report →',
   },
   orders: {
     title: 'Orders',

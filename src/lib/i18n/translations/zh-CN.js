@@ -113,6 +113,12 @@ export default {
       label: '配送方式',
       description: '选择各店铺在结账时提供的快递',
     },
+    // 销售报表的入口 —— 仪表盘营业额卡片现在打开营业额明细。
+    salesReport: {
+      title: '报表',
+      label: '销售报表',
+      description: '近 30 天每日已确认营业额',
+    },
     connectedStores: {
       title: '已连接店铺',
       empty: '尚未连接任何店铺',
@@ -591,6 +597,31 @@ export default {
     basis:
       '统计处理中、已发货、待收货、已完成及重新发货的订单，不含未付款、已取消及退货订单。按付款日期分组（若无付款日期则按下单日期）。每日以马来西亚时间 00:00–24:00 计算。',
     error: '无法加载销售报表，数据库函数可能尚未安装。',
+  },
+  // 点击仪表盘营业额卡片打开 —— 见 src/pages/RevenueBreakdown.jsx。
+  revenueBreakdown: {
+    title: '营业额明细',
+    subtitle: '仪表盘数字所包含的每一笔订单',
+    open: '查看营业额明细',
+    allStores: '全部店铺',
+    total: '营业额',
+    orderCount_one: '{{count}} 个订单',
+    orderCount_other: '{{count}} 个订单',
+    today: '今天',
+    prevDay: '前一天',
+    nextDay: '后一天',
+    dayPicker: '选择日期',
+    matches: '与仪表盘数字一致',
+    mismatch:
+      '仪表盘该日显示 {{expected}}（{{orders}}），但此列表合计不同，可能不完整 —— 请下拉刷新。',
+    countedOn: {
+      paid_at: '按付款时间计入',
+      order_created_at: '按下单时间计入 —— 无付款时间记录',
+    },
+    placed: '下单于 {{date}}',
+    empty: '这一天没有计入的订单。',
+    error: '无法加载营业额明细，数据库函数可能尚未安装。',
+    salesLink: '销售报表 →',
   },
   orders: {
     buyerMessage: {

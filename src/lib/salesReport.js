@@ -155,3 +155,62 @@ export async function fetchActionableOrdersReport({ days = ACTIONABLE_ORDERS_WIN
 
   return { combined, byStore }
 }
+
+// The Revenue breakdown reads at most this far back — the same 30-day cap
+// todays_actionable_orders() enforces, and SALES_WINDOW_DAYS above.
+export const REVENUE_BREAKDOWN_DAYS = 30
+
+/** Whole days from `fromDay` to `toDay` (both YYYY-MM-DD), UTC-safe. */
+export function daysBetweenISO(fromDay, toDay) {
+  return Math.round((Date.parse(`${toDay}T00:00:00Z`) - Date.parse(`${fromDay}T00:00:00Z`)) / 86400000)
+}
+
+// PostgREST silently truncates an RPC result at its max-rows setting. Stating
+// the ceiling here makes the bound explicit; the reconciliation below turns a
+// hit into a visible warning instead of a quietly short list.
+const BREAKDOWN_ROW_LIMIT = 1000
+
+/**
+ * Every order counted in the Dashboard Revenue figure for one KL day, plus the
+ * tile's own aggregate for that day so the caller can prove the two agree.
+ *
+ * The list comes from actionable_orders_for_day() — the same
+ * actionable_order_rows() the tile's todays_actionable_orders() sums — so the
+ * filter is not reimplemented here or in the page. Bounded in the database to
+ * one day (and one store, if given); nothing is fetched and filtered in JS.
+ *
+ * `figures` is the tile's number for that day, read through the same
+ * fetchActionableOrdersReport() the Dashboard uses. It is a second, tiny query
+ * (days x (stores + 1) rows) used only for the match check.
+ */
+export async function fetchRevenueBreakdown({ day, storeId = 'all' }) {
+  const daysBack = daysBetweenISO(day, todayKL()) + 1
+  const [listRes, report] = await Promise.all([
+    supabase
+      .rpc('actionable_orders_for_day', {
+        p_day: day,
+        p_store_id: storeId === 'all' ? null : storeId,
+      })
+      .limit(BREAKDOWN_ROW_LIMIT),
+    fetchActionableOrdersReport({ days: Math.min(Math.max(daysBack, 1), REVENUE_BREAKDOWN_DAYS) }),
+  ])
+  if (listRes.error) throw listRes.error
+
+  const orders = (listRes.data ?? []).map((row) => ({
+    id: row.order_id,
+    storeId: row.store_id,
+    platform: row.platform,
+    shopName: row.shop_name,
+    platformOrderId: row.platform_order_id,
+    status: row.order_status,
+    amount: Number(row.amount) || 0,
+    createdAt: row.order_created_at,
+    bucketField: row.bucket_field,
+    bucketAt: row.bucket_at,
+  }))
+
+  return {
+    orders,
+    figures: figuresForDay(seriesFor(report, storeId), day),
+  }
+}

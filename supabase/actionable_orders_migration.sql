@@ -2,8 +2,10 @@
 -- Actionable-orders migration — run once in the Supabase SQL editor.
 -- Idempotent: safe to re-run.
 --
--- Adds one read-only aggregate function powering the Dashboard's "Orders
--- Today" and "Revenue" tiles. No table changes, no data migration.
+-- Adds read-only functions powering the Dashboard's "Orders Today" and
+-- "Revenue" tiles and the Revenue breakdown list behind them:
+-- actionable_order_rows() holds the counting rule once; the tile aggregate and
+-- the per-day order list both read it. No table changes, no data migration.
 --
 -- This is a DIFFERENT question from daily_sales() (sales_reporting_migration.sql):
 -- daily_sales() answers "how much confirmed revenue has this order set
@@ -127,6 +129,90 @@ create index if not exists idx_orders_paid_at
 -- exclude it from the scan before the bucket logic ever sees it, silently
 -- dropping a payment that landed today.
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- actionable_order_rows(p_days)  — THE RULE, expressed exactly once.
+--
+-- One row per counted ORDER, with the day it buckets on. Everything above
+-- (date field, timezone, CANCELLED / non-COD-UNPAID exclusions) lives here and
+-- nowhere else. Two things read it:
+--   - todays_actionable_orders() below sums it into the Dashboard tiles;
+--   - actionable_orders_for_day() lists it for the Revenue breakdown page.
+-- Because the list and the tile are the same rows, the breakdown total cannot
+-- drift from the tile — there is no second copy of the filter to fall out of
+-- step. Change the rule HERE and both follow.
+--
+-- bucket_field records WHICH column the order was bucketed on ('paid_at', or
+-- 'order_created_at' when paid_at is null — see the coalesce note above), so
+-- the breakdown can show why an order counts on a day it wasn't placed.
+--
+-- Output columns are prefixed (o_*, bucket_*) so they never shadow the table's
+-- own columns inside this SQL body.
+-- ---------------------------------------------------------------------------
+drop function if exists actionable_order_rows(int);
+
+create or replace function actionable_order_rows(p_days int default 2)
+returns table (
+  o_id uuid,
+  o_store_id uuid,
+  o_platform text,
+  o_platform_order_id text,
+  o_status text,
+  o_payment_method text,
+  o_amount numeric,
+  o_created_at timestamptz,
+  bucket_field text,
+  bucket_at timestamptz,
+  bucket_day date
+)
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  with bounds as (
+    select (now() at time zone 'Asia/Kuala_Lumpur')::date as today_kl,
+           least(greatest(coalesce(p_days, 2), 1), 30) as n_days
+  ),
+  window_start as (
+    select ((bounds.today_kl - (bounds.n_days - 1))::timestamp
+             at time zone 'Asia/Kuala_Lumpur') as ts
+    from bounds
+  )
+  select o.id,
+         o.store_id,
+         o.platform,
+         o.platform_order_id,
+         o.order_status,
+         o.payment_method,
+         coalesce(o.total_amount, 0)::numeric,
+         o.order_created_at,
+         case when o.paid_at is not null then 'paid_at' else 'order_created_at' end,
+         coalesce(o.paid_at, o.order_created_at),
+         (coalesce(o.paid_at, o.order_created_at) at time zone 'Asia/Kuala_Lumpur')::date
+  from orders o
+  where coalesce(o.paid_at, o.order_created_at) >= (select ts from window_start)
+    -- (1) CANCELLED is never counted, paid or not.
+    and not (
+      (o.platform = 'shopee' and o.order_status = 'CANCELLED')
+      or (o.platform = 'tiktok' and o.order_status = 'CANCELLED')
+      or (o.platform = 'lazada' and o.order_status in ('canceled', 'failed'))
+    )
+    -- (2) Among what's left, exclude UNPAID orders that aren't COD.
+    -- Everything else — including UNPAID + COD — counts.
+    and not (
+      (
+        (o.platform = 'shopee' and o.order_status = 'UNPAID')
+        or (o.platform = 'tiktok' and o.order_status in ('UNPAID', 'ON_HOLD'))
+        or (o.platform = 'lazada' and o.order_status = 'unpaid')
+      )
+      and lower(trim(o.payment_method)) not in ('cash on delivery', 'cod')
+    );
+$$;
+
+-- ---------------------------------------------------------------------------
+-- todays_actionable_orders(p_days) — the Dashboard tiles. A pure aggregate of
+-- actionable_order_rows(); it carries no filter of its own.
+-- ---------------------------------------------------------------------------
 drop function if exists todays_actionable_orders(int);
 
 create or replace function todays_actionable_orders(p_days int default 2)
@@ -154,33 +240,11 @@ as $$
            interval '1 day'
          ) d
   ),
-  window_start as (
-    select ((bounds.today_kl - (bounds.n_days - 1))::timestamp
-             at time zone 'Asia/Kuala_Lumpur') as ts
-    from bounds
-  ),
   scoped as (
-    select (coalesce(o.paid_at, o.order_created_at) at time zone 'Asia/Kuala_Lumpur')::date as day,
-           o.store_id,
-           coalesce(o.total_amount, 0) as amount
-    from orders o
-    where coalesce(o.paid_at, o.order_created_at) >= (select ts from window_start)
-      -- (1) CANCELLED is never counted, paid or not.
-      and not (
-        (o.platform = 'shopee' and o.order_status = 'CANCELLED')
-        or (o.platform = 'tiktok' and o.order_status = 'CANCELLED')
-        or (o.platform = 'lazada' and o.order_status in ('canceled', 'failed'))
-      )
-      -- (2) Among what's left, exclude UNPAID orders that aren't COD.
-      -- Everything else — including UNPAID + COD — counts.
-      and not (
-        (
-          (o.platform = 'shopee' and o.order_status = 'UNPAID')
-          or (o.platform = 'tiktok' and o.order_status in ('UNPAID', 'ON_HOLD'))
-          or (o.platform = 'lazada' and o.order_status = 'unpaid')
-        )
-        and lower(trim(o.payment_method)) not in ('cash on delivery', 'cod')
-      )
+    select r.bucket_day as day,
+           r.o_store_id as store_id,
+           r.o_amount as amount
+    from actionable_order_rows(p_days) r
   )
   -- per store, zero-filled across every store the caller owns
   select g.day,
@@ -205,6 +269,60 @@ as $$
 
   order by 1, 2 nulls first;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- actionable_orders_for_day(p_day, p_store_id) — the Revenue breakdown list.
+--
+-- Every order todays_actionable_orders() counted on p_day, one row each. It is
+-- BOUNDED in the database: the window is only as wide as needed to reach p_day
+-- (at most 30 days, the same cap the aggregate has) and rows are cut to that
+-- single KL day, so the client never receives — or filters — other days.
+-- A p_day outside the last 30 days returns no rows. p_store_id NULL = all
+-- stores, matching the tile's own store filter.
+-- ---------------------------------------------------------------------------
+drop function if exists actionable_orders_for_day(date, uuid);
+
+create or replace function actionable_orders_for_day(p_day date, p_store_id uuid default null)
+returns table (
+  order_id uuid,
+  store_id uuid,
+  platform text,
+  shop_name text,
+  platform_order_id text,
+  order_status text,
+  payment_method text,
+  amount numeric,
+  order_created_at timestamptz,
+  bucket_field text,
+  bucket_at timestamptz
+)
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  select r.o_id,
+         r.o_store_id,
+         r.o_platform,
+         coalesce(nullif(s.shop_name, ''), s.shop_id::text),
+         r.o_platform_order_id,
+         r.o_status,
+         r.o_payment_method,
+         r.o_amount,
+         r.o_created_at,
+         r.bucket_field,
+         r.bucket_at
+  from actionable_order_rows(
+         (now() at time zone 'Asia/Kuala_Lumpur')::date - p_day + 1
+       ) r
+  left join stores s on s.id = r.o_store_id
+  where r.bucket_day = p_day
+    and (p_store_id is null or r.o_store_id = p_store_id)
+  order by r.bucket_at desc, r.o_id;
+$$;
+
+grant execute on function actionable_order_rows(int) to authenticated;
+grant execute on function actionable_orders_for_day(date, uuid) to authenticated;
 
 grant execute on function todays_actionable_orders(int) to authenticated;
 
