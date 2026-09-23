@@ -315,3 +315,55 @@ create table if not exists flash_sale_slots (
 
 create index if not exists idx_flash_sale_slots_start
   on flash_sale_slots (start_time);
+
+-- sales_coverage(): how far back synced order history goes, per store
+-- (store_id = that store) plus one overall row (store_id IS NULL). Read by
+-- fetchSalesReport() in src/lib/salesReport.js via supabase.rpc('sales_coverage')
+-- with NO arguments, and consumed by Sales.jsx to say "history starts 18 Jun"
+-- instead of drawing days before the sync began as zero-sales days.
+--
+-- Same definition as supabase/sales_reporting_migration.sql (which also defines
+-- daily_sales()). It was missing after the move to the new Supabase project,
+-- which made the whole Sales page 404 on this RPC — fetchSalesReport() awaits
+-- both RPCs together and throws on either error.
+--
+-- Deliberately NOT status-filtered: it answers "how far back does the record
+-- go", not "which orders count as revenue". Days are KL calendar days, and
+-- SECURITY INVOKER so orders' RLS scopes it to the caller's own stores.
+drop function if exists sales_coverage();
+
+create or replace function sales_coverage()
+returns table (
+  store_id uuid,
+  first_order_day date,
+  last_order_day date,
+  order_count bigint
+)
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  select o.store_id,
+         min((o.order_created_at at time zone 'Asia/Kuala_Lumpur')::date),
+         max((o.order_created_at at time zone 'Asia/Kuala_Lumpur')::date),
+         count(*)::bigint
+  from orders o
+  where o.order_created_at is not null
+  group by o.store_id
+
+  union all
+
+  select null::uuid,
+         min((o.order_created_at at time zone 'Asia/Kuala_Lumpur')::date),
+         max((o.order_created_at at time zone 'Asia/Kuala_Lumpur')::date),
+         count(*)::bigint
+  from orders o
+  where o.order_created_at is not null;
+$$;
+
+grant execute on function sales_coverage() to authenticated;
+
+-- Make the new function callable immediately rather than after PostgREST's
+-- schema cache reloads on its own.
+notify pgrst, 'reload schema';
