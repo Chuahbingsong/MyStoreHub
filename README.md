@@ -5,7 +5,8 @@ A mobile-first, multi-platform e-commerce seller dashboard — built to replace 
 Orders, shipping labels, flash deals, product boosts and sales reporting in one place, in English and 简体中文.
 
 <p align="center">
-  <img src="docs/screenshots/dashboard.png" alt="MyStore Hub dashboard and orders screens" width="800">
+  <img src="docs/screenshots/login.png" alt="MyStore Hub login page" width="800">
+  <img src="docs/screenshots/dashboard.png" alt="MyStore Hub dashboard" width="800">
 </p>
 
 ---
@@ -29,8 +30,8 @@ This is a real production system with real customers' orders flowing through it,
 - **Auto-pack** (opt-in, per store) — automatically arranges shipment for eligible orders on a schedule
 
 <p align="center">
-  <img src="docs/screenshots/orders-page.png" alt="Orders page with status tabs" width="400">
-  
+  <img src="docs/screenshots/orders.png" alt="Orders page with status tabs" width="400">
+  <img src="docs/screenshots/settings.png" alt="Settings page" width="400">
 </p>
 
 ### Shipping labels (AWB)
