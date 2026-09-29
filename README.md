@@ -5,7 +5,7 @@ A mobile-first, multi-platform e-commerce seller dashboard — built to replace 
 Orders, shipping labels, flash deals, product boosts and sales reporting in one place, in English and 简体中文.
 
 <p align="center">
-  <img src="docs/screenshots/hero.png" alt="MyStore Hub dashboard and orders screens" width="800">
+  <img src="docs/screenshots/dashboard.png" alt="MyStore Hub dashboard and orders screens" width="800">
 </p>
 
 ---
@@ -29,8 +29,8 @@ This is a real production system with real customers' orders flowing through it,
 - **Auto-pack** (opt-in, per store) — automatically arranges shipment for eligible orders on a schedule
 
 <p align="center">
-  <img src="docs/screenshots/orders.png" alt="Orders page with status tabs" width="400">
-  <img src="docs/screenshots/order-detail.png" alt="Order detail sheet" width="400">
+  <img src="docs/screenshots/orders-page.png" alt="Orders page with status tabs" width="400">
+  
 </p>
 
 ### Shipping labels (AWB)
@@ -39,10 +39,6 @@ This is a real production system with real customers' orders flowing through it,
 - **Native "Open with" chooser** on Android, so labels open straight into a thermal printer app
 - **Scan to check order** — point the camera at a waybill barcode to see the parcel's contents before sealing it
 
-<p align="center">
-  <img src="docs/screenshots/scan.png" alt="Scan to check order" width="400">
-  <img src="docs/screenshots/bulk-print.png" alt="Bulk AWB printing" width="400">
-</p>
 
 ### Marketing
 - **Flash deal monitoring** — live, upcoming and ended sessions with promo prices, quotas and countdowns
