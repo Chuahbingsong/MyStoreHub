@@ -41,6 +41,7 @@ import {
 } from '@/lib/awbPrintPrompt'
 import { useTranslation } from '@/lib/i18n/I18nContext'
 import { useDateTime } from '@/lib/i18n/datetime'
+import { PLATFORM_LABELS, platformDisplayName } from '@/lib/orderDisplay'
 import { STATUS, statusKeyFor, isNewOrderStatusKey } from '@/lib/orderStatus'
 
 const AUTO_SYNC_INTERVAL_MS = 60_000
@@ -78,6 +79,13 @@ const PLATFORM_META = {
     chipActive: 'bg-green-500/15 text-green-600',
     tint: 'bg-green-500/10',
   },
+  // Violet: the one hue not already taken by a marketplace, so a website
+  // order is distinguishable at a glance in a mixed list.
+  Website: {
+    badge: 'bg-violet-500/15 text-violet-600',
+    chipActive: 'bg-violet-500/15 text-violet-600',
+    tint: 'bg-violet-500/10',
+  },
 }
 
 // Shared pill style for the small informational flags on an order card
@@ -95,12 +103,18 @@ const ACTION_BTN_CLS = 'h-9 rounded-lg px-3 text-[13px] font-medium'
 // comparisons against on-screen English: the first translated label would have
 // made the platform chips filter nothing and the printed chips invert.
 //
-// Brand names double as their own keys (they are also the values in
-// order.platform, and read the same in both locales); only ALL_FILTER is
-// chrome, so it is the one platform entry that gets translated.
+// Brand names double as their own keys: Shopee / Lazada / TikTok / Shopify
+// are also the values in order.platform and read the same in both locales,
+// so using them as keys AND as on-screen text is safe.
+//
+// Two entries are NOT safe that way and are translated at render instead:
+// ALL_FILTER (pure chrome) via t('orders.filters.all'), and 'Website' —
+// a common noun rather than a brand, which a zh-CN user should read as 官网.
+// Both still compare as these stable keys; only the label is swapped, by
+// platformDisplayName() in src/lib/orderDisplay.js.
 const ALL_FILTER = 'all'
 
-const PLATFORM_FILTERS = [ALL_FILTER, 'Shopee', 'Lazada', 'TikTok', 'Shopify']
+const PLATFORM_FILTERS = [ALL_FILTER, 'Shopee', 'Lazada', 'TikTok', 'Shopify', 'Website']
 
 const PRINTED_FILTERS = [ALL_FILTER, 'notPrinted', 'printed']
 
@@ -361,13 +375,6 @@ function getInitialTab(searchParams) {
   return TAB_KEYS.has(fromUrl) ? fromUrl : DEFAULT_TAB
 }
 
-const PLATFORM_LABELS = {
-  shopee: 'Shopee',
-  lazada: 'Lazada',
-  tiktok: 'TikTok',
-  shopify: 'Shopify',
-}
-
 
 // shipping_method is whichever of pickup/dropoff/non_integrated Shopee's
 // info_needed selected when ship_order fired (see api/_lib/shopeeShip.js).
@@ -417,7 +424,12 @@ async function postOrderAction(session, order, action) {
 
 function mapSupabaseOrder(row, storeNames) {
   const platform = PLATFORM_LABELS[row.platform] ?? row.platform
-  const mappedStatusKey = statusKeyFor(row.platform, row.order_status)
+  // shippedAt is passed for the website 'refunded' split (Returns vs
+  // Cancelled) — see websiteRefundStatusKey in src/lib/orderStatus.js. It is
+  // ignored for every other platform and status.
+  const mappedStatusKey = statusKeyFor(row.platform, row.order_status, {
+    shippedAt: row.shipped_at,
+  })
 
   // Never let an unrecognized status make the order vanish: fall back to the
   // raw value (still routed somewhere visible via getOrderTab's OTHER_TAB
@@ -539,10 +551,18 @@ function renderActions(t, order, { fullWidth = false, onPrintAWB, printingId, on
   // Reject all go through postOrderAction -> POST /api/shopee/order-action,
   // and Print AWB goes through /api/shopee/print-awb — both Shopee-only
   // endpoints that don't know about TikTok/Lazada shops or tokens at all.
+  //
+  // Website orders have no actions for a DIFFERENT reason, and it is not a
+  // missing integration: catsplaytoy.com parcels are packed and labelled by
+  // hand on purpose. There is no AWB to print (PRINTABLE_PLATFORMS in
+  // src/lib/awb.js is Shopee-only) and nothing to ship_order against, so the
+  // card deliberately shows no buttons rather than buttons that would fail.
+  // Status changes arrive from the site's own webhook instead.
+  //
   // order.platform is the display label set in mapSupabaseOrder
-  // (PLATFORM_LABELS), so this compares against 'TikTok'/'Lazada', not the
-  // raw 'tiktok'/'lazada' platform column values.
-  if (order.platform === 'TikTok' || order.platform === 'Lazada') {
+  // (PLATFORM_LABELS), so this compares against 'TikTok'/'Lazada'/'Website',
+  // not the raw 'tiktok'/'lazada'/'website' platform column values.
+  if (order.platform === 'TikTok' || order.platform === 'Lazada' || order.platform === 'Website') {
     return null
   }
 
@@ -836,7 +856,7 @@ function OrderCard({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-xs text-[#6B7280]">
           <span className={cn('rounded-full px-2 py-0.5 font-medium', meta.badge)}>
-            {order.platform}
+            {platformDisplayName(t, order.platform)}
           </span>
           {order.storeName && <span className="truncate">{order.storeName}</span>}
           <span className="ml-auto shrink-0 font-mono tabular-nums text-gray-500">{order.id}</span>
@@ -892,7 +912,7 @@ function OrderCard({
         {order.courier && (
           <div className="mt-2.5 flex flex-wrap items-center gap-2">
             <span className="rounded-md bg-[#F3F4F6] px-2 py-1 text-[11px] text-[#6B7280]">
-              {order.platform}-MY-{order.courier}
+              {platformDisplayName(t, order.platform)}-MY-{order.courier}
             </span>
             {order.shippingMethod && (
               <span className="rounded-md bg-[#F3F4F6] px-2 py-1 text-[11px] text-[#6B7280]">
@@ -1972,7 +1992,7 @@ export default function Orders() {
                 active ? activeClass : 'bg-[#F3F4F6] text-[#6B7280]'
               )}
             >
-              {isAll ? t('orders.filters.all') : platform} ({platformCounts[platform] ?? 0})
+              {isAll ? t('orders.filters.all') : platformDisplayName(t, platform)} ({platformCounts[platform] ?? 0})
             </button>
           )
         })}
@@ -2135,7 +2155,7 @@ export default function Orders() {
                       PLATFORM_META[selectedOrder.platform].badge
                     )}
                   >
-                    {selectedOrder.platform}
+                    {platformDisplayName(t, selectedOrder.platform)}
                   </span>
                   <span className="font-mono text-sm text-[#6B7280]">{selectedOrder.id}</span>
                 </SheetTitle>
@@ -2211,7 +2231,7 @@ export default function Orders() {
                       <div className="flex justify-between text-[#6B7280]">
                         <span>{t('orders.fields.logistics')}</span>
                         <span className="text-[#1F2937]">
-                          {selectedOrder.platform}-MY-{selectedOrder.courier}
+                          {platformDisplayName(t, selectedOrder.platform)}-MY-{selectedOrder.courier}
                         </span>
                       </div>
                     )}

@@ -250,6 +250,16 @@ as $$
         or (o.platform = 'tiktok' and o.order_status in (
           'PARTIALLY_SHIPPING', 'AWAITING_COLLECTION', 'IN_TRANSIT', 'DELIVERED', 'COMPLETED'
         ))
+        -- Website / catsplaytoy.com (WEBSITE_STATUS_MAP in src/lib/orderStatus.js).
+        -- 'paid' IS counted here, unlike every other platform's To Pack
+        -- equivalent: a website order's payment is captured through our own
+        -- checkout before the webhook fires, so there is no unpaid website
+        -- order in this database at all. Full reasoning lives in
+        -- supabase/website_platform_migration.sql section D, which is where
+        -- this clause was introduced — keep the copies in step.
+        or (o.platform = 'website' and o.order_status in (
+          'paid', 'shipped'
+        ))
       )
   )
   -- per store, zero-filled across every store the caller owns
@@ -359,6 +369,13 @@ as $$
       (o.platform = 'shopee' and o.order_status = 'CANCELLED')
       or (o.platform = 'tiktok' and o.order_status = 'CANCELLED')
       or (o.platform = 'lazada' and o.order_status in ('canceled', 'failed'))
+      -- Website / catsplaytoy.com: BOTH terminal no-money-kept states.
+      -- 'refunded' is excluded here even though canonical Returned is NOT
+      -- excluded for the marketplaces — a website refund is already settled
+      -- and the money is back with the buyer, so nothing is actionable and
+      -- nothing is kept. See supabase/website_platform_migration.sql
+      -- section E, where this clause was introduced.
+      or (o.platform = 'website' and o.order_status in ('cancelled', 'refunded'))
     )
     -- (2) Among what's left, exclude UNPAID orders that aren't COD.
     -- Everything else — including UNPAID + COD — counts.

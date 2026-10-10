@@ -27,6 +27,10 @@ export default {
     returned: '已退货',
     cancelled: '已取消',
   },
+  // See en.js. Only the non-brand platform name needs a translation.
+  platforms: {
+    website: '官网',
+  },
   errors: {
     timeout: '请求超时，请重试。',
     badResponse: '服务器返回了意外的响应，请重试。',
@@ -164,6 +168,7 @@ export default {
       tiktokStartErrorToast: '启动 TikTok Shop 连接失败。',
       lazadaLoginRequired: '请先登录后再连接 Lazada。',
       lazadaStartErrorToast: '启动 Lazada 连接失败。',
+      webhookOnly: '订单自动接收，无需连接',
     },
     orders: {
       title: '订单',

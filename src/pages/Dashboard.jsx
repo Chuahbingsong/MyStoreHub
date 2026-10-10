@@ -21,6 +21,7 @@ import {
   DEFAULT_STATUS_CLASS,
   PLATFORM_DISPLAY,
   STATUS_CLASS,
+  platformDisplayName,
   platformLabel,
 } from '@/lib/orderDisplay'
 import {
@@ -33,13 +34,13 @@ import {
 } from '@/lib/salesReport'
 
 const ORDER_COLUMNS =
-  'id, store_id, platform, order_status, buyer_name, total_amount, order_created_at, platform_order_id'
+  'id, store_id, platform, order_status, buyer_name, total_amount, order_created_at, platform_order_id, shipped_at'
 
 // The recent-orders card shows 5. Fetched per store (not as one global limit)
 // because the store filter is applied client-side — see fetchData.
 const RECENT_ORDERS_PER_STORE = 5
 
-const PLATFORM_ORDER = ['Shopee', 'Lazada', 'TikTok', 'Shopify']
+const PLATFORM_ORDER = ['Shopee', 'Lazada', 'TikTok', 'Shopify', 'Website']
 
 function formatRevenue(amount) {
   return `RM ${Math.round(amount).toLocaleString('en-MY')}`
@@ -272,6 +273,9 @@ export default function Dashboard() {
       )
       return {
         name,
+        // Stable key above, translated label here — 'Website' is a common
+        // noun, not a brand like the others (see platformDisplayName).
+        label: platformDisplayName(t, name),
         dotClass: display.dotClass,
         // t() picks _one/_other off `count` itself — see pluralKey in
         // I18nProvider. The ternary this replaces did the same thing by hand.
@@ -286,7 +290,11 @@ export default function Dashboard() {
     return scopedOrders.slice(0, 5).map((row) => {
       const name = platformLabel(row.platform)
       const display = PLATFORM_DISPLAY[name] ?? PLATFORM_DISPLAY.Shopee
-      const statusKey = statusKeyFor(row.platform, row.order_status)
+      // shippedAt drives the website 'refunded' split — see
+      // websiteRefundStatusKey in src/lib/orderStatus.js.
+      const statusKey = statusKeyFor(row.platform, row.order_status, {
+        shippedAt: row.shipped_at,
+      })
       // Unmapped raw statuses fall back to Shopee's own raw string verbatim
       // (that's data passthrough, same treatment as an unrecognized status
       // anywhere else in the app) rather than forcing it through a
@@ -391,7 +399,7 @@ export default function Dashboard() {
                 <div key={platform.name} className="rounded-2xl border border-[#E8E6E1] bg-white p-3.5 shadow-card">
                   <div className="flex items-center gap-2">
                     <span className={cn('h-2.5 w-2.5 shrink-0 rounded-full', platform.dotClass)} />
-                    <span className="truncate text-sm font-medium text-[#1F2937]">{platform.name}</span>
+                    <span className="truncate text-sm font-medium text-[#1F2937]">{platform.label}</span>
                   </div>
                   {platform.connected ? (
                     <>

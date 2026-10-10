@@ -31,6 +31,17 @@ export default {
     returned: 'Returned',
     cancelled: 'Cancelled',
   },
+  // Platform NAMES — only for the one platform whose name is not a brand.
+  //
+  // Shopee / Lazada / TikTok / Shopify are brand names: spelled identically
+  // in both locales, which is why Orders.jsx can use them simultaneously as
+  // filter keys and as on-screen text, and why they are absent from here.
+  // 'Website' is a common noun and genuinely needs translating, so it is
+  // resolved at render time through platformDisplayName() in
+  // src/lib/orderDisplay.js while 'Website' stays the stable internal key.
+  platforms: {
+    website: 'Website',
+  },
   // Request-failure wording shared by every page — see describeRequestError in
   // src/lib/apiBase.js, which distinguishes these three failure modes so a CORS
   // break can't look identical to a Shopee-side error.
@@ -174,6 +185,10 @@ export default {
       tiktokStartErrorToast: 'Failed to start TikTok Shop connection.',
       lazadaLoginRequired: 'You must be logged in to connect Lazada.',
       lazadaStartErrorToast: 'Failed to start Lazada connection.',
+      // Shown instead of a Connect button for a webhook-only platform (see
+      // webhookOnly in src/pages/Settings.jsx). 'Coming soon' would be wrong
+      // here — orders are already arriving.
+      webhookOnly: 'Orders arrive automatically — nothing to connect',
     },
     orders: {
       title: 'Orders',

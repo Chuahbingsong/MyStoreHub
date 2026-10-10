@@ -184,6 +184,13 @@ as $$
       (o.platform = 'shopee' and o.order_status = 'CANCELLED')
       or (o.platform = 'tiktok' and o.order_status = 'CANCELLED')
       or (o.platform = 'lazada' and o.order_status in ('canceled', 'failed'))
+      -- Website / catsplaytoy.com: BOTH terminal no-money-kept states.
+      -- 'refunded' is excluded here even though canonical Returned is NOT
+      -- excluded for the marketplaces — a website refund is already settled
+      -- and the money is back with the buyer, so nothing is actionable and
+      -- nothing is kept. See supabase/website_platform_migration.sql
+      -- section E, where this clause was introduced.
+      or (o.platform = 'website' and o.order_status in ('cancelled', 'refunded'))
     )
     -- (2) Among what's left, exclude UNPAID orders that aren't COD.
     -- Everything else — including UNPAID + COD — counts.

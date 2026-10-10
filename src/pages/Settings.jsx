@@ -32,6 +32,7 @@ import {
   enablePush,
   disablePush,
 } from '@/lib/push'
+import { platformDisplayName } from '@/lib/orderDisplay'
 import { useTranslation } from '@/lib/i18n/I18nContext'
 import { useDateTime } from '@/lib/i18n/datetime'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
@@ -60,6 +61,19 @@ const PLATFORMS = [
     name: 'Shopify',
     dotClass: 'bg-green-500',
     enabled: false,
+  },
+  {
+    key: 'website',
+    name: 'Website',
+    dotClass: 'bg-violet-500',
+    enabled: true,
+    // No OAuth, unlike every other row here: catsplaytoy.com PUSHES orders
+    // to /api/website signed with a shared HMAC secret, so there is nothing
+    // for the user to connect and no token to refresh. webhookOnly swaps the
+    // Connect button for a line of explanatory text — a disabled Connect
+    // button would imply this is unfinished, and 'Coming soon' would be
+    // plainly wrong once orders are flowing in.
+    webhookOnly: true,
   },
 ]
 
@@ -754,14 +768,21 @@ export default function Settings() {
                   <ShoppingBag className="h-4 w-4 text-white" />
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-[#1F2937]">{platform.name}</p>
+                  <p className="text-sm font-medium text-[#1F2937]">
+                    {platformDisplayName(t, platform.name)}
+                  </p>
                   {!platform.enabled && (
                     <p className="text-xs text-gray-500">{t('settings.connectStore.comingSoon')}</p>
+                  )}
+                  {platform.webhookOnly && (
+                    <p className="text-xs text-gray-500">
+                      {t('settings.connectStore.webhookOnly')}
+                    </p>
                   )}
                 </div>
               </div>
 
-              {platform.key === 'shopee' ? (
+              {platform.webhookOnly ? null : platform.key === 'shopee' ? (
                 <Button
                   size="sm"
                   onClick={handleConnectShopee}

@@ -291,8 +291,13 @@ export default function Scan() {
 
   // stores.platform is the row's own lowercase slug; order_status is whatever
   // that platform's sync wrote.
+  // shippedAt splits a website 'refunded' order between Returns and
+  // Cancelled — see websiteRefundStatusKey in src/lib/orderStatus.js. The
+  // lookup selects '*', so shipped_at is already on the row.
   const resultStatusKey = result
-    ? statusKeyFor(result.stores?.platform ?? result.platform, result.order_status)
+    ? statusKeyFor(result.stores?.platform ?? result.platform, result.order_status, {
+        shippedAt: result.shipped_at,
+      })
     : null
   // paid_at is null on a meaningful share of Shopee orders (see autoPack.js's
   // paid_at ?? order_created_at fallback) — formatDateTime already returns

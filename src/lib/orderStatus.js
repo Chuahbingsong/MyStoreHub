@@ -187,10 +187,73 @@ export const LAZADA_STATUS_MAP = {
   failed: STATUS.CANCELLED,
 }
 
+// catsplaytoy.com — our own website, ingested by webhook rather than polled
+// (api/website.js -> api/_lib/websiteOrders.js, which writes these raw values
+// into orders.order_status verbatim, same as every other platform).
+//
+// The shortest map here by far, because the site only has four states and each
+// means exactly one thing. Nothing is lossy and nothing is a guess: unlike
+// TIKTOK_STATUS_MAP (documented but unverified) and LAZADA_STATUS_MAP (reverse
+// engineered from live data), this vocabulary is defined by code we own, and
+// it is listed in full in supabase/website_platform_migration.sql.
+//
+// 'paid' is canonical TO_PACK: payment is already captured when the webhook
+// fires, so a paid website order is straight away a parcel to pack. Note this
+// is also the one platform whose To Pack equivalent COUNTS AS REVENUE in
+// daily_sales() — see section D of that migration for why.
+//
+// 'refunded' is DELIBERATELY ABSENT, and must not be added here: it maps to
+// two different canonical statuses depending on the order's shipped_at, which
+// a static table cannot express. statusKeyFor() resolves it per-order — see
+// the note there.
+export const WEBSITE_STATUS_MAP = {
+  paid: STATUS.TO_PACK,
+  shipped: STATUS.SHIPPED,
+  cancelled: STATUS.CANCELLED,
+}
+
 export const RAW_STATUS_MAP_BY_PLATFORM = {
   shopee: SHOPEE_STATUS_MAP,
   tiktok: TIKTOK_STATUS_MAP,
   lazada: LAZADA_STATUS_MAP,
+  website: WEBSITE_STATUS_MAP,
+}
+
+/**
+ * Website 'refunded' — the one status in this file that a lookup table cannot
+ * answer, because the canonical status depends on the ORDER, not just on the
+ * status string:
+ *
+ *   shipped_at set  -> RETURNED  (goods physically went out and are coming
+ *                                 back; they still need receiving, inspecting
+ *                                 and restocking, which is the Returns tab's
+ *                                 whole job)
+ *   shipped_at null -> CANCELLED (money refunded before anything moved —
+ *                                 nothing to receive, nothing to do)
+ *
+ * This is the same distinction LAZADA_STATUS_MAP's long note draws between the
+ * Returns tab ("goods are on their way back or already back") and Cancelled
+ * ("no goods ever moved"). The website is simply the one platform that reports
+ * both outcomes under a single word, so the split happens here.
+ *
+ * When shipped_at was NOT SUPPLIED by the caller at all (as opposed to being
+ * null), this warns and resolves to RETURNED. That default is deliberate: a
+ * refund sitting in Returns when it should be in Cancelled is visible and
+ * self-correcting, whereas the reverse quietly buries goods that are coming
+ * back. Same reasoning as LAZADA_STATUS_MAP's `confirmed` note — when unsure,
+ * prefer the bucket that surfaces work over the one that hides it.
+ */
+function websiteRefundStatusKey(options) {
+  if (!options || !('shippedAt' in options)) {
+    console.warn(
+      '[orderStatus] statusKeyFor() was called for a website `refunded` order without ' +
+        'shippedAt — defaulting to Returned. Pass { shippedAt: row.shipped_at } so the order ' +
+        'is routed to Returns or Cancelled correctly.'
+    )
+    return STATUS.RETURNED
+  }
+
+  return options.shippedAt ? STATUS.RETURNED : STATUS.CANCELLED
 }
 
 /**
@@ -203,8 +266,16 @@ export const RAW_STATUS_MAP_BY_PLATFORM = {
  * @param platform lowercase platform slug as stored in the row ('shopee', ...)
  * @param rawStatus the platform's own status value, stored verbatim by the
  *   sync jobs (see api/_lib/shopeeSync.js and friends)
+ * @param options per-order fields needed by the few statuses a static table
+ *   can't resolve. Today that is only `shippedAt` (orders.shipped_at), for
+ *   website 'refunded' — see websiteRefundStatusKey above. Callers that have
+ *   the row should always pass it; it is ignored for every other status.
  */
-export function statusKeyFor(platform, rawStatus) {
+export function statusKeyFor(platform, rawStatus, options = undefined) {
+  if (platform === 'website' && rawStatus === 'refunded') {
+    return websiteRefundStatusKey(options)
+  }
+
   return RAW_STATUS_MAP_BY_PLATFORM[platform]?.[rawStatus] ?? null
 }
 
