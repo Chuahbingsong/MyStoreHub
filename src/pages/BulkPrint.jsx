@@ -342,6 +342,7 @@ export default function BulkPrint() {
           storeId: entry.store_id,
           orderSnList: entry.order_sn_list,
         })),
+        mode: 'bulk',
         meta: { mergedAll: true, printedCount },
       })
 
@@ -452,6 +453,7 @@ export default function BulkPrint() {
         storeId: group.storeId,
         accessToken: session.access_token,
         orderSnList: deliveredOrderSns,
+        mode: 'bulk',
         meta: { section, group, printedCount },
       })
 

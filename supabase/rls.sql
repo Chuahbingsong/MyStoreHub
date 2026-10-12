@@ -249,3 +249,32 @@ create policy "order_items_delete_own" on order_items
         and stores.user_id = auth.uid()
     )
   );
+
+-- awb_print_events: ownership reached through orders -> stores, same as
+-- order_items. Mirrored in supabase/awb_print_history_migration.sql.
+--
+-- select + insert only, deliberately: the print history is append-only, and a
+-- client that could update or delete an entry would reintroduce exactly the
+-- data loss the table exists to fix. The server writes with the service-role
+-- key, which bypasses RLS.
+alter table awb_print_events enable row level security;
+
+create policy "awb_print_events_select_own" on awb_print_events
+  for select using (
+    exists (
+      select 1 from orders
+      join stores on stores.id = orders.store_id
+      where orders.id = awb_print_events.order_id
+        and stores.user_id = auth.uid()
+    )
+  );
+
+create policy "awb_print_events_insert_own" on awb_print_events
+  for insert with check (
+    exists (
+      select 1 from orders
+      join stores on stores.id = orders.store_id
+      where orders.id = awb_print_events.order_id
+        and stores.user_id = auth.uid()
+    )
+  );

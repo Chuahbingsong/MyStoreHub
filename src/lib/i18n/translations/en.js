@@ -773,6 +773,13 @@ export default {
       packed: 'Packed',
       printed: 'Printed',
       autoSuffix: '(auto)',
+      // Print history. The row shows the count, with every print listed under
+      // it newest first — awb_printed_at alone used to be overwritten on each
+      // reprint, so only the latest was ever visible.
+      printedTimes_one: '{{count}} time',
+      printedTimes_other: '{{count}} times',
+      printModeSingle: 'Single',
+      printModeBulk: 'Bulk',
       qty: 'Qty',
       subtotal: 'Subtotal',
       shippingFee: 'Shipping',

@@ -367,3 +367,32 @@ grant execute on function sales_coverage() to authenticated;
 -- Make the new function callable immediately rather than after PostgREST's
 -- schema cache reloads on its own.
 notify pgrst, 'reload schema';
+
+-- awb_print_events: one append-only row per AWB print, so a reprint no longer
+-- discards the earlier timestamp. orders.awb_printed_at keeps the FIRST print
+-- (api/_lib/awbPrinted.js writes it only when null) and this table carries
+-- every print; orders.awb_printed is unchanged and still the flag BulkPrint's
+-- "unprinted" filter reads.
+--
+-- Mirrored in supabase/awb_print_history_migration.sql, which also backfills
+-- existing awb_printed_at values — run THAT against a database that already
+-- exists, since the `create table if not exists` here is a no-op on one.
+create table if not exists awb_print_events (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid not null references orders (id) on delete cascade,
+  store_id uuid not null references stores (id) on delete cascade,
+  platform_order_id text not null,
+  printed_at timestamptz not null default now(),
+  -- 'unknown' is only ever written by the migration's backfill, where the
+  -- mode predates the table. Application code writes 'single' or 'bulk'.
+  print_mode text not null default 'single'
+    check (print_mode in ('single', 'bulk', 'unknown')),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_awb_print_events_order_printed_at
+  on awb_print_events (order_id, printed_at desc);
+
+-- Again, so awb_print_events is queryable immediately rather than after
+-- PostgREST's schema cache reloads on its own.
+notify pgrst, 'reload schema';

@@ -103,11 +103,16 @@ export async function deliverPdf(blob, filename) {
 
 /**
  * Tells the server a batch of orders' AWBs actually reached the device, so it
- * can flip awb_printed. Called only after deliverPdf() resolves for those
- * orders — see api/shopee/confirm-awb-printed.js for why this is a separate
- * step from print-awb rather than something print-awb does itself.
+ * can flip awb_printed and append a print-history row per order. Called only
+ * after deliverPdf() resolves for those orders — see
+ * api/shopee/confirm-awb-printed.js for why this is a separate step from
+ * print-awb rather than something print-awb does itself.
+ *
+ * `mode` is history metadata: 'single' for one order printed on its own,
+ * 'bulk' for any multi-order run. It only labels the history entry — nothing
+ * about the marking itself depends on it.
  */
-export async function confirmAwbPrinted(accessToken, storeId, orderSnList) {
+export async function confirmAwbPrinted(accessToken, storeId, orderSnList, mode = 'single') {
   if (!orderSnList?.length) return
   try {
     const res = await fetch(apiUrl('/api/shopee/confirm-awb-printed'), {
@@ -116,7 +121,11 @@ export async function confirmAwbPrinted(accessToken, storeId, orderSnList) {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ store_id: storeId, order_sn_list: orderSnList }),
+      body: JSON.stringify({
+        store_id: storeId,
+        order_sn_list: orderSnList,
+        print_mode: mode,
+      }),
     })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))

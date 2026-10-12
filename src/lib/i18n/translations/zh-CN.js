@@ -719,6 +719,11 @@ export default {
       packed: '打包时间',
       printed: '打印时间',
       autoSuffix: '（自动）',
+      // 打印历史。两种形式的字符串在中文里相同 —— 中文没有复数变化。
+      printedTimes_one: '{{count}} 次',
+      printedTimes_other: '{{count}} 次',
+      printModeSingle: '单张',
+      printModeBulk: '批量',
       qty: '数量',
       subtotal: '小计',
       shippingFee: '运费',

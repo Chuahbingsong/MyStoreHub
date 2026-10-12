@@ -34,7 +34,7 @@ async function handler(req, res) {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
 
-  const { store_id, order_sn_list } = req.body ?? {};
+  const { store_id, order_sn_list, print_mode } = req.body ?? {};
 
   if (!store_id) {
     return res.status(400).json({ success: false, error: 'store_id is required' });
@@ -66,11 +66,26 @@ async function handler(req, res) {
     return res.status(403).json({ success: false, error: 'Forbidden' });
   }
 
-  const { markedCount, error } = await markOrdersPrinted(store.id, order_sn_list);
+  // print_mode is history metadata only ('single' | 'bulk'); markOrdersPrinted
+  // normalises anything unrecognised rather than rejecting the request, since
+  // the label has already printed by the time the client calls this.
+  const { markedCount, historyCount, error, historyError } = await markOrdersPrinted(
+    store.id,
+    order_sn_list,
+    { mode: print_mode }
+  );
 
   if (error) {
     return res.status(500).json({ success: false, error: 'Failed to record printed orders' });
   }
 
-  return res.status(200).json({ success: true, marked_count: markedCount });
+  // A history failure is NOT a request failure: awb_printed/awb_printed_at are
+  // already written and the PDF is already on the device. Reported so the
+  // response is honest about the history being incomplete.
+  return res.status(200).json({
+    success: true,
+    marked_count: markedCount,
+    history_count: historyCount,
+    ...(historyError ? { history_error: 'Failed to record print history' } : {}),
+  });
 }

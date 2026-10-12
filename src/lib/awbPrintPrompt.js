@@ -15,7 +15,7 @@ const PENDING_PRINT_TIMEOUT_MS = 10 * 60 * 1000
 // unmounting (e.g. user navigates away) between arming and the resume event,
 // and it must reset to nothing on a fresh app launch — which it does for
 // free by living only in memory, never persisted to disk.
-// { groups: [{ storeId, orderSnList }], orderSnList, meta, armedAt }
+// { groups: [{ storeId, orderSnList }], orderSnList, mode, meta, armedAt }
 // `groups` exists because Print All Unprinted spans several stores and
 // confirm-awb-printed is scoped to one; `orderSnList` is kept as the flat
 // list of every SN so existing callers can still read a count off it.
@@ -75,8 +75,14 @@ function toGroups({ storeId, orderSnList, groups }) {
  * Accepts one store ({ storeId, orderSnList }) or several
  * ({ groups: [{ storeId, orderSnList }] }) — the latter for a print run that
  * spans stores.
+ *
+ * `mode` ('single' | 'bulk') is carried through to the confirm so the print
+ * history records how the run was triggered. It has to live on `pending`
+ * rather than be re-derived at confirm time: by then the only thing left is
+ * the SN list, and a bulk run of one order is indistinguishable from a single
+ * print by count alone.
  */
-export function armPendingPrint({ storeId, orderSnList, groups, meta }) {
+export function armPendingPrint({ storeId, orderSnList, groups, mode = 'single', meta }) {
   if (!isNativePlatform()) return
   const resolved = toGroups({ storeId, orderSnList, groups })
   if (resolved.length === 0) return
@@ -85,6 +91,7 @@ export function armPendingPrint({ storeId, orderSnList, groups, meta }) {
   pending = {
     groups: resolved,
     orderSnList: resolved.flatMap((group) => group.orderSnList),
+    mode,
     meta: meta ?? null,
     armedAt: Date.now(),
   }
@@ -104,7 +111,7 @@ export function usePendingAwbPrint() {
  */
 export async function confirmPendingAwbPrint() {
   if (!pending) return
-  const { groups } = pending
+  const { groups, mode } = pending
   pending = null
   promptVisible = false
   notify()
@@ -117,7 +124,7 @@ export async function confirmPendingAwbPrint() {
   // One call per store: confirm-awb-printed validates a single store's
   // ownership, so a cross-store run cannot be confirmed in one request.
   for (const group of groups) {
-    await confirmAwbPrinted(session.access_token, group.storeId, group.orderSnList)
+    await confirmAwbPrinted(session.access_token, group.storeId, group.orderSnList, mode)
   }
 }
 
@@ -134,13 +141,20 @@ export function dismissPendingAwbPrint() {
  * Browser/PWA: unchanged — mark immediately, there's no reliable resume
  * signal there to hang a prompt off of.
  */
-export async function finalizeAwbDelivery({ storeId, accessToken, orderSnList, groups, meta }) {
+export async function finalizeAwbDelivery({
+  storeId,
+  accessToken,
+  orderSnList,
+  groups,
+  mode = 'single',
+  meta,
+}) {
   if (isNativePlatform()) {
-    armPendingPrint({ storeId, orderSnList, groups, meta })
+    armPendingPrint({ storeId, orderSnList, groups, mode, meta })
     return
   }
 
   for (const group of toGroups({ storeId, orderSnList, groups })) {
-    await confirmAwbPrinted(accessToken, group.storeId, group.orderSnList)
+    await confirmAwbPrinted(accessToken, group.storeId, group.orderSnList, mode)
   }
 }

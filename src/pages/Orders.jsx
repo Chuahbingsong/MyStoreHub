@@ -515,7 +515,13 @@ function mapSupabaseOrder(row, storeNames) {
     // a human needs to pack the order instead.
     buyerMessage: row.buyer_message || undefined,
     awbPrinted: row.awb_printed === true,
+    // The FIRST print since api/_lib/awbPrinted.js stopped overwriting it.
+    // Every print, including this one, is in awb_print_events — fetched
+    // lazily for the open detail sheet, see PrintHistoryRow below.
     awbPrintedAt: row.awb_printed_at || null,
+    // The orders.id uuid, distinct from `id` above (the display '#SN').
+    // Only the print-history query uses it; nothing renders it.
+    rowId: row.id,
   }
 }
 
@@ -964,6 +970,10 @@ function OrderCard({
 
 const ORDERS_QUERY_KEY = ['orders', 'list']
 
+// Prefix for the per-order print-history queries: the full key appends the
+// order's uuid, so invalidating this prefix refreshes every one of them.
+const PRINT_HISTORY_QUERY_KEY = ['orders', 'print-history']
+
 // The query function React Query calls to (re)populate ORDERS_QUERY_KEY.
 // Same selectAllPaged logic and query shape fetchOrders always used — this
 // is only a change in WHEN it runs (React Query's cache-then-refresh
@@ -1003,6 +1013,97 @@ async function fetchOrdersQuery() {
     ordersTruncated: ordersRes.truncated === true,
     hasShopeeStore,
   }
+}
+
+// One order's AWB print history, newest first.
+//
+// Fetched lazily per open detail sheet rather than embedded in
+// fetchOrdersQuery's select: that query already pages every order on the
+// account against PostgREST's row cap, and nothing outside this sheet reads
+// the history, so embedding it would multiply the list payload for a panel
+// the user opens one order at a time.
+//
+// Throws rather than swallowing, so React Query reports isError and
+// PrintHistoryRow can fall back to the single awb_printed_at date. That
+// fallback is the whole error strategy: before
+// supabase/awb_print_history_migration.sql has been run the table does not
+// exist and this 404s, and the sheet should keep showing what it showed
+// before the feature landed instead of an error.
+async function fetchPrintHistory(orderRowId) {
+  const { data, error } = await supabase
+    .from('awb_print_events')
+    .select('id, printed_at, print_mode')
+    .eq('order_id', orderRowId)
+    .order('printed_at', { ascending: false })
+
+  if (error) throw error
+  return data ?? []
+}
+
+// Only the two modes the app records get a label. A backfilled row carries
+// 'unknown' (see the migration) and is listed with its timestamp alone —
+// inventing "Single" for a print whose mode was never recorded would be a
+// guess presented as fact.
+const PRINT_MODE_KEYS = {
+  single: 'orders.fields.printModeSingle',
+  bulk: 'orders.fields.printModeBulk',
+}
+
+/**
+ * The detail sheet's Printed row. One print renders exactly as it always did,
+ * a single date; two or more render the count with every timestamp beneath it,
+ * newest first.
+ *
+ * While the history is still loading — and if it cannot be loaded at all — it
+ * renders the awb_printed_at date on its own. That is the first print now, so
+ * it is never wrong, only incomplete, and the row never flashes a spinner
+ * where a date used to be.
+ */
+function PrintHistoryRow({ order, t, formatDateTime }) {
+  const { data: events, isSuccess } = useQuery({
+    queryKey: [...PRINT_HISTORY_QUERY_KEY, order.rowId],
+    queryFn: () => fetchPrintHistory(order.rowId),
+    enabled: !!order.rowId,
+    // A print history only grows, and only through this app. No refetch on
+    // window focus: the sheet is open in front of the user, and the one
+    // action that can add an entry (printing) already refetches orders and
+    // closes over this query key.
+    staleTime: 60_000,
+  })
+
+  const printedAtRow = order.awbPrintedAt ? formatDateTime(order.awbPrintedAt) : null
+
+  if (!isSuccess || events.length <= 1) {
+    if (!printedAtRow) return null
+    return (
+      <div className="flex justify-between text-[#6B7280]">
+        <span>{t('orders.fields.printed')}</span>
+        <span className="text-[#1F2937]">{printedAtRow}</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="text-[#6B7280]">
+      <div className="flex justify-between">
+        <span>{t('orders.fields.printed')}</span>
+        <span className="text-[#1F2937]">
+          {t('orders.fields.printedTimes', { count: events.length })}
+        </span>
+      </div>
+      <ul className="mt-1 space-y-0.5 text-right text-[11px] text-[#9CA3AF]">
+        {events.map((event) => {
+          const modeKey = PRINT_MODE_KEYS[event.print_mode]
+          return (
+            <li key={event.id}>
+              <span className="text-[#6B7280]">{formatDateTime(event.printed_at)}</span>
+              {modeKey && <span> · {t(modeKey)}</span>}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
 }
 
 export default function Orders() {
@@ -1116,8 +1217,18 @@ export default function Orders() {
   // empty-dep-array useCallbacks below (performSync/runAutoSync) the same
   // way fetchOrders used to be, and awaiting it resolves once the refetch
   // actually completes, same as the old awaited fetchOrders() calls.
+  //
+  // It invalidates the print histories alongside the list. A reprint adds an
+  // awb_print_events row but changes nothing on the order itself once
+  // awb_printed is already true, so invalidating ORDERS_QUERY_KEY alone would
+  // leave the open sheet showing the old count. The keys are siblings, not
+  // nested, so neither prefix matches the other — both have to be named.
   const refetchOrders = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: ORDERS_QUERY_KEY }),
+    () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ORDERS_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: PRINT_HISTORY_QUERY_KEY }),
+      ]),
     [queryClient]
   )
 
@@ -1373,6 +1484,7 @@ export default function Orders() {
         storeId: order.store_id,
         accessToken: session.access_token,
         orderSnList: [order.platform_order_id],
+        mode: 'single',
       })
       await refetchOrders()
     } catch (err) {
@@ -1467,7 +1579,12 @@ export default function Orders() {
         // Includes time spent on the confirm dialog, not just system latency —
         // see requestBulkPrintAWB, where tapAt is captured at the button tap.
         console.log(`[awb][perf] tap-to-FileOpener total: ${Date.now() - tapAt}ms`)
-        await finalizeAwbDelivery({ storeId, accessToken: session.access_token, orderSnList })
+        await finalizeAwbDelivery({
+          storeId,
+          accessToken: session.access_token,
+          orderSnList,
+          mode: 'bulk',
+        })
       } else {
         const data = await res.json().catch(() => ({}))
         if (!res.ok || !data.success) {
@@ -1490,7 +1607,12 @@ export default function Orders() {
         // just the last one.
         console.log(`[awb][perf] tap-to-FileOpener total (${fileCount} file(s)): ${Date.now() - tapAt}ms`)
 
-        await finalizeAwbDelivery({ storeId, accessToken: session.access_token, orderSnList: deliveredOrderSns })
+        await finalizeAwbDelivery({
+          storeId,
+          accessToken: session.access_token,
+          orderSnList: deliveredOrderSns,
+          mode: 'bulk',
+        })
 
         const orderCount = deliveredOrderSns.length
         toast.success(t('orders.printAwb.downloaded', { files: fileCount, orders: orderCount }))
@@ -2267,11 +2389,12 @@ export default function Orders() {
                         </span>
                       </div>
                     )}
-                    {selectedOrder.awbPrintedAt && (
-                      <div className="flex justify-between text-[#6B7280]">
-                        <span>{t('orders.fields.printed')}</span>
-                        <span className="text-[#1F2937]">{formatDateTime(selectedOrder.awbPrintedAt)}</span>
-                      </div>
+                    {(selectedOrder.awbPrinted || selectedOrder.awbPrintedAt) && (
+                      <PrintHistoryRow
+                        order={selectedOrder}
+                        t={t}
+                        formatDateTime={formatDateTime}
+                      />
                     )}
                     {selectedOrder.autoPackStatus === 'failed' && (
                       <div className="rounded-lg bg-red-500/10 px-2 py-1.5 text-red-700">
