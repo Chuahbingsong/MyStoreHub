@@ -514,6 +514,10 @@ function mapSupabaseOrder(row, storeNames) {
     // api/_lib/autoPack.js) — surfaced prominently here since it's the reason
     // a human needs to pack the order instead.
     buyerMessage: row.buyer_message || undefined,
+    // Website instant delivery. Anything other than 'instant' (missing,
+    // 'standard', unknown) is a normal order with no tag.
+    isInstant: row.delivery_method === 'instant',
+    instantDelivery: row.instant_delivery || undefined,
     awbPrinted: row.awb_printed === true,
     awbPrintedAt: row.awb_printed_at || null,
   }
@@ -795,6 +799,11 @@ function OrderCard({
     : null
 
   const flagBadges = [
+    order.isInstant && (
+      <span key="instant" className={cn(BADGE_CLS, 'bg-violet-500/15 text-violet-700')}>
+        ⚡ {t('orders.flags.instant')}
+      </span>
+    ),
     order.buyerMessage && (
       <span key="buyer-message" className={cn(BADGE_CLS, 'bg-blue-500/15 text-blue-700')}>
         {t('orders.buyerMessage.badge')}
@@ -2232,6 +2241,35 @@ export default function Orders() {
                         <span>{t('orders.fields.logistics')}</span>
                         <span className="text-[#1F2937]">
                           {platformDisplayName(t, selectedOrder.platform)}-MY-{selectedOrder.courier}
+                        </span>
+                      </div>
+                    )}
+                    {selectedOrder.isInstant && (
+                      <div className="flex justify-between gap-3 text-[#6B7280]">
+                        <span>⚡ {t('orders.flags.instant')}</span>
+                        <span className="text-right text-[#1F2937]">
+                          {selectedOrder.instantDelivery?.courier ||
+                          selectedOrder.instantDelivery?.tracking_url ||
+                          selectedOrder.instantDelivery?.awaiting_arrangement === false ? (
+                            <>
+                              {selectedOrder.instantDelivery.courier ?? ''}
+                              {selectedOrder.instantDelivery.tracking_url && (
+                                <>
+                                  {selectedOrder.instantDelivery.courier ? ' · ' : ''}
+                                  <a
+                                    href={selectedOrder.instantDelivery.tracking_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-[#2563EB] underline"
+                                  >
+                                    {t('orders.flags.instantTrack')}
+                                  </a>
+                                </>
+                              )}
+                            </>
+                          ) : (
+                            t('orders.flags.instantAwaiting')
+                          )}
                         </span>
                       </div>
                     )}

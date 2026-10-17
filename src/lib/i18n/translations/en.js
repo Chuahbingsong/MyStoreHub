@@ -795,6 +795,9 @@ export default {
       autoPackFailed: 'Auto-pack failed — needs manual Pack',
       autoPackFailedHint: 'Auto-pack failed — pack this order manually',
       autoPacked: 'Auto-packed',
+      instant: 'Instant',
+      instantAwaiting: 'Awaiting delivery arrangement',
+      instantTrack: 'Track delivery',
     },
     autoPack: {
       failed: 'Auto-pack failed',

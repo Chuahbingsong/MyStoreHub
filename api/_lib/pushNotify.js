@@ -56,10 +56,12 @@ const MAX_NOTIFY_PER_RUN = 50;
 // naturally for any count ("1 个新订单" / "3 个新订单").
 const MESSAGES = {
   en: {
+    instantTitle: (orderNo) => `⚡ Instant delivery — ${orderNo}`,
     newOrders: (n) => (n === 1 ? '1 new order' : `${n} new orders`),
     cancels: (n) => (n === 1 ? '1 cancellation request' : `${n} cancellation requests`),
   },
   'zh-CN': {
+    instantTitle: (orderNo) => `⚡ 即时配送 — ${orderNo}`,
     newOrders: (n) => `${n} 个新订单`,
     cancels: (n) => `${n} 个取消申请`,
   },
@@ -97,6 +99,19 @@ function newOrderPayload(storeName, count, locale, tag) {
   return {
     title: storeName,
     body: messagesFor(locale).newOrders(count),
+    url: '/orders?tab=new',
+    tag,
+    requireInteraction: true,
+  };
+}
+
+// One push per instant-delivery order: it is time-critical (a rider has to be
+// booked), so it gets its own title carrying the order number instead of being
+// folded into the batched count.
+function instantOrderPayload(storeName, orderNo, locale, tag) {
+  return {
+    title: messagesFor(locale).instantTitle(orderNo),
+    body: storeName,
     url: '/orders?tab=new',
     tag,
     requireInteraction: true,
@@ -228,7 +243,7 @@ export async function notifyStore(store, options = {}) {
     // after them. Not a concern at current volumes; revisit if it ever is.
     const { data: newOrderCandidates, error: newErr } = await supabaseAdmin
       .from('orders')
-      .select('id, platform, order_status, payment_method')
+      .select('id, platform, order_status, payment_method, platform_order_id, delivery_method')
       .eq('store_id', store.id)
       .is('notified_new_at', null)
       .in('order_status', NEW_ORDER_CANDIDATE_RAW_STATUSES)
@@ -259,10 +274,16 @@ export async function notifyStore(store, options = {}) {
 
     if (cancelErr) throw new Error(`load cancel candidates: ${cancelErr.message}`);
 
-    const newIds = (newOrders ?? []).map((o) => o.id);
+    // Instant website orders are split out of the batch and notified one by one.
+    const instantOrders = (newOrders ?? []).filter(
+      (o) => o.platform === 'website' && o.delivery_method === 'instant'
+    );
+    const newIds = (newOrders ?? [])
+      .filter((o) => !instantOrders.includes(o))
+      .map((o) => o.id);
     const cancelIds = (cancelOrders ?? []).map((o) => o.id);
 
-    if (newIds.length === 0 && cancelIds.length === 0) {
+    if (instantOrders.length === 0 && newIds.length === 0 && cancelIds.length === 0) {
       await logSyncComplete(logId, 'success', 'No orders to notify');
       return { storeId: store.id, sent: 0 };
     }
@@ -291,6 +312,24 @@ export async function notifyStore(store, options = {}) {
     let processed = 0;
     const goneSubscriptionIds = new Set();
     const summaryParts = [];
+
+    // INSTANT-DELIVERY ORDERS — one notification each. Stamped per order, and
+    // only once its send was attempted, so a deadline hit mid-loop leaves the
+    // rest NULL for the next run (still once-only).
+    for (const o of instantOrders) {
+      if (Date.now() >= deadline) break;
+      if (subs.length > 0) {
+        const r = await sendToSubscriptions(subs, (locale) =>
+          instantOrderPayload(storeName, o.platform_order_id, locale, `instant-${store.id}-${o.platform_order_id}`)
+        );
+        deliveredTotal += r.delivered;
+        failedTotal += r.failed;
+        r.goneSubscriptionIds.forEach((id) => goneSubscriptionIds.add(id));
+      }
+      await stampNotifiedBatch([o.id], 'notified_new_at');
+      processed += 1;
+      summaryParts.push(`instant order ${o.platform_order_id}`);
+    }
 
     // NEW ORDERS — one notification.
     if (newIds.length > 0 && Date.now() < deadline) {

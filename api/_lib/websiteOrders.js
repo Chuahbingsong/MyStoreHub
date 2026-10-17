@@ -285,7 +285,24 @@ function formatShippingAddress(addr) {
 export function mapOrderToRow(order, storeId, deliverySentAtIso) {
   const shipping = order.shipping_address ?? {};
 
+  // delivery_method / instant_delivery are written only when the delivery
+  // actually carries the key, so an event that omits them can never blank a
+  // value an earlier event set (same omit-to-preserve convention as the
+  // columns documented above). instant_delivery is stored verbatim as jsonb;
+  // an explicit null (standard orders) is a real value and is written.
+  const deliveryFields = {};
+  if (order.delivery_method !== undefined) {
+    deliveryFields.delivery_method = nonEmpty(order.delivery_method);
+  }
+  if (order.instant_delivery !== undefined) {
+    deliveryFields.instant_delivery =
+      order.instant_delivery && typeof order.instant_delivery === 'object'
+        ? order.instant_delivery
+        : null;
+  }
+
   return {
+    ...deliveryFields,
     store_id: storeId,
     platform: WEBSITE_PLATFORM,
     platform_order_id: String(order.order_no),

@@ -741,6 +741,9 @@ export default {
       autoPackFailed: '自动打包失败 —— 需手动打包',
       autoPackFailedHint: '自动打包失败 —— 请手动打包此订单',
       autoPacked: '已自动打包',
+      instant: '即时配送',
+      instantAwaiting: '等待安排配送',
+      instantTrack: '追踪配送',
     },
     autoPack: {
       failed: '自动打包失败',
