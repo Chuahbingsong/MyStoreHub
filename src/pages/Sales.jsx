@@ -339,12 +339,11 @@ export default function Sales() {
           </section>
 
           {/* ---- order-level breakdown ----
-              Opens on the store selected above. The description says out loud
-              that the list follows the Dashboard's rule, not this report's:
-              it includes orders this report leaves out (unpaid COD, not yet
-              packed), so a day's total there can differ from the row here. */}
+              Opens on the store selected above, under THIS report's counting
+              rule (basis: 'sales'), so each day there adds up to the row
+              here. Without the basis it would list the Dashboard's rule. */}
           <Link
-            to={revenueBreakdownPath({ storeId: store })}
+            to={revenueBreakdownPath({ storeId: store, basis: 'sales' })}
             className="mx-4 mt-3 flex items-center gap-3 rounded-2xl border border-[#E8E6E1] bg-white p-3 shadow-card transition-transform active:scale-[0.98]"
           >
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#2563EB]/15">
@@ -404,11 +403,12 @@ export default function Sales() {
                 }
 
                 // Tapping a day opens the breakdown on that day AND the store
-                // selected above, rather than resetting to today/all stores.
+                // selected above, rather than resetting to today/all stores —
+                // and under this report's rule, so its total equals this row.
                 return (
                   <Link
                     key={d.day}
-                    to={revenueBreakdownPath({ day: d.day, storeId: store })}
+                    to={revenueBreakdownPath({ day: d.day, storeId: store, basis: 'sales' })}
                     aria-label={t('sales.table.viewOrdersAria', { date: dayLabelLong(d.day) })}
                     className={cn(rowClass, 'transition-colors active:bg-[#FAF9F6]')}
                   >
