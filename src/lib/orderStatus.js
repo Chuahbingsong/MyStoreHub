@@ -198,9 +198,9 @@ export const LAZADA_STATUS_MAP = {
 // it is listed in full in supabase/website_platform_migration.sql.
 //
 // 'paid' is canonical TO_PACK: payment is already captured when the webhook
-// fires, so a paid website order is straight away a parcel to pack. Note this
-// is also the one platform whose To Pack equivalent COUNTS AS REVENUE in
-// daily_sales() — see section D of that migration for why.
+// fires, so a paid website order is straight away a parcel to pack. It counts
+// as revenue like every platform's To Pack does — the one counting rule,
+// actionable_order_rows(), only excludes cancelled and non-COD unpaid orders.
 //
 // 'refunded' is DELIBERATELY ABSENT, and must not be added here: it maps to
 // two different canonical statuses depending on the order's shipped_at, which

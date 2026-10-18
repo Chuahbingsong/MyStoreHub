@@ -589,7 +589,7 @@ export default {
       beforeHistory: '早于已同步记录',
       viewOrdersAria: '查看 {{date}} 的订单',
     },
-    // 通往逐笔订单列表的入口。按本报表的统计规则打开，因此每天的合计与此处一致。
+    // 通往逐笔订单列表的入口。与本报表统计规则相同，因此每天的合计与此处一致。
     breakdown: {
       title: '营业额明细',
       description: '本报表每一天所包含的逐笔订单。',
@@ -600,27 +600,13 @@ export default {
       none: '尚未同步任何订单，暂时无法生成报表。',
     },
     basis:
-      '统计处理中、已发货、待收货、已完成及重新发货的订单，不含未付款、已取消及退货订单。按下单日期分组。每日以马来西亚时间 00:00–24:00 计算。',
+      '统计除已取消订单及非货到付款的未付款订单以外的全部订单 —— 包括尚未打包、未付款的货到付款、退货及申请取消中的订单。按下单日期分组。每日以马来西亚时间 00:00–24:00 计算。',
     error: '无法加载销售报表，数据库函数可能尚未安装。',
   },
-  // 见 src/pages/RevenueBreakdown.jsx。rule 下是随统计规则而不同的文案 ——
-  // 副标题写明当前规则，避免同一天的两份列表看起来像出错。
+  // 销售报表每日数字与仪表盘营业额卡片共用的逐笔订单列表 —— 见 src/pages/RevenueBreakdown.jsx。
   revenueBreakdown: {
     title: '营业额明细',
-    rule: {
-      sales: {
-        subtitle: '销售报表规则 —— 仅计已付款且已打包的订单',
-        matches: '与销售报表数字一致',
-        mismatch:
-          '销售报表该日显示 {{expected}}（{{orders}}），但此列表合计不同，可能不完整 —— 请下拉刷新。',
-      },
-      dashboard: {
-        subtitle: '仪表盘规则 —— 含未付款的货到付款及待打包订单',
-        matches: '与仪表盘数字一致',
-        mismatch:
-          '仪表盘该日显示 {{expected}}（{{orders}}），但此列表合计不同，可能不完整 —— 请下拉刷新。',
-      },
-    },
+    subtitle: '销售报表与仪表盘所包含的每一笔订单',
     allStores: '全部店铺',
     total: '营业额',
     orderCount_one: '{{count}} 个订单',
@@ -629,6 +615,9 @@ export default {
     prevDay: '前一天',
     nextDay: '后一天',
     dayPicker: '选择日期',
+    matches: '与销售报表数字一致',
+    mismatch:
+      '销售报表该日显示 {{expected}}（{{orders}}），但此列表合计不同，可能不完整 —— 请下拉刷新。',
     // 每个订单都按下单日计入，因此只显示这一个时间。
     placed: '下单于 {{date}}',
     empty: '这一天没有计入的订单。',

@@ -28,22 +28,15 @@ import {
   addDaysISO,
   fetchRevenueBreakdown,
   formatRM,
-  resolveBreakdownBasis,
   todayKL,
 } from '@/lib/salesReport'
 
-// The auditable list behind a revenue figure, under one of two counting rules
-// picked by the `basis` URL param (BREAKDOWN_BASIS in src/lib/salesReport.js):
-//
-//   basis=sales   — set by the Sales page's links. Rows come from
-//                   sales_orders_for_day(); the total equals the Sales row.
-//   (no basis)    — the Dashboard rule. Rows come from
-//                   actionable_orders_for_day(); the total equals the
-//                   Dashboard Revenue tile.
-//
-// Either way nothing here decides which orders count — the page only adds the
-// rows up, checks them against that rule's own aggregate, and says on screen
-// which rule is in effect so two lists of the same day never look like a bug.
+// The auditable list behind the Sales page's daily figures and the Dashboard
+// Revenue tile. Every row is an order actionable_orders_for_day() returned —
+// the same actionable_order_rows() both of those aggregates sum
+// (supabase/actionable_orders_migration.sql, sales_unified_rule_migration.sql)
+// — so nothing here decides which orders count. The page only adds them up,
+// checks the total against the aggregate, and displays them.
 
 const BREAKDOWN_QUERY_KEY = ['revenue-breakdown']
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -106,8 +99,6 @@ export default function RevenueBreakdown() {
   const oldest = addDaysISO(today, -(REVENUE_BREAKDOWN_DAYS - 1))
   const day = resolveDay(searchParams.get('day'), today)
   const store = searchParams.get('store') || 'all'
-  // Carried through day/store changes untouched — setParam only edits its key.
-  const basis = resolveBreakdownBasis(searchParams.get('basis'))
 
   const setParam = useCallback(
     (key, value, fallback) => {
@@ -137,8 +128,8 @@ export default function RevenueBreakdown() {
   })
 
   const { data, isPending, error } = useQuery({
-    queryKey: [...BREAKDOWN_QUERY_KEY, basis, day, store],
-    queryFn: () => fetchRevenueBreakdown({ day, storeId: store, basis }),
+    queryKey: [...BREAKDOWN_QUERY_KEY, day, store],
+    queryFn: () => fetchRevenueBreakdown({ day, storeId: store }),
   })
 
   // Pull-to-refresh: revalidate the list, not a marketplace sync — same
@@ -193,9 +184,7 @@ export default function RevenueBreakdown() {
           </Link>
           <div className="min-w-0">
             <h1 className="text-2xl font-bold text-[#1F2937]">{t('revenueBreakdown.title')}</h1>
-            {/* Names the rule in effect — the one thing that explains why the
-                same day can hold different orders here and elsewhere. */}
-            <p className="text-sm text-[#6B7280]">{t(`revenueBreakdown.rule.${basis}.subtitle`)}</p>
+            <p className="text-sm text-[#6B7280]">{t('revenueBreakdown.subtitle')}</p>
           </div>
         </div>
       </header>
@@ -279,12 +268,12 @@ export default function RevenueBreakdown() {
               {summary.matches ? (
                 <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-green-700">
                   <CheckCircle2 className="h-4 w-4 shrink-0" />
-                  {t(`revenueBreakdown.rule.${basis}.matches`)}
+                  {t('revenueBreakdown.matches')}
                 </p>
               ) : (
                 <p className="mt-2 flex items-start gap-1.5 text-xs font-medium text-amber-700">
                   <TriangleAlert className="mt-px h-4 w-4 shrink-0" />
-                  {t(`revenueBreakdown.rule.${basis}.mismatch`, {
+                  {t('revenueBreakdown.mismatch', {
                     expected: formatRM(data.figures.revenue),
                     orders: t('revenueBreakdown.orderCount', { count: data.figures.orderCount }),
                   })}
@@ -302,9 +291,9 @@ export default function RevenueBreakdown() {
               )}
             </section>
 
-            <p className="mx-4 mt-3 text-xs leading-relaxed text-gray-500">
-              {t(basis === 'sales' ? 'sales.basis' : 'dashboard.stats.basis')}
-            </p>
+            {/* sales.basis, not dashboard.stats.basis: same rule, but this
+                page shows any of 30 days and the Dashboard copy says "today's". */}
+            <p className="mx-4 mt-3 text-xs leading-relaxed text-gray-500">{t('sales.basis')}</p>
           </>
         )}
       </PullToRefresh>

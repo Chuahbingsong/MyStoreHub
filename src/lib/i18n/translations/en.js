@@ -642,8 +642,8 @@ export default {
       beforeHistory: 'Before synced history',
       viewOrdersAria: 'View orders for {{date}}',
     },
-    // Link to the order-by-order list (src/pages/RevenueBreakdown.jsx). It
-    // opens under this report's counting rule, so each day adds up to its row.
+    // Link to the order-by-order list (src/pages/RevenueBreakdown.jsx). Same
+    // counting rule as this report, so each day adds up to its row.
     breakdown: {
       title: 'Revenue breakdown',
       description: 'The individual orders behind each day in this report.',
@@ -655,30 +655,16 @@ export default {
     },
     // Stated in the UI rather than buried in a tooltip: which orders count is
     // the single assumption a revenue figure rests on.
+    // Same rule as dashboard.stats.basis, worded for any day rather than today.
     basis:
-      'Counts processed, shipped, to-confirm, completed and retry-ship orders. Excludes unpaid, cancelled and returns. Grouped by the date the order was placed. Days run 00:00–24:00 Malaysia time.',
+      "Counts every order except cancelled orders and unpaid orders that aren't Cash on Delivery — so orders not yet packed, unpaid COD, returns and cancel requests are included. Grouped by the date the order was placed. Days run 00:00–24:00 Malaysia time.",
     error: 'Could not load the sales report. The database function may not be installed yet.',
   },
-  // The order-by-order list behind a revenue figure; see
-  // src/pages/RevenueBreakdown.jsx. `rule` holds the copy that differs by
-  // counting rule — the subtitle names the rule so two lists of the same day
-  // never look like a bug.
+  // The order-by-order list behind the Sales daily figures and the Dashboard
+  // Revenue tile (one rule for all three); see src/pages/RevenueBreakdown.jsx.
   revenueBreakdown: {
     title: 'Revenue breakdown',
-    rule: {
-      sales: {
-        subtitle: 'Sales report rule — paid and packed orders only',
-        matches: 'Matches the Sales report figure',
-        mismatch:
-          'The Sales report shows {{expected}} ({{orders}}) for this day, but this list adds up differently. It may be incomplete — pull to refresh.',
-      },
-      dashboard: {
-        subtitle: 'Dashboard rule — includes unpaid COD and to-pack orders',
-        matches: 'Matches the Dashboard figure',
-        mismatch:
-          'The Dashboard shows {{expected}} ({{orders}}) for this day, but this list adds up differently. It may be incomplete — pull to refresh.',
-      },
-    },
+    subtitle: 'Every order counted in the Sales report and Dashboard',
     allStores: 'All Stores',
     total: 'Revenue',
     orderCount_one: '{{count}} order',
@@ -687,6 +673,9 @@ export default {
     prevDay: 'Previous day',
     nextDay: 'Next day',
     dayPicker: 'Choose a day',
+    matches: 'Matches the Sales report figure',
+    mismatch:
+      'The Sales report shows {{expected}} ({{orders}}) for this day, but this list adds up differently. It may be incomplete — pull to refresh.',
     // Every order counts on the day it was placed, so this is the one date shown.
     placed: 'Placed {{date}}',
     empty: 'No orders are counted on this day.',

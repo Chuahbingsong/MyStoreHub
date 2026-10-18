@@ -24,16 +24,16 @@ import {
 // Sales report. Every figure here comes from the daily_sales() RPC via
 // src/lib/salesReport.js. Nothing on this page sums orders client-side.
 //
-// This is a DIFFERENT, narrower question than the Dashboard's "Orders Today" /
-// "Revenue" tiles (todays_actionable_orders() RPC, see
-// supabase/actionable_orders_migration.sql): this page counts confirmed
-// revenue only — paid AND at least packed, unpaid and cancelled always
-// excluded — while the Dashboard also counts unpaid COD and to-pack orders as
-// "happened today". So today's figure here can be LOWER than the Dashboard's,
-// by design; see sales.basis below for the exact rule shown in the UI.
-// Both bucket days the same way — order_created_at (placement day, Malaysia
-// time) — so an order that appears in both reports always lands on the same
-// day; the two can still disagree on COUNT, just never on WHICH DAY.
+// Same rule as the Dashboard's "Orders Today" / "Revenue" tiles and the
+// Revenue breakdown list: daily_sales() returns todays_actionable_orders(),
+// so every order except cancelled and non-COD unpaid counts — To Pack, unpaid
+// COD, returns and cancel requests included — bucketed by order_created_at
+// (placement day, Malaysia time). A row here equals the breakdown total for
+// that day, and today's bar equals the Dashboard tile. See sales.basis below
+// for the rule as shown in the UI.
+//
+// Because unpaid COD and in-progress returns count, recent days can drop
+// slightly later when those orders are cancelled.
 
 // The daily table's column template, shared by the header and every row so they
 // can't drift. Last column is the chevron that says "tap to open this day's orders".
@@ -339,11 +339,10 @@ export default function Sales() {
           </section>
 
           {/* ---- order-level breakdown ----
-              Opens on the store selected above, under THIS report's counting
-              rule (basis: 'sales'), so each day there adds up to the row
-              here. Without the basis it would list the Dashboard's rule. */}
+              Opens on the store selected above. Same rule as this report, so
+              each day there adds up to the row here. */}
           <Link
-            to={revenueBreakdownPath({ storeId: store, basis: 'sales' })}
+            to={revenueBreakdownPath({ storeId: store })}
             className="mx-4 mt-3 flex items-center gap-3 rounded-2xl border border-[#E8E6E1] bg-white p-3 shadow-card transition-transform active:scale-[0.98]"
           >
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#2563EB]/15">
@@ -403,12 +402,12 @@ export default function Sales() {
                 }
 
                 // Tapping a day opens the breakdown on that day AND the store
-                // selected above, rather than resetting to today/all stores —
-                // and under this report's rule, so its total equals this row.
+                // selected above, rather than resetting to today/all stores.
+                // Its total equals this row — both read the same rows.
                 return (
                   <Link
                     key={d.day}
-                    to={revenueBreakdownPath({ day: d.day, storeId: store, basis: 'sales' })}
+                    to={revenueBreakdownPath({ day: d.day, storeId: store })}
                     aria-label={t('sales.table.viewOrdersAria', { date: dayLabelLong(d.day) })}
                     className={cn(rowClass, 'transition-colors active:bg-[#FAF9F6]')}
                   >

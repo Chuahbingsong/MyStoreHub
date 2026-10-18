@@ -2,22 +2,20 @@ import { supabase } from '@/lib/supabase'
 
 // Single source of truth for every sales figure in the app.
 //
-// There are TWO counting rules, each defined once in Postgres and never
-// re-derived here:
+// There is ONE counting rule, defined once in Postgres in
+// actionable_order_rows() (supabase/actionable_orders_migration.sql) and never
+// re-derived here: every order EXCEPT cancelled orders and unpaid orders that
+// aren't Cash on Delivery, bucketed by order_created_at in Malaysia time. So
+// To Pack, unpaid COD, returns and cancel requests all count. Every reader
+// sums or lists those same rows:
 //
-//   Sales rule     — daily_sales() / sales_orders_for_day(), both reading
-//                    sales_order_rows() (supabase/sales_breakdown_migration.sql).
-//                    Paid AND at least packed. Used by the Sales page.
-//   Dashboard rule — todays_actionable_orders() / actionable_orders_for_day(),
-//                    both reading actionable_order_rows()
-//                    (supabase/actionable_orders_migration.sql). Everything
-//                    except cancelled and non-COD unpaid. Used by the
-//                    Dashboard's "Orders Today" / "Revenue" tiles.
+//   Sales page        — daily_sales(), which returns todays_actionable_orders()
+//                       (supabase/sales_unified_rule_migration.sql)
+//   Dashboard tiles   — todays_actionable_orders()
+//   Revenue breakdown — actionable_orders_for_day()
 //
-// Both bucket by order_created_at in Malaysia time, so they can disagree on
-// how much a day holds but never on which day an order belongs to. The Revenue
-// breakdown page lists either rule (BREAKDOWN_BASIS below), depending on which
-// page opened it.
+// So a Sales row equals the breakdown total for that day and store, and
+// today's Sales bar equals the Dashboard Revenue tile.
 //
 // Nothing in this file sums orders: a client-side sum over `orders` would hit
 // PostgREST's silent 1,000-row cap and quietly under-count revenue, which is
@@ -138,11 +136,10 @@ export const ACTIONABLE_ORDERS_WINDOW_DAYS = 2
  * supabase/actionable_orders_migration.sql for the exact filter and the
  * payment_method strings it matches.
  *
- * Deliberately a DIFFERENT rule from fetchSalesReport()/daily_sales() above —
- * this is not a revenue-recognition figure, it includes money not yet
- * received (unpaid COD), and must never be folded into the 30-day Sales
- * trend. Today and Yesterday are both read from this one query so the tile's
- * two lines can't disagree with each other either.
+ * The same rule as fetchSalesReport() above (daily_sales() returns this very
+ * aggregate), just a 2-day window. It includes money not yet received (unpaid
+ * COD) — the UI copy says so on both pages. Today and Yesterday are both read
+ * from this one query so the tile's two lines can't disagree with each other.
  *
  * Same response shape as fetchSalesReport() (minus coverage, which this
  * doesn't need), so it works with seriesFor()/figuresForDay() unchanged.
@@ -168,58 +165,29 @@ export function daysBetweenISO(fromDay, toDay) {
 const BREAKDOWN_ROW_LIMIT = 1000
 
 /**
- * Which counting rule the Revenue breakdown lists. Each basis pairs a per-day
- * order list with the aggregate it must add up to; both RPCs of a pair read
- * the same *_order_rows() function in Postgres, so the match check is a real
- * proof rather than two filters that happen to agree.
+ * Every order counted for one KL day, plus the aggregate's own figure for that
+ * day so the caller can prove the two agree.
  *
- *   sales     — opened from the Sales page: the list adds up to the Sales row.
- *   dashboard — the default: the list adds up to the Dashboard Revenue tile.
+ * The list comes from actionable_orders_for_day() — the same
+ * actionable_order_rows() that todays_actionable_orders() (and so
+ * daily_sales()) sums — so the filter is not reimplemented here or in the
+ * page. Bounded in the database to one day (and one store, if given); nothing
+ * is fetched and filtered in JS.
+ *
+ * `figures` is that day's number — the Sales row and the Dashboard tile alike.
+ * It is a second, tiny query (days x (stores + 1) rows) used only for the
+ * match check.
  */
-export const BREAKDOWN_BASIS = {
-  sales: {
-    listRpc: 'sales_orders_for_day',
-    fetchReport: async ({ days }) => {
-      const { data, error } = await supabase.rpc('daily_sales', { p_days: days })
-      if (error) throw error
-      return groupDailyRows(data)
-    },
-  },
-  dashboard: {
-    listRpc: 'actionable_orders_for_day',
-    fetchReport: fetchActionableOrdersReport,
-  },
-}
-export const DEFAULT_BREAKDOWN_BASIS = 'dashboard'
-
-/** Anything other than a known basis (missing, mistyped URL) is the default. */
-export function resolveBreakdownBasis(value) {
-  return Object.hasOwn(BREAKDOWN_BASIS, value) ? value : DEFAULT_BREAKDOWN_BASIS
-}
-
-/**
- * Every order the given basis counts for one KL day, plus that basis's own
- * aggregate for the day so the caller can prove the two agree.
- *
- * The filter is not reimplemented here or in the page — the list RPC and the
- * aggregate RPC share one rows function in Postgres. Bounded in the database
- * to one day (and one store, if given); nothing is fetched and filtered in JS.
- *
- * `figures` is the aggregate's number for that day (the Sales row, or the
- * Dashboard tile). It is a second, tiny query (days x (stores + 1) rows) used
- * only for the match check.
- */
-export async function fetchRevenueBreakdown({ day, storeId = 'all', basis = DEFAULT_BREAKDOWN_BASIS }) {
-  const { listRpc, fetchReport } = BREAKDOWN_BASIS[resolveBreakdownBasis(basis)]
+export async function fetchRevenueBreakdown({ day, storeId = 'all' }) {
   const daysBack = daysBetweenISO(day, todayKL()) + 1
   const [listRes, report] = await Promise.all([
     supabase
-      .rpc(listRpc, {
+      .rpc('actionable_orders_for_day', {
         p_day: day,
         p_store_id: storeId === 'all' ? null : storeId,
       })
       .limit(BREAKDOWN_ROW_LIMIT),
-    fetchReport({ days: Math.min(Math.max(daysBack, 1), REVENUE_BREAKDOWN_DAYS) }),
+    fetchActionableOrdersReport({ days: Math.min(Math.max(daysBack, 1), REVENUE_BREAKDOWN_DAYS) }),
   ])
   if (listRes.error) throw listRes.error
 
@@ -242,14 +210,13 @@ export async function fetchRevenueBreakdown({ day, storeId = 'all', basis = DEFA
 
 /**
  * URL of the Revenue breakdown page for a given view, so the Sales page can
- * open it on the SAME store, day (when it has one) and counting rule instead
- * of resetting to all-stores/today/Dashboard rule. Defaults are omitted from
- * the query string — the page treats a missing `store`/`day`/`basis` as
- * all-stores/today/dashboard — which keeps a plain link clean.
+ * open it on the SAME store (and day, when it has one) instead of resetting to
+ * all-stores/today. Defaults are omitted from the query string — the page
+ * treats a missing `store`/`day` as all-stores/today — which keeps a plain
+ * link clean.
  */
-export function revenueBreakdownPath({ day, storeId, basis } = {}) {
+export function revenueBreakdownPath({ day, storeId } = {}) {
   const params = new URLSearchParams()
-  if (basis && basis !== DEFAULT_BREAKDOWN_BASIS) params.set('basis', basis)
   if (storeId && storeId !== 'all') params.set('store', storeId)
   if (day && day !== todayKL()) params.set('day', day)
   const query = params.toString()
