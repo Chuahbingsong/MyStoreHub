@@ -36,6 +36,9 @@ import { platformDisplayName } from '@/lib/orderDisplay'
 import { useTranslation } from '@/lib/i18n/I18nContext'
 import { useDateTime } from '@/lib/i18n/datetime'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
+import { formatDateTime } from '@/lib/i18n/datetime'
+import { useLazadaTokenHealth } from '@/lib/lazadaTokenHealth'
+import LazadaTokenBanner from '@/components/LazadaTokenBanner'
 
 const PLATFORMS = [
   {
@@ -82,6 +85,7 @@ export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { t, locale, setLocale } = useTranslation()
   const { formatTimestamp } = useDateTime()
+  const { byStoreId: lazadaHealthByStoreId } = useLazadaTokenHealth()
   const [user, setUser] = useState(null)
   const [stores, setStores] = useState([])
   const [loadingStores, setLoadingStores] = useState(true)
@@ -490,6 +494,12 @@ export default function Settings() {
         <h1 className="text-xl font-bold text-[#1F2937]">{t('settings.title')}</h1>
       </header>
 
+      <LazadaTokenBanner
+        onReconnect={handleConnectLazada}
+        reconnecting={connectingLazada}
+        className="mx-4 mt-3"
+      />
+
       <section className="px-4 py-3">
         <h2 className="mb-2 font-semibold text-[#1F2937]">{t('settings.language.title')}</h2>
         <div className="inline-flex rounded-xl border border-[#ECECEC] bg-white p-1 shadow-sm">
@@ -560,6 +570,7 @@ export default function Settings() {
               // /api/shopee/sync?type=... ("No matching Shopee store found")
               // when clicked.
               const isShopee = store.platform === 'shopee'
+              const lazadaHealth = store.platform === 'lazada' ? lazadaHealthByStoreId.get(store.id) : null
               const isEditing = editingStoreId === store.id
               const isSaving = savingStoreId === store.id
               return (
@@ -626,10 +637,24 @@ export default function Settings() {
                         </div>
                       )}
                     </div>
-                    <span className="flex shrink-0 items-center gap-1 text-xs text-green-500">
-                      <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
-                      {t('settings.connectedStores.connected')}
-                    </span>
+                    {lazadaHealth?.status === 'disconnected' ? (
+                      <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-red-600">
+                        <span className="h-1.5 w-1.5 rounded-full bg-red-600" />
+                        {t('settings.connectedStores.reconnectRequired')}
+                      </span>
+                    ) : lazadaHealth?.status === 'expiring' ? (
+                      <span className="flex shrink-0 items-center gap-1 text-xs text-amber-600">
+                        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                        {t('settings.connectedStores.expiresOn', {
+                          date: formatDateTime(locale, lazadaHealth.refresh_token_expires_at),
+                        })}
+                      </span>
+                    ) : (
+                      <span className="flex shrink-0 items-center gap-1 text-xs text-green-500">
+                        <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                        {t('settings.connectedStores.connected')}
+                      </span>
+                    )}
                   </div>
                   <p className="mt-1 text-xs text-[#6B7280]">
                     {t('settings.connectedStores.shopId', { id: store.shop_id })}

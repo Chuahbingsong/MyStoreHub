@@ -34,8 +34,13 @@ Reading `.env.local` to query the live Supabase is blocked by the sandbox
 network call happens. The key is `sb-<hostname first label>-auth-token`, so with
 the fake host above it is `sb-localhost-auth-token`:
 
+`src/lib/supabase.js` uses a remember-me storage adapter that only reads
+localStorage when `mystorehub-remember-me` is `'true'` — seed both, or
+`getSession()` silently returns null:
+
 ```js
 await context.addInitScript(() => {
+  localStorage.setItem('mystorehub-remember-me', 'true')
   localStorage.setItem('sb-localhost-auth-token', JSON.stringify({
     access_token: 'fake', refresh_token: 'r', token_type: 'bearer', expires_in: 3600,
     expires_at: Math.floor(Date.now() / 1000) + 3600,

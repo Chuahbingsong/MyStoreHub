@@ -98,6 +98,7 @@ export default {
     platforms: {
       title: 'Platforms',
       connected: 'Connected',
+      reconnectRequired: 'Reconnect needed',
       notConnected: 'Not connected',
       orderCount_one: '{{count}} order',
       orderCount_other: '{{count}} orders',
@@ -122,6 +123,17 @@ export default {
     // never Dashboard-specific vocabulary, and Scan/Orders render the same
     // statuses. Call sites use t('status.<key>').
   },
+  // Shared by Settings and Dashboard — see src/components/LazadaTokenBanner.jsx.
+  lazadaTokenBanner: {
+    expiringTitle: 'Lazada needs reconnecting soon',
+    disconnectedTitle: 'Lazada disconnected — orders have stopped syncing',
+    expiringShop: '{{shop}} — expires {{date}}',
+    expiredShop: '{{shop}} — expired {{date}}',
+    reconnectRequiredShop: '{{shop}} — reconnect required',
+    hint: 'Lazada makes you reconnect every 30 days. Sign in to Lazada Seller Center as each shop first, then reconnect them one at a time.',
+    reconnect: 'Reconnect Lazada',
+    openSettings: 'Go to Settings',
+  },
   settings: {
     title: 'Settings',
     language: {
@@ -138,6 +150,8 @@ export default {
       title: 'Connected Stores',
       empty: 'No stores connected yet',
       connected: 'Connected',
+      reconnectRequired: 'Reconnect needed',
+      expiresOn: 'Expires {{date}}',
       shopId: 'Shop ID: {{id}}',
       lastSynced: 'Last synced {{date}}',
       editNameSaveAria: 'Save store name',

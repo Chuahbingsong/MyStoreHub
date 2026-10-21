@@ -251,6 +251,11 @@ create table if not exists lazada_shops (
   refresh_token text,
   access_token_expires_at timestamptz,
   refresh_token_expires_at timestamptz,
+  -- Set once Lazada rejects the refresh token (or its expiry passes) so the
+  -- cron stops retrying it; cleared on reconnect. See
+  -- lazada_token_health_migration.sql.
+  refresh_token_dead_at timestamptz,
+  refresh_token_dead_reason text,
   user_id uuid references auth.users(id) on delete cascade,
   store_id uuid references stores(id),
   created_at timestamptz default now(),

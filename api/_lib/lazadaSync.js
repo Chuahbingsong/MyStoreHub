@@ -1,4 +1,4 @@
-import { LAZADA_APP_KEY, generateSign, getValidLazadaToken } from './lazada.js';
+import { LAZADA_APP_KEY, generateSign, getValidLazadaToken, getLazadaTokenHealth } from './lazada.js';
 import { supabaseAdmin } from './supabaseAdmin.js';
 import { acquireSyncLock, logSyncStart, logSyncComplete } from './shopeeSync.js';
 import { selectAllPaged, warnIfAtCap } from './supabaseSelect.js';
@@ -424,6 +424,23 @@ async function loadShopCredentials(store) {
   return { sellerId: bySeller[0].seller_id, country: (bySeller[0].country || 'MY').toUpperCase() };
 }
 
+// True only when the refresh token is dead AND the access token has expired —
+// until then getValidLazadaToken keeps syncing on the access token. A lookup
+// failure or a legacy row with no store_id link returns false, so the normal
+// path (and its error logging) still runs.
+async function needsReconnect(store) {
+  const { data: shop, error } = await supabaseAdmin
+    .from('lazada_shops')
+    .select('refresh_token_expires_at, refresh_token_dead_at, access_token_expires_at')
+    .eq('store_id', store.id)
+    .maybeSingle();
+
+  if (error || !shop) return false;
+
+  const accessExpiresAtMs = shop.access_token_expires_at ? new Date(shop.access_token_expires_at).getTime() : 0;
+  return getLazadaTokenHealth(shop) === 'disconnected' && accessExpiresAtMs <= Date.now();
+}
+
 /**
  * Loads `stores` rows for connected Lazada shops — mirrors
  * getTikTokStoresToSync: filtered to platform 'lazada', optionally scoped to
@@ -820,6 +837,15 @@ async function writeOrderBatch(storeId, currency, lazadaOrders, itemsByOrderId) 
 export async function syncLazadaShopOrders(store, options = {}) {
   const days = options.days ?? DEFAULT_ORDER_TIME_RANGE_DAYS;
   const deadline = options.deadline ?? Date.now() + SYNC_TIME_BUDGET_MS;
+
+  // Checked before the lock and sync_logs row on purpose: a disconnected shop
+  // whose last access token has also run out can't make a single call, and
+  // logging an error for it every 5-minute tick is exactly the noise the dead
+  // marker exists to stop. The UI's reconnect banner is what reports it.
+  if (await needsReconnect(store)) {
+    console.log(`[lazada-sync] [${store.id}] authorization expired — skipping until the shop is reconnected`);
+    return { storeId: store.id, orders: [], synced: 0, hasMore: false, reconnectRequired: true };
+  }
 
   const canProceed = await acquireSyncLock(store.id, 'lazada_orders');
   if (!canProceed) {

@@ -7,6 +7,7 @@ import {
   DEFAULT_LAZADA_COUNTRY,
   getLazadaAuthHost,
   generateSign,
+  getLazadaTokenHealth,
 } from './_lib/lazada.js';
 import { supabaseAdmin } from './_lib/supabaseAdmin.js';
 import { withCors } from './_lib/cors.js';
@@ -18,6 +19,7 @@ import { syncLazadaShopOrders, getLazadaStoresToSync, SYNC_TIME_BUDGET_MS } from
 // cap (underscore-prefixed files under api/_lib/ don't count against it).
 // ?action=sync exposes lazadaSync.js's order sync the same way api/tiktok.js
 // does — the sync logic itself lives in _lib, this function only dispatches.
+// ?action=status reports token health for the reconnect banner.
 export const config = { maxDuration: 60 };
 
 export default withCors(handler);
@@ -28,10 +30,57 @@ function handler(req, res) {
   if (action === 'auth') return handleAuth(req, res);
   if (action === 'callback') return handleCallback(req, res);
   if (action === 'sync') return handleSync(req, res);
+  if (action === 'status') return handleStatus(req, res);
 
   return res
     .status(400)
-    .json({ error: 'Unknown or missing action. Use ?action=auth, ?action=callback or ?action=sync' });
+    .json({ error: 'Unknown or missing action. Use ?action=auth, ?action=callback, ?action=sync or ?action=status' });
+}
+
+// Token health for the signed-in user's Lazada shops. lazada_shops has RLS on
+// with no policies (it holds credentials), so the browser can't read expiry
+// itself — this returns only the dates and a derived status, never a token.
+async function handleStatus(req, res) {
+  if (req.method !== 'GET') {
+    res.setHeader('Allow', 'GET');
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabaseAdmin.auth.getUser(token);
+
+  if (authError || !user) {
+    console.error('[lazada/status] session verification failed', authError);
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('lazada_shops')
+    .select('store_id, seller_id, shop_name, refresh_token_expires_at, refresh_token_dead_at, stores(shop_name)')
+    .eq('user_id', user.id);
+
+  if (error) {
+    console.error('[lazada/status] failed to load lazada_shops', error);
+    return res.status(500).json({ error: 'Failed to load Lazada shops' });
+  }
+
+  const now = Date.now();
+  const shops = (data ?? []).map((shop) => ({
+    store_id: shop.store_id,
+    seller_id: shop.seller_id,
+    // The stores mirror carries the user's own rename from Settings.
+    shop_name: shop.stores?.shop_name || shop.shop_name || shop.seller_id,
+    refresh_token_expires_at: shop.refresh_token_expires_at,
+    status: getLazadaTokenHealth(shop, now),
+  }));
+
+  return res.status(200).json({ shops });
 }
 
 // Same HMAC-over-service-role-key convention as api/tiktok.js's
@@ -316,6 +365,9 @@ async function handleCallback(req, res) {
         refresh_token: refreshToken,
         access_token_expires_at: result.accessTokenExpiresAt,
         refresh_token_expires_at: result.refreshTokenExpiresAt,
+        // A fresh authorization revives a shop the cron had marked dead.
+        refresh_token_dead_at: null,
+        refresh_token_dead_reason: null,
         user_id: userId,
         updated_at: new Date().toISOString(),
       },
@@ -500,6 +552,10 @@ async function handleSync(req, res) {
     try {
       console.log('[lazada/sync] syncing store', store.id, store.shop_id);
       const result = await syncLazadaShopOrders(store, { days, deadline });
+      if (result.reconnectRequired) {
+        errors.push({ storeId: store.id, error: 'Lazada authorization expired — reconnect this shop', code: 'reconnect_required' });
+        continue;
+      }
       results.push(result);
     } catch (err) {
       // syncLazadaShopOrders already records this in sync_logs itself (a

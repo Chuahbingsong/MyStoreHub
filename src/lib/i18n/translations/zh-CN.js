@@ -83,6 +83,7 @@ export default {
     platforms: {
       title: '平台',
       connected: '已连接',
+      reconnectRequired: '需要重新连接',
       notConnected: '未连接',
       orderCount_one: '{{count}} 个订单',
       orderCount_other: '{{count}} 个订单',
@@ -105,6 +106,16 @@ export default {
     },
     // dashboard.status.* 已移至顶层 `status:` 命名空间 —— 见 en.js。
   },
+  lazadaTokenBanner: {
+    expiringTitle: 'Lazada 即将需要重新连接',
+    disconnectedTitle: 'Lazada 已断开 — 订单已停止同步',
+    expiringShop: '{{shop}} — {{date}} 到期',
+    expiredShop: '{{shop}} — 已于 {{date}} 到期',
+    reconnectRequiredShop: '{{shop}} — 需要重新连接',
+    hint: 'Lazada 每 30 天需要重新连接一次。请先在 Lazada 卖家中心登录对应店铺，再逐个重新连接。',
+    reconnect: '重新连接 Lazada',
+    openSettings: '前往设置',
+  },
   settings: {
     title: '设置',
     language: {
@@ -121,6 +132,8 @@ export default {
       title: '已连接店铺',
       empty: '尚未连接任何店铺',
       connected: '已连接',
+      reconnectRequired: '需要重新连接',
+      expiresOn: '{{date}} 到期',
       shopId: '店铺 ID：{{id}}',
       lastSynced: '上次同步：{{date}}',
       editNameSaveAria: '保存店铺名称',

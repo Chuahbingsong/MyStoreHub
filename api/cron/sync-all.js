@@ -103,9 +103,17 @@ async function handler(req, res) {
   // the same way the TikTok block above does. Runs before the deadline below
   // is computed, for the same reason: a slow refresh here narrows what's left
   // for the Shopee loop that follows.
-  const { data: lazadaShops, error: lazadaShopsError } = await supabaseAdmin
+  // Shops already marked dead (refresh_token_dead_at) are left out: Lazada
+  // will only reject that token again, and the reconnect banner in the UI is
+  // what tells the seller. refreshLazadaToken sets the marker the first time.
+  const { data: lazadaShopRows, error: lazadaShopsError } = await supabaseAdmin
     .from('lazada_shops')
-    .select('seller_id');
+    .select('seller_id, refresh_token_dead_at');
+  const lazadaShops = (lazadaShopRows ?? []).filter((shop) => !shop.refresh_token_dead_at);
+  const deadLazadaCount = (lazadaShopRows ?? []).length - lazadaShops.length;
+  if (deadLazadaCount > 0) {
+    console.log('[cron/sync-all] skipping token refresh for', deadLazadaCount, 'Lazada shop(s) awaiting reconnect');
+  }
 
   if (lazadaShopsError) {
     console.error('[cron/sync-all] failed to load lazada_shops', lazadaShopsError);

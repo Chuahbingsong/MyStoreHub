@@ -65,6 +65,59 @@ export function generateSign(apiPath, params = {}) {
 const REFRESH_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 const TOKEN_REFRESH_SYNC_TYPE = 'lazada_token_refresh';
 
+// How far ahead of refresh_token_expires_at the app starts warning. The
+// refresh token's ~30-day life runs from the authorization and refreshing
+// never extends it, so this is the only notice the seller gets before the
+// shop drops — see getLazadaTokenHealth.
+export const LAZADA_EXPIRY_WARNING_MS = 5 * 24 * 60 * 60 * 1000;
+
+/**
+ * Thrown when a shop can only be fixed by the seller reconnecting it: Lazada
+ * rejected the refresh token (IllegalRefreshToken) or its expiry has passed.
+ * Callers treat it as "skip quietly", not as a sync failure to retry.
+ */
+export class LazadaReconnectRequiredError extends Error {
+  constructor(sellerId, reason) {
+    super(`Lazada authorization for seller ${sellerId} has expired — reconnect the shop in Settings (${reason})`);
+    this.name = 'LazadaReconnectRequiredError';
+    this.sellerId = sellerId;
+    this.reason = reason;
+  }
+}
+
+// Written once per dead token (the `is null` guard keeps the first reason and
+// timestamp); api/lazada.js's callback clears both columns on reconnect.
+async function markRefreshTokenDead(sellerId, reason) {
+  const { error } = await supabaseAdmin
+    .from('lazada_shops')
+    .update({ refresh_token_dead_at: new Date().toISOString(), refresh_token_dead_reason: reason })
+    .eq('seller_id', sellerId)
+    .is('refresh_token_dead_at', null);
+
+  if (error) {
+    console.warn('[lazada] failed to mark refresh token dead for seller', sellerId, error);
+  }
+}
+
+/**
+ * Classifies one lazada_shops row for the UI and the sync pre-check:
+ * 'disconnected' once the refresh token is known dead or past its expiry,
+ * 'expiring' inside LAZADA_EXPIRY_WARNING_MS of it, otherwise 'ok'.
+ */
+export function getLazadaTokenHealth(shop, now = Date.now()) {
+  const refreshExpiresAtMs = shop.refresh_token_expires_at
+    ? new Date(shop.refresh_token_expires_at).getTime()
+    : null;
+
+  if (shop.refresh_token_dead_at || (refreshExpiresAtMs != null && refreshExpiresAtMs <= now)) {
+    return 'disconnected';
+  }
+  if (refreshExpiresAtMs != null && refreshExpiresAtMs - now < LAZADA_EXPIRY_WARNING_MS) {
+    return 'expiring';
+  }
+  return 'ok';
+}
+
 // Unlike tiktok_shops (no store_id-shaped FK usable at refresh time, so
 // TikTok's refresh logging leaves store_id null and carries shop_id in
 // `message` instead), lazada_shops always has store_id populated by the
@@ -114,13 +167,25 @@ async function logRefreshComplete(logId, status, message) {
 export async function refreshLazadaToken(sellerId) {
   const { data: shop, error: shopError } = await supabaseAdmin
     .from('lazada_shops')
-    .select('refresh_token, store_id')
+    .select('refresh_token, store_id, refresh_token_expires_at, refresh_token_dead_at, refresh_token_dead_reason')
     .eq('seller_id', sellerId)
     .maybeSingle();
 
   if (shopError) throw new Error(`Failed to load lazada_shops row: ${shopError.message}`);
   if (!shop) throw new Error(`No lazada_shops row found for seller_id ${sellerId}`);
   if (!shop.refresh_token) throw new Error('Stored refresh_token is missing');
+
+  // A dead token is never sent to Lazada again — no API call and no sync_logs
+  // row, which is what turned one expiry into 992 failed attempts in five days.
+  if (shop.refresh_token_dead_at) {
+    throw new LazadaReconnectRequiredError(sellerId, shop.refresh_token_dead_reason ?? 'refresh token rejected');
+  }
+  // Past its expiry Lazada can only answer IllegalRefreshToken, so don't ask.
+  if (shop.refresh_token_expires_at && new Date(shop.refresh_token_expires_at).getTime() <= Date.now()) {
+    const reason = `refresh_token_expires_at ${shop.refresh_token_expires_at} has passed`;
+    await markRefreshTokenDead(sellerId, reason);
+    throw new LazadaReconnectRequiredError(sellerId, reason);
+  }
 
   const logId = await logRefreshStart(shop.store_id);
 
@@ -144,6 +209,15 @@ export async function refreshLazadaToken(sellerId) {
     // is the real signal — not response.ok. Success responses either omit
     // `code` entirely or carry "0"; anything else (or a missing access_token)
     // is a failure.
+    // IllegalRefreshToken is terminal — observed on 2026-09-13 and 2026-10-18,
+    // each ~30 days after the shop was authorized. Only a reconnect issues a
+    // new refresh token, so mark it dead and stop asking.
+    if (body.code === 'IllegalRefreshToken') {
+      const reason = `IllegalRefreshToken: ${body.message ?? 'refresh token invalid or expired'}`;
+      await markRefreshTokenDead(sellerId, reason);
+      throw new LazadaReconnectRequiredError(sellerId, reason);
+    }
+
     if (!response.ok || !body.access_token || (body.code && body.code !== '0')) {
       throw new Error(`Token refresh failed: ${JSON.stringify(body)}`);
     }
@@ -248,8 +322,19 @@ export async function getValidLazadaToken(sellerId) {
       sellerId,
       'is within 24h of expiry (or already expired) — refreshing before use'
     );
-    const refreshed = await refreshLazadaToken(sellerId);
-    return refreshed.access_token;
+    try {
+      const refreshed = await refreshLazadaToken(sellerId);
+      return refreshed.access_token;
+    } catch (err) {
+      // The refresh is attempted up to 24h early, so a dead refresh token can
+      // still leave a working access token — keep syncing on it until it runs
+      // out rather than dropping the shop a day sooner than necessary.
+      if (err instanceof LazadaReconnectRequiredError && expiresAtMs > Date.now()) {
+        console.warn('[lazada] refresh token dead for seller', sellerId, '— using the still-valid access token until', shop.access_token_expires_at);
+        return shop.access_token;
+      }
+      throw err;
+    }
   }
 
   return shop.access_token;

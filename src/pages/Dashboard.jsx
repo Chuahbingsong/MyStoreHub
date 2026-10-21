@@ -16,6 +16,8 @@ import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/i18n/I18nContext'
 import { formatRelativeToNow } from '@/lib/i18n/datetime'
 import { statusKeyFor } from '@/lib/orderStatus'
+import LazadaTokenBanner from '@/components/LazadaTokenBanner'
+import { useLazadaTokenHealth } from '@/lib/lazadaTokenHealth'
 import {
   BADGE_CLS,
   DEFAULT_STATUS_CLASS,
@@ -90,6 +92,9 @@ function StatTile({ stat }) {
 export default function Dashboard() {
   const navigate = useNavigate()
   const { t, locale } = useTranslation()
+  // Same cached query LazadaTokenBanner reads — one request for both.
+  const { shops: lazadaShops } = useLazadaTokenHealth()
+  const lazadaReconnectNeeded = lazadaShops.some((shop) => shop.status === 'disconnected')
   const [store, setStore] = useState('all')
   const [stores, setStores] = useState([])
   const [orders, setOrders] = useState([])
@@ -344,6 +349,8 @@ export default function Dashboard() {
         </Select>
       </header>
 
+      <LazadaTokenBanner className="mx-4 mt-3" />
+
       <section className="px-4 pt-3">
         <button
           type="button"
@@ -405,9 +412,15 @@ export default function Dashboard() {
                     <>
                       <p className="mt-2.5 text-xs text-[#6B7280]">{platform.orders}</p>
                       <p className="text-sm font-semibold tabular-nums text-[#1F2937]">{platform.revenue}</p>
-                      <p className="mt-2 text-xs font-medium text-green-600">
-                        ● {t('dashboard.platforms.connected')}
-                      </p>
+                      {platform.name === 'Lazada' && lazadaReconnectNeeded ? (
+                        <p className="mt-2 text-xs font-medium text-red-600">
+                          ● {t('dashboard.platforms.reconnectRequired')}
+                        </p>
+                      ) : (
+                        <p className="mt-2 text-xs font-medium text-green-600">
+                          ● {t('dashboard.platforms.connected')}
+                        </p>
+                      )}
                     </>
                   ) : (
                     <p className="mt-2.5 text-xs text-gray-500">{t('dashboard.platforms.notConnected')}</p>
