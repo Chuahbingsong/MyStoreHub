@@ -105,8 +105,17 @@ async function handleAuth(req, res) {
   const country = existingShop?.country || DEFAULT_LAZADA_COUNTRY;
   const authHost = getLazadaAuthHost(country);
 
+  // force_auth=true is deliberately OMITTED (October 2026). The country
+  // gateway's authorize page embeds a login widget whose post-login
+  // redirect_url points back at auth.lazada.com/oauth/authorize — the host
+  // whose redirect strips every param but response_type (see
+  // LAZADA_COUNTRY_AUTH_HOSTS in _lib/lazada.js) — so forcing that login
+  // always ended on "Missing parameter". Without it, a browser already signed
+  // in to Lazada may skip the widget. Trade-off: with two shops, that
+  // existing session decides which shop gets authorized, so sign in to the
+  // intended shop in Seller Center first.
   const authUrl =
-    `${authHost}/oauth/authorize?response_type=code&force_auth=true` +
+    `${authHost}/oauth/authorize?response_type=code` +
     `&client_id=${encodeURIComponent(LAZADA_APP_KEY)}` +
     `&redirect_uri=${encodeURIComponent(LAZADA_REDIRECT_URI)}` +
     `&state=${state}`;
