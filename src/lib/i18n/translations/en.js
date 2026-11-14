@@ -42,6 +42,12 @@ export default {
   platforms: {
     website: 'Website',
   },
+  // Total-pieces pill on an order with any quantity-2+ line (see
+  // src/lib/multiQty.js). Shared by Orders and Scan.
+  multiQty: {
+    pcs_one: '{{count}} pc',
+    pcs_other: '{{count}} pcs',
+  },
   // Request-failure wording shared by every page — see describeRequestError in
   // src/lib/apiBase.js, which distinguishes these three failure modes so a CORS
   // break can't look identical to a Shopee-side error.

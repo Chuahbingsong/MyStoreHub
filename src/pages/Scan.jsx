@@ -7,8 +7,17 @@ import { ArrowLeft, Flashlight, FlashlightOff, Loader2, Package, ScanLine } from
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { PcsPill, QtyBadge } from '@/components/MultiQty'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import {
+  isMultiQty,
+  MULTI_QTY_CARD_CLS,
+  MULTI_QTY_LINE_CLS,
+  orderHasMultiQty,
+  totalQty,
+  VARIANT_CLS,
+} from '@/lib/multiQty'
 import { useTranslation } from '@/lib/i18n/I18nContext'
 import { useDateTime } from '@/lib/i18n/datetime'
 import { statusKeyFor } from '@/lib/orderStatus'
@@ -73,6 +82,9 @@ async function findOrderBy(column, value) {
   if (error) throw error
   return data?.[0] ?? null
 }
+
+// Scan reads raw order_items rows, so the quantity lives in `quantity`.
+const rawQty = (item) => item.quantity
 
 export default function Scan() {
   const navigate = useNavigate()
@@ -413,7 +425,12 @@ export default function Scan() {
 
         {showResult && (
           <div className="space-y-3">
-            <div className="rounded-2xl bg-white border border-[#E8E6E1] shadow-card p-4">
+            <div
+              className={cn(
+                'rounded-2xl bg-white border shadow-card p-4',
+                orderHasMultiQty(result.order_items, rawQty) ? MULTI_QTY_CARD_CLS : 'border-[#E8E6E1]'
+              )}
+            >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="truncate text-xs text-[#6B7280]">
@@ -437,6 +454,9 @@ export default function Scan() {
                     : result.order_status || t('scan.unknownStatus')}
                 </span>
               </div>
+              {orderHasMultiQty(result.order_items, rawQty) && (
+                <PcsPill count={totalQty(result.order_items, rawQty)} className="mt-2 text-xs" />
+              )}
               <div className="mt-2.5 space-y-1">
                 <p className="text-base font-bold text-[#1F2937]">
                   {t('scan.fields.order')}: {result.platform_order_id}
@@ -467,7 +487,10 @@ export default function Scan() {
                 return (
                   <div
                     key={item.id}
-                    className="flex items-center gap-3 rounded-2xl bg-white border border-[#E8E6E1] shadow-card p-3"
+                    className={cn(
+                      'flex items-center gap-3 rounded-2xl border border-[#E8E6E1] shadow-card p-3',
+                      isMultiQty(qty) ? MULTI_QTY_LINE_CLS : 'bg-white'
+                    )}
                   >
                     {item.image_url ? (
                       <button
@@ -492,14 +515,14 @@ export default function Scan() {
                         {item.product_name || t('scan.unnamedItem')}
                       </p>
                       {item.variant_name && (
-                        <p className="truncate text-sm text-[#6B7280]">{item.variant_name}</p>
+                        <p className={cn('text-[15px]', VARIANT_CLS)}>{item.variant_name}</p>
                       )}
                       <p className="truncate text-sm font-medium text-[#6B7280]">
                         {t('scan.fields.sku')}: {item.sku || '—'}
                       </p>
                     </div>
-                    <div className="shrink-0 text-right">
-                      <p className="text-lg font-extrabold tabular-nums text-[#1F2937]">×{qty}</p>
+                    <div className="flex shrink-0 flex-col items-end text-right">
+                      <QtyBadge qty={qty} prefix="×" className="text-lg" />
                       <p className="mt-1 text-sm font-semibold tabular-nums text-[#4B5563]">
                         RM {unitPrice.toFixed(2)}
                       </p>

@@ -19,9 +19,19 @@ import {
 import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
 import PrintAwbMarkPrintedDialog from '@/components/PrintAwbMarkPrintedDialog'
 import PullToRefresh from '@/components/PullToRefresh'
+import { PcsPill, QtyBadge } from '@/components/MultiQty'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
+import {
+  isMultiQty,
+  MULTI_QTY_CARD_CLS,
+  MULTI_QTY_LINE_CLS,
+  MULTI_QTY_THUMB_CLS,
+  orderHasMultiQty,
+  totalQty,
+  VARIANT_CLS,
+} from '@/lib/multiQty'
 import { getAutoSyncOrdersEnabled } from '@/lib/preferences'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
 import { useForegroundRefresh } from '@/hooks/useForegroundRefresh'
@@ -798,7 +808,11 @@ function OrderCard({
     ? renderActions(t, order, { fullWidth: true, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId })
     : null
 
+  const multiQty = orderHasMultiQty(order.items)
+
   const flagBadges = [
+    // First, so it's the flag the packer's eye lands on.
+    multiQty && <PcsPill key="pcs" count={totalQty(order.items)} />,
     order.isInstant && (
       <span key="instant" className={cn(BADGE_CLS, 'bg-violet-500/15 text-violet-700')}>
         ⚡ {t('orders.flags.instant')}
@@ -850,7 +864,10 @@ function OrderCard({
   return (
     <div
       onClick={() => onClick(order)}
-      className="flex cursor-pointer gap-3 rounded-2xl border border-[#E8E6E1] bg-white p-4 shadow-card transition-transform active:scale-[0.98]"
+      className={cn(
+        'flex cursor-pointer gap-3 rounded-2xl border bg-white p-4 shadow-card transition-transform active:scale-[0.98]',
+        multiQty ? MULTI_QTY_CARD_CLS : 'border-[#E8E6E1]'
+      )}
     >
       {selectionMode && order.statusKey !== STATUS.UNPAID && (
         <input
@@ -905,18 +922,41 @@ function OrderCard({
           </div>
         )}
 
+        {/* Photo row: every product photo, scrolls sideways when they don't
+            fit. A quantity-2+ line gets a pink frame with its xN overlaid. */}
         <div className="mt-3 flex items-center gap-2.5 overflow-x-auto pb-0.5">
-          {order.items.map((item, i) => (
-            <ItemThumb
-              key={i}
-              image={item.image}
-              alt={item.name ?? t('orders.unnamedItem')}
-              tint={meta.tint}
-              className="h-10 w-10"
-            />
-          ))}
+          {order.items.map((item, i) =>
+            isMultiQty(item.qty) ? (
+              <div
+                key={i}
+                className={cn('relative h-11 w-11 shrink-0 overflow-hidden rounded-lg', MULTI_QTY_THUMB_CLS)}
+              >
+                <ItemThumb
+                  image={item.image}
+                  alt={item.name ?? t('orders.unnamedItem')}
+                  tint="bg-[#FBEAF0]"
+                  className="h-full w-full rounded-none"
+                />
+                <QtyBadge
+                  qty={item.qty}
+                  ariaLabel={`${t('orders.fields.qty')} ${item.qty}`}
+                  className="absolute bottom-0 right-0 rounded-none rounded-tl-md px-1 py-0.5 text-[10px]"
+                />
+              </div>
+            ) : (
+              <ItemThumb
+                key={i}
+                image={item.image}
+                alt={item.name ?? t('orders.unnamedItem')}
+                tint={meta.tint}
+                className="h-10 w-10"
+              />
+            )
+          )}
         </div>
-        <p className="mt-1.5 truncate text-xs leading-snug text-[#6B7280]">{itemsSummary(t, order.items)}</p>
+        <p className="mt-1.5 line-clamp-2 break-words text-xs leading-snug text-[#6B7280]">
+          {itemsSummary(t, order.items)}
+        </p>
 
         {order.courier && (
           <div className="mt-2.5 flex flex-wrap items-center gap-2">
@@ -2329,12 +2369,23 @@ export default function Orders() {
                 <Separator className="my-4 bg-[#E8E6E1]" />
 
                 <section>
-                  <h3 className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">
-                    {t('orders.sections.items')}
-                  </h3>
-                  <div className="mt-2.5 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">
+                      {t('orders.sections.items')}
+                    </h3>
+                    {orderHasMultiQty(selectedOrder.items) && (
+                      <PcsPill count={totalQty(selectedOrder.items)} />
+                    )}
+                  </div>
+                  <div className="-mx-2 mt-2 space-y-1.5">
                     {selectedOrder.items.map((item, i) => (
-                      <div key={i} className="flex items-center gap-3">
+                      <div
+                        key={i}
+                        className={cn(
+                          'flex items-center gap-3 rounded-xl px-2 py-2',
+                          isMultiQty(item.qty) && MULTI_QTY_LINE_CLS
+                        )}
+                      >
                         {item.image ? (
                           <button
                             type="button"
@@ -2362,16 +2413,15 @@ export default function Orders() {
                             {item.name ?? t('orders.unnamedItem')}
                           </p>
                           {item.variant && (
-                            <p className="truncate text-sm text-[#6B7280]">{item.variant}</p>
+                            <p className={cn('text-[15px]', VARIANT_CLS)}>{item.variant}</p>
                           )}
                         </div>
-                        <div className="shrink-0 text-right">
-                          <p
-                            className="text-lg font-extrabold tabular-nums text-[#1F2937]"
-                            aria-label={`${t('orders.fields.qty')} ${item.qty}`}
-                          >
-                            x{item.qty}
-                          </p>
+                        <div className="flex shrink-0 flex-col items-end">
+                          <QtyBadge
+                            qty={item.qty}
+                            className="text-lg"
+                            ariaLabel={`${t('orders.fields.qty')} ${item.qty}`}
+                          />
                           <p className="mt-1 text-sm font-semibold tabular-nums text-[#4B5563]">
                             RM {item.price.toFixed(2)}
                           </p>
