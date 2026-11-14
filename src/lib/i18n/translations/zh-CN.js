@@ -31,6 +31,10 @@ export default {
   platforms: {
     website: '官网',
   },
+  multiQty: {
+    pcs_one: '{{count}} 件',
+    pcs_other: '{{count}} 件',
+  },
   errors: {
     timeout: '请求超时，请重试。',
     badResponse: '服务器返回了意外的响应，请重试。',
