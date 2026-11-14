@@ -1,16 +1,15 @@
-// The ONE place that decides "this line / this order has more than one piece
-// to pack" and how that looks. Every page that renders order items (Orders
-// cards, Orders detail sheet, Scan result) imports from here, so the threshold
-// and the colours can't drift between screens.
+// The ONE place that decides "this line has more than one piece to pack" and
+// how that looks. Orders (card + detail sheet) and Scan import from here, so
+// the threshold and colours can't drift between screens.
 //
 // Purely presentational: nothing here touches data — it only reads the
 // quantity a page already has.
 //
-// Pink was chosen because every other hue on an order is already spoken for:
-// red = New Orders count / cancel requests / failures, orange = Shopee / retry,
-// amber = returns, yellow = in process, violet = Website / instant, blue =
-// Lazada / primary. #993556 is a deep berry that reads clearly apart from
-// red-500 and orange-500 at a glance.
+// Pink because every other hue on an order is already spoken for: red = New
+// Orders count / cancel requests / failures, orange = Shopee / retry, amber =
+// returns, yellow = in process, violet = Website / instant, blue = Lazada /
+// primary. #993556 is a deep berry that reads clearly apart from red-500 and
+// orange-500 at a glance.
 
 export const MULTI_QTY_MIN = 2
 
@@ -18,42 +17,31 @@ export const MULTI_QTY_MIN = 2
 // because Tailwind's JIT only picks up complete class strings in source —
 // change a colour here AND in the matching class below.
 export const MULTI_QTY_COLORS = {
-  border: '#993556',
+  badge: '#993556',
   tint: '#FBEAF0',
-  text: '#72243E',
 }
 
-// A quantity-2+ item line: pink tint behind the row.
+// Light pink behind a quantity-2+ item row (detail sheet, Scan).
 export const MULTI_QTY_LINE_CLS = 'bg-[#FBEAF0]'
-// Filled "x2" badge.
-export const MULTI_QTY_BADGE_CLS = 'bg-[#993556] text-white'
-// Order card outline. The ring doubles the 1px border visually without
-// changing the box size, so cards don't jump when the highlight applies.
-export const MULTI_QTY_CARD_CLS = 'border-[#993556] ring-1 ring-[#993556]'
-// Product photo of a quantity-2+ line in the Orders card's photo row. A real
-// border (not a ring) so it stays inside the scroll row and isn't clipped.
-export const MULTI_QTY_THUMB_CLS = 'border-2 border-[#993556] bg-[#FBEAF0]'
-// "N pcs" pill on the order.
-export const MULTI_QTY_PILL_CLS = 'border border-[#993556]/40 bg-[#FBEAF0] text-[#72243E]'
+// Detail-sheet rows have no padding of their own, so the tint is bled a few px
+// past the row's edges with a same-pink ring (a box-shadow) — no padding or
+// margin, so row size and spacing stay exactly as they were. Not used on Scan,
+// whose item rows are already padded cards.
+export const MULTI_QTY_ROW_BLEED_CLS = 'ring-[6px] ring-[#FBEAF0]'
+// Filled "x2" badge. Inherits font size from wherever the quantity already
+// sits, so it slots into the existing text without resizing it.
+export const MULTI_QTY_BADGE_CLS = 'inline-block rounded-md bg-[#993556] px-1.5 leading-tight text-white'
 
-// Variant name styling shared by every item line. Dark and semibold so it reads
-// at a glance while packing, one step under the product name (which stays
-// bold). Wraps instead of truncating — the variant is the part that tells two
-// otherwise-identical lines apart, so it must never be cut off.
-export const VARIANT_CLS = 'break-words font-semibold leading-snug text-[#374151]'
+// Small "xN" overlaid on the bottom-right corner of an Orders-card photo.
+// Sits inside the photo's bounds (the photo row scrolls, so anything hanging
+// outside would be clipped) and its corner radius matches the photo's.
+export const MULTI_QTY_THUMB_BADGE_CLS =
+  'pointer-events-none absolute bottom-0 right-0 rounded-tl-md rounded-br-lg bg-[#993556] px-1 py-0.5 text-[10px] font-bold leading-none tabular-nums text-white'
+
+// Variant name: darker and heavier than the old grey secondary text, so it
+// reads at a glance while packing. Size is set per context.
+export const VARIANT_CLS = 'font-semibold text-[#374151]'
 
 export function isMultiQty(qty) {
   return (Number(qty) || 0) >= MULTI_QTY_MIN
-}
-
-// Total pieces across an order's lines. Each element only needs a numeric
-// quantity; `getQty` adapts to the two item shapes in the app (Orders' mapped
-// `qty`, Scan's raw `quantity`). A missing quantity counts as 1, matching how
-// both pages already display it.
-export function totalQty(items, getQty = (item) => item.qty) {
-  return (items ?? []).reduce((sum, item) => sum + (Number(getQty(item)) || 1), 0)
-}
-
-export function orderHasMultiQty(items, getQty = (item) => item.qty) {
-  return (items ?? []).some((item) => isMultiQty(getQty(item) ?? 1))
 }

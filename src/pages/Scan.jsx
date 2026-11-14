@@ -7,17 +7,10 @@ import { ArrowLeft, Flashlight, FlashlightOff, Loader2, Package, ScanLine } from
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { PcsPill, QtyBadge } from '@/components/MultiQty'
+import { QtyMark } from '@/components/MultiQty'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
-import {
-  isMultiQty,
-  MULTI_QTY_CARD_CLS,
-  MULTI_QTY_LINE_CLS,
-  orderHasMultiQty,
-  totalQty,
-  VARIANT_CLS,
-} from '@/lib/multiQty'
+import { isMultiQty, MULTI_QTY_LINE_CLS, VARIANT_CLS } from '@/lib/multiQty'
 import { useTranslation } from '@/lib/i18n/I18nContext'
 import { useDateTime } from '@/lib/i18n/datetime'
 import { statusKeyFor } from '@/lib/orderStatus'
@@ -83,8 +76,34 @@ async function findOrderBy(column, value) {
   return data?.[0] ?? null
 }
 
-// Scan reads raw order_items rows, so the quantity lives in `quantity`.
-const rawQty = (item) => item.quantity
+// Item photo, or the package placeholder when there is none OR the URL fails
+// to load (same 64px slot either way, never a blank gap). The failure is
+// remembered per URL; only a photo that loaded is tappable to enlarge.
+function ItemPhoto({ src, onPreview, previewLabel }) {
+  const [failedSrc, setFailedSrc] = useState(null)
+  if (src && failedSrc !== src) {
+    return (
+      <button
+        type="button"
+        onClick={onPreview}
+        aria-label={previewLabel}
+        className="shrink-0 rounded-lg transition-transform active:scale-95"
+      >
+        <img
+          src={src}
+          alt=""
+          onError={() => setFailedSrc(src)}
+          className="h-16 w-16 rounded-lg object-cover"
+        />
+      </button>
+    )
+  }
+  return (
+    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-[#F3F4F6] text-[#9CA3AF]">
+      <Package className="h-7 w-7" />
+    </div>
+  )
+}
 
 export default function Scan() {
   const navigate = useNavigate()
@@ -425,12 +444,7 @@ export default function Scan() {
 
         {showResult && (
           <div className="space-y-3">
-            <div
-              className={cn(
-                'rounded-2xl bg-white border shadow-card p-4',
-                orderHasMultiQty(result.order_items, rawQty) ? MULTI_QTY_CARD_CLS : 'border-[#E8E6E1]'
-              )}
-            >
+            <div className="rounded-2xl bg-white border border-[#E8E6E1] shadow-card p-4">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="truncate text-xs text-[#6B7280]">
@@ -454,9 +468,6 @@ export default function Scan() {
                     : result.order_status || t('scan.unknownStatus')}
                 </span>
               </div>
-              {orderHasMultiQty(result.order_items, rawQty) && (
-                <PcsPill count={totalQty(result.order_items, rawQty)} className="mt-2 text-xs" />
-              )}
               <div className="mt-2.5 space-y-1">
                 <p className="text-base font-bold text-[#1F2937]">
                   {t('scan.fields.order')}: {result.platform_order_id}
@@ -492,37 +503,26 @@ export default function Scan() {
                       isMultiQty(qty) ? MULTI_QTY_LINE_CLS : 'bg-white'
                     )}
                   >
-                    {item.image_url ? (
-                      <button
-                        type="button"
-                        onClick={() => setPreviewImage(item.image_url)}
-                        aria-label={t('scan.viewImage')}
-                        className="shrink-0 rounded-lg transition-transform active:scale-95"
-                      >
-                        <img
-                          src={item.image_url}
-                          alt=""
-                          className="h-16 w-16 rounded-lg object-cover"
-                        />
-                      </button>
-                    ) : (
-                      <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-[#F3F4F6] text-[#9CA3AF]">
-                        <Package className="h-7 w-7" />
-                      </div>
-                    )}
+                    <ItemPhoto
+                      src={item.image_url}
+                      onPreview={() => setPreviewImage(item.image_url)}
+                      previewLabel={t('scan.viewImage')}
+                    />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-base font-bold text-[#1F2937]">
                         {item.product_name || t('scan.unnamedItem')}
                       </p>
                       {item.variant_name && (
-                        <p className={cn('text-[15px]', VARIANT_CLS)}>{item.variant_name}</p>
+                        <p className={cn('truncate text-[15px]', VARIANT_CLS)}>{item.variant_name}</p>
                       )}
                       <p className="truncate text-sm font-medium text-[#6B7280]">
                         {t('scan.fields.sku')}: {item.sku || '—'}
                       </p>
                     </div>
-                    <div className="flex shrink-0 flex-col items-end text-right">
-                      <QtyBadge qty={qty} prefix="×" className="text-lg" />
+                    <div className="shrink-0 text-right">
+                      <p className="text-lg font-extrabold tabular-nums text-[#1F2937]">
+                        <QtyMark qty={qty} prefix="×" />
+                      </p>
                       <p className="mt-1 text-sm font-semibold tabular-nums text-[#4B5563]">
                         RM {unitPrice.toFixed(2)}
                       </p>

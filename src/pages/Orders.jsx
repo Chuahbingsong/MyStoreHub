@@ -19,17 +19,15 @@ import {
 import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
 import PrintAwbMarkPrintedDialog from '@/components/PrintAwbMarkPrintedDialog'
 import PullToRefresh from '@/components/PullToRefresh'
-import { PcsPill, QtyBadge } from '@/components/MultiQty'
+import { QtyMark } from '@/components/MultiQty'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
 import {
   isMultiQty,
-  MULTI_QTY_CARD_CLS,
   MULTI_QTY_LINE_CLS,
-  MULTI_QTY_THUMB_CLS,
-  orderHasMultiQty,
-  totalQty,
+  MULTI_QTY_ROW_BLEED_CLS,
+  MULTI_QTY_THUMB_BADGE_CLS,
   VARIANT_CLS,
 } from '@/lib/multiQty'
 import { getAutoSyncOrdersEnabled } from '@/lib/preferences'
@@ -534,14 +532,34 @@ function mapSupabaseOrder(row, storeNames) {
 }
 
 // Item thumbnail: real image when available, otherwise a neutral placeholder.
-function ItemThumb({ image, alt, tint, className }) {
-  if (image) {
-    return (
+// A photo whose URL fails to load (expired/removed marketplace image, network
+// hiccup) falls back to the same placeholder as an item with no photo, in the
+// same size slot — instead of a blank gap. The failure is remembered per URL,
+// so a new photo for the same slot gets a fresh attempt.
+//
+// `onPreview`: when given, a photo that loaded is tappable (detail sheet). The
+// placeholder never is — there's nothing to enlarge.
+function ItemThumb({ image, alt, tint, className, onPreview, previewLabel }) {
+  const [failedSrc, setFailedSrc] = useState(null)
+  if (image && failedSrc !== image) {
+    const img = (
       <img
         src={image}
         alt={alt}
+        onError={() => setFailedSrc(image)}
         className={cn('shrink-0 rounded-lg object-cover', className)}
       />
+    )
+    if (!onPreview) return img
+    return (
+      <button
+        type="button"
+        onClick={onPreview}
+        aria-label={previewLabel}
+        className="shrink-0 rounded-lg transition-transform active:scale-95"
+      >
+        {img}
+      </button>
     )
   }
   return (
@@ -778,15 +796,26 @@ function CopyButton({ text, size = 'h-3.5 w-3.5' }) {
   )
 }
 
-// Item and variant names are Shopee DATA and are joined verbatim; only the
-// placeholder for a nameless item comes from the dictionary.
+// Item and variant names are Shopee DATA and are rendered verbatim; only the
+// placeholder for a nameless item comes from the dictionary. Same text as the
+// old joined string ("Name (Variant) x2, …") — inline spans only, so the line
+// still truncates exactly as before; the variant is emphasised and a 2+
+// quantity gets the pink badge.
 function itemsSummary(t, items) {
-  return items
-    .map((item) => {
-      const name = item.name ?? t('orders.unnamedItem')
-      return item.variant ? `${name} (${item.variant}) x${item.qty}` : `${name} x${item.qty}`
-    })
-    .join(', ')
+  return items.map((item, i) => (
+    <Fragment key={i}>
+      {i > 0 && ', '}
+      {item.name ?? t('orders.unnamedItem')}
+      {item.variant && (
+        <>
+          {' ('}
+          <span className={cn('text-[13px] leading-none', VARIANT_CLS)}>{item.variant}</span>
+          {')'}
+        </>
+      )}{' '}
+      <QtyMark qty={item.qty} />
+    </Fragment>
+  ))
 }
 
 function OrderCard({
@@ -808,11 +837,7 @@ function OrderCard({
     ? renderActions(t, order, { fullWidth: true, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId })
     : null
 
-  const multiQty = orderHasMultiQty(order.items)
-
   const flagBadges = [
-    // First, so it's the flag the packer's eye lands on.
-    multiQty && <PcsPill key="pcs" count={totalQty(order.items)} />,
     order.isInstant && (
       <span key="instant" className={cn(BADGE_CLS, 'bg-violet-500/15 text-violet-700')}>
         ⚡ {t('orders.flags.instant')}
@@ -864,10 +889,7 @@ function OrderCard({
   return (
     <div
       onClick={() => onClick(order)}
-      className={cn(
-        'flex cursor-pointer gap-3 rounded-2xl border bg-white p-4 shadow-card transition-transform active:scale-[0.98]',
-        multiQty ? MULTI_QTY_CARD_CLS : 'border-[#E8E6E1]'
-      )}
+      className="flex cursor-pointer gap-3 rounded-2xl border border-[#E8E6E1] bg-white p-4 shadow-card transition-transform active:scale-[0.98]"
     >
       {selectionMode && order.statusKey !== STATUS.UNPAID && (
         <input
@@ -922,26 +944,21 @@ function OrderCard({
           </div>
         )}
 
-        {/* Photo row: every product photo, scrolls sideways when they don't
-            fit. A quantity-2+ line gets a pink frame with its xN overlaid. */}
         <div className="mt-3 flex items-center gap-2.5 overflow-x-auto pb-0.5">
           {order.items.map((item, i) =>
             isMultiQty(item.qty) ? (
-              <div
-                key={i}
-                className={cn('relative h-11 w-11 shrink-0 overflow-hidden rounded-lg', MULTI_QTY_THUMB_CLS)}
-              >
+              // `flex` so the wrapper hugs the 40px photo exactly (no inline
+              // line-box gap under the <img>); the badge is an overlay only.
+              <div key={i} className="relative flex shrink-0">
                 <ItemThumb
                   image={item.image}
                   alt={item.name ?? t('orders.unnamedItem')}
-                  tint="bg-[#FBEAF0]"
-                  className="h-full w-full rounded-none"
+                  tint={meta.tint}
+                  className="h-10 w-10"
                 />
-                <QtyBadge
-                  qty={item.qty}
-                  ariaLabel={`${t('orders.fields.qty')} ${item.qty}`}
-                  className="absolute bottom-0 right-0 rounded-none rounded-tl-md px-1 py-0.5 text-[10px]"
-                />
+                <span className={MULTI_QTY_THUMB_BADGE_CLS} aria-hidden="true">
+                  x{item.qty}
+                </span>
               </div>
             ) : (
               <ItemThumb
@@ -954,9 +971,7 @@ function OrderCard({
             )
           )}
         </div>
-        <p className="mt-1.5 line-clamp-2 break-words text-xs leading-snug text-[#6B7280]">
-          {itemsSummary(t, order.items)}
-        </p>
+        <p className="mt-1.5 truncate text-xs leading-snug text-[#6B7280]">{itemsSummary(t, order.items)}</p>
 
         {order.courier && (
           <div className="mt-2.5 flex flex-wrap items-center gap-2">
@@ -2369,59 +2384,41 @@ export default function Orders() {
                 <Separator className="my-4 bg-[#E8E6E1]" />
 
                 <section>
-                  <div className="flex items-center justify-between gap-2">
-                    <h3 className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">
-                      {t('orders.sections.items')}
-                    </h3>
-                    {orderHasMultiQty(selectedOrder.items) && (
-                      <PcsPill count={totalQty(selectedOrder.items)} />
-                    )}
-                  </div>
-                  <div className="-mx-2 mt-2 space-y-1.5">
+                  <h3 className="text-[11px] font-semibold tracking-wide text-[#9CA3AF] uppercase">
+                    {t('orders.sections.items')}
+                  </h3>
+                  <div className="mt-2.5 space-y-2.5">
                     {selectedOrder.items.map((item, i) => (
                       <div
                         key={i}
                         className={cn(
-                          'flex items-center gap-3 rounded-xl px-2 py-2',
-                          isMultiQty(item.qty) && MULTI_QTY_LINE_CLS
+                          'flex items-center gap-3',
+                          isMultiQty(item.qty) && cn('rounded-lg', MULTI_QTY_LINE_CLS, MULTI_QTY_ROW_BLEED_CLS)
                         )}
                       >
-                        {item.image ? (
-                          <button
-                            type="button"
-                            onClick={() => setPreviewImage(item.image)}
-                            aria-label={t('orders.viewImage')}
-                            className="shrink-0 rounded-lg transition-transform active:scale-95"
-                          >
-                            <ItemThumb
-                              image={item.image}
-                              alt={item.name ?? t('orders.unnamedItem')}
-                              tint={PLATFORM_META[selectedOrder.platform].tint}
-                              className="h-12 w-12"
-                            />
-                          </button>
-                        ) : (
-                          <ItemThumb
-                            image={item.image}
-                            alt={item.name ?? t('orders.unnamedItem')}
-                            tint={PLATFORM_META[selectedOrder.platform].tint}
-                            className="h-12 w-12"
-                          />
-                        )}
+                        <ItemThumb
+                          image={item.image}
+                          alt={item.name ?? t('orders.unnamedItem')}
+                          tint={PLATFORM_META[selectedOrder.platform].tint}
+                          className="h-12 w-12"
+                          onPreview={() => setPreviewImage(item.image)}
+                          previewLabel={t('orders.viewImage')}
+                        />
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-base font-bold text-[#1F2937]">
                             {item.name ?? t('orders.unnamedItem')}
                           </p>
                           {item.variant && (
-                            <p className={cn('text-[15px]', VARIANT_CLS)}>{item.variant}</p>
+                            <p className={cn('truncate text-[15px]', VARIANT_CLS)}>{item.variant}</p>
                           )}
                         </div>
-                        <div className="flex shrink-0 flex-col items-end">
-                          <QtyBadge
-                            qty={item.qty}
-                            className="text-lg"
-                            ariaLabel={`${t('orders.fields.qty')} ${item.qty}`}
-                          />
+                        <div className="shrink-0 text-right">
+                          <p
+                            className="text-lg font-extrabold tabular-nums text-[#1F2937]"
+                            aria-label={`${t('orders.fields.qty')} ${item.qty}`}
+                          >
+                            <QtyMark qty={item.qty} />
+                          </p>
                           <p className="mt-1 text-sm font-semibold tabular-nums text-[#4B5563]">
                             RM {item.price.toFixed(2)}
                           </p>
