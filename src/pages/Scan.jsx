@@ -500,7 +500,7 @@ export default function Scan() {
                     key={item.id}
                     className={cn(
                       'flex items-center gap-3 rounded-2xl border border-[#E8E6E1] shadow-card p-3',
-                      isMultiQty(qty) ? MULTI_QTY_LINE_CLS : 'bg-white'
+                      isMultiQty(qty, item.variant_name) ? MULTI_QTY_LINE_CLS : 'bg-white'
                     )}
                   >
                     <ItemPhoto
@@ -521,7 +521,7 @@ export default function Scan() {
                     </div>
                     <div className="shrink-0 text-right">
                       <p className="text-lg font-extrabold tabular-nums text-[#1F2937]">
-                        <QtyMark qty={qty} prefix="×" />
+                        <QtyMark qty={qty} variant={item.variant_name} prefix="×" />
                       </p>
                       <p className="mt-1 text-sm font-semibold tabular-nums text-[#4B5563]">
                         RM {unitPrice.toFixed(2)}

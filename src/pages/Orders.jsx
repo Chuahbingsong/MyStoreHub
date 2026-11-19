@@ -20,6 +20,7 @@ import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
 import PrintAwbMarkPrintedDialog from '@/components/PrintAwbMarkPrintedDialog'
 import PullToRefresh from '@/components/PullToRefresh'
 import { QtyMark } from '@/components/MultiQty'
+import { useQtyLabel } from '@/hooks/useQtyLabel'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
@@ -814,7 +815,7 @@ function itemsSummary(t, items) {
           {')'}
         </>
       )}{' '}
-      <QtyMark qty={item.qty} />
+      <QtyMark qty={item.qty} variant={item.variant} />
     </Fragment>
   ))
 }
@@ -833,6 +834,7 @@ function OrderCard({
 }) {
   const { t } = useTranslation()
   const { formatDateTime, formatRelativeToNow } = useDateTime()
+  const qtyLabel = useQtyLabel()
   const meta = PLATFORM_META[order.platform]
   const actions = !selectionMode
     ? renderActions(t, order, { fullWidth: true, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId })
@@ -947,7 +949,7 @@ function OrderCard({
 
         <div className="mt-3 flex items-center gap-2.5 overflow-x-auto pb-0.5">
           {order.items.map((item, i) =>
-            isMultiQty(item.qty) ? (
+            isMultiQty(item.qty, item.variant) ? (
               // `flex` so the wrapper hugs the 40px photo exactly (no inline
               // line-box gap under the <img>); the badge is an overlay only.
               <div key={i} className="relative flex shrink-0">
@@ -958,7 +960,7 @@ function OrderCard({
                   className="h-10 w-10"
                 />
                 <span className={MULTI_QTY_THUMB_BADGE_CLS} aria-hidden="true">
-                  x{item.qty}
+                  {qtyLabel(item.qty, item.variant)}
                 </span>
               </div>
             ) : (
@@ -2401,7 +2403,7 @@ export default function Orders() {
                         key={i}
                         className={cn(
                           'flex items-center gap-3',
-                          isMultiQty(item.qty) && cn('rounded-lg', MULTI_QTY_LINE_CLS, MULTI_QTY_ROW_BLEED_CLS)
+                          isMultiQty(item.qty, item.variant) && cn('rounded-lg', MULTI_QTY_LINE_CLS, MULTI_QTY_ROW_BLEED_CLS)
                         )}
                       >
                         <ItemThumb
@@ -2425,7 +2427,7 @@ export default function Orders() {
                             className="text-lg font-extrabold tabular-nums text-[#1F2937]"
                             aria-label={`${t('orders.fields.qty')} ${item.qty}`}
                           >
-                            <QtyMark qty={item.qty} />
+                            <QtyMark qty={item.qty} variant={item.variant} />
                           </p>
                           <p className="mt-1 text-sm font-semibold tabular-nums text-[#4B5563]">
                             RM {item.price.toFixed(2)}

@@ -106,6 +106,9 @@ export default {
     },
     // dashboard.status.* 已移至顶层 `status:` 命名空间 —— 见 en.js。
   },
+  multiQty: {
+    pieces: '{{prefix}}{{count}} 件',
+  },
   lazadaTokenBanner: {
     expiringTitle: 'Lazada 即将需要重新连接',
     disconnectedTitle: 'Lazada 已断开 — 订单已停止同步',
