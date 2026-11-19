@@ -189,7 +189,13 @@ export default function Sales() {
       try {
         // Bounded by nature (one row per connected store), so no paging needed.
         const [{ data: storeRows }, reportData] = await Promise.all([
-          supabase.from('stores').select('id, shop_name, shop_id, platform').order('shop_name'),
+          // Hidden stores (stores.orders_hidden) get no picker entry; their
+          // figures are already excluded in SQL (daily_sales, sales_coverage).
+          supabase
+            .from('stores')
+            .select('id, shop_name, shop_id, platform')
+            .eq('orders_hidden', false)
+            .order('shop_name'),
           fetchSalesReport(),
         ])
         if (cancelled) return

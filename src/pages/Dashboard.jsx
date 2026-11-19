@@ -34,6 +34,7 @@ import {
   seriesFor,
   todayKL,
 } from '@/lib/salesReport'
+import { excludeHiddenStores, hiddenStoreIds, visibleStores } from '@/lib/storeVisibility'
 
 const ORDER_COLUMNS =
   'id, store_id, platform, order_status, buyer_name, total_amount, order_created_at, platform_order_id, shipped_at'
@@ -96,7 +97,10 @@ export default function Dashboard() {
   const { shops: lazadaShops } = useLazadaTokenHealth()
   const lazadaReconnectNeeded = lazadaShops.some((shop) => shop.status === 'disconnected')
   const [store, setStore] = useState('all')
+  // `stores` = stores whose orders are shown; `allStores` adds hidden ones
+  // and is read ONLY for each platform card's connected state.
   const [stores, setStores] = useState([])
+  const [allStores, setAllStores] = useState([])
   const [orders, setOrders] = useState([])
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -128,15 +132,26 @@ export default function Dashboard() {
     // fetch at all — both read todays_actionable_orders() below, which is
     // already bounded (days x (stores + 1) rows) and KL-timezone-correct in a
     // way a client-side "today" boundary isn't.
+    //
+    // Hidden stores (stores.orders_hidden) are dropped here: they get no store
+    // dropdown entry, no To Pack count and no Recent Orders. The tiles and
+    // platform cards already exclude them in SQL (todays_actionable_orders).
+    // allStores is kept only so a hidden store's platform card still reads
+    // "connected" rather than wrongly implying it was disconnected.
     const storesRes = await supabase
       .from('stores')
-      .select('id, platform, shop_name, shop_id')
+      .select('id, platform, shop_name, shop_id, orders_hidden')
       .order('created_at', { ascending: false })
-    const storeRows = storesRes.data ?? []
+    const allStoreRows = storesRes.data ?? []
+    const storeRows = visibleStores(allStoreRows)
+    const hiddenIds = hiddenStoreIds(allStoreRows)
 
     const [toPackRes, recentResults, productsRes] = await Promise.all([
       selectAllPaged('dashboard.orders.toPack', (from, to) =>
-        supabase.from('orders').select(ORDER_COLUMNS).eq('order_status', 'READY_TO_SHIP').range(from, to)
+        excludeHiddenStores(
+          supabase.from('orders').select(ORDER_COLUMNS).eq('order_status', 'READY_TO_SHIP'),
+          hiddenIds
+        ).range(from, to)
       ),
       Promise.all(
         storeRows.map((s) =>
@@ -163,6 +178,7 @@ export default function Dashboard() {
       (a, b) => new Date(b.order_created_at) - new Date(a.order_created_at)
     )
 
+    setAllStores(allStoreRows)
     setStores(storeRows)
     setOrders(merged)
     setProducts(productsRes.data ?? [])
@@ -253,7 +269,7 @@ export default function Dashboard() {
   }, [scopedOrders, scopedProducts, actionableReport, store, t])
 
   const platforms = useMemo(() => {
-    const connectedSet = new Set(stores.map((s) => platformLabel(s.platform)))
+    const connectedSet = new Set(allStores.map((s) => platformLabel(s.platform)))
     const today = todayKL()
 
     // Reuses todays_actionable_orders()'s per-store rows — the exact same
@@ -289,7 +305,7 @@ export default function Dashboard() {
         connected: connectedSet.has(name),
       }
     })
-  }, [stores, scopedStores, actionableReport, t])
+  }, [allStores, scopedStores, actionableReport, t])
 
   const recentOrders = useMemo(() => {
     return scopedOrders.slice(0, 5).map((row) => {

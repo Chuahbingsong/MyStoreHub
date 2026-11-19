@@ -121,6 +121,9 @@ export default function RevenueBreakdown() {
       const { data, error } = await supabase
         .from('stores')
         .select('id, platform, shop_name, shop_id')
+        // Hidden stores (stores.orders_hidden) get no picker entry; their
+        // orders are already excluded in SQL (actionable_order_rows).
+        .eq('orders_hidden', false)
         .order('created_at', { ascending: false })
       if (error) throw error
       return data ?? []

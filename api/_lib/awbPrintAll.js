@@ -85,7 +85,12 @@ export async function printAllUnprinted(user) {
     .from('stores')
     .select('*')
     .eq('user_id', user.id)
-    .eq('platform', 'shopee');
+    .eq('platform', 'shopee')
+    // Hidden stores (stores.orders_hidden) are left out of the sweep, the
+    // same as BulkPrint's on-screen list — the button must never print a
+    // label the operator can't see. Their orders still sync and stay
+    // printable once the store is shown again.
+    .eq('orders_hidden', false);
 
   if (storesError) {
     console.error('[print-awb] print-all: failed to load stores', storesError);

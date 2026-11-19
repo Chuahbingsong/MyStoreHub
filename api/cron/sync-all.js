@@ -333,8 +333,15 @@ async function handler(req, res) {
     // can't finish, and leaves its own sync_logs row — autoPackStore only
     // logs once it has actually attempted an order, so without this the
     // deferral would otherwise be invisible.
+    //
+    // Paused while the store's orders are hidden (stores.orders_hidden): the
+    // operator can't see those orders, so nothing should ship them unseen.
+    // auto_pack_enabled itself is left as set, so unhiding resumes auto-pack
+    // with no second toggle. Sync above is NOT paused.
     let packed = 0;
-    if (store.auto_pack_enabled) {
+    if (store.auto_pack_enabled && store.orders_hidden === true) {
+      console.log(`[cron/sync-all] [${store.id}] auto-pack paused: store orders are hidden`);
+    } else if (store.auto_pack_enabled) {
       const timeLeft = deadline - Date.now();
       if (timeLeft < AUTO_PACK_MIN_TIME_MS) {
         console.log(
