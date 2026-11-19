@@ -8,6 +8,7 @@ import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
 import PrintAwbMarkPrintedDialog from '@/components/PrintAwbMarkPrintedDialog'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
+import { excludeHiddenStores, hiddenStoreIds } from '@/lib/storeVisibility'
 import { cn } from '@/lib/utils'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
 import { useTranslation } from '@/lib/i18n/I18nContext'
@@ -187,28 +188,31 @@ export default function BulkPrint() {
   const pendingAwbPrint = usePendingAwbPrint()
 
   const fetchData = useCallback(async () => {
-    const [ordersRes, storesRes] = await Promise.all([
-      // Paged: a large unprinted backlog would otherwise stop at the 1000-row
-      // cap and silently omit AWBs from a print run — the worst place for a
-      // short list, since the operator has no way to tell one is missing.
-      selectAllPaged('bulkPrint.orders', (from, to) =>
-        supabase
-          .from('orders')
-          .select('*')
-          .in('order_status', PRINTABLE_STATUSES)
-          // This app can only produce a label for these platforms — see
-          // PRINTABLE_PLATFORMS in lib/awb.js for why TikTok and Lazada are
-          // excluded. Filtering here (rather than after the fetch) keeps a
-          // large TikTok/Lazada backlog from eating into the 1000-row page cap.
-          .in('platform', PRINTABLE_PLATFORMS)
-          .not('platform_order_id', 'is', null)
-          // Tolerates legacy rows where the column is null rather than false.
-          .not('awb_printed', 'is', true)
-          .order('order_created_at', { ascending: false })
-          .range(from, to)
-      ),
-      supabase.from('stores').select('id, shop_id, shop_name, platform'),
-    ])
+    // Stores first so hidden stores (stores.orders_hidden) are excluded in the
+    // orders query itself — see src/lib/storeVisibility.js. The server-side
+    // "Print all" sweep (api/_lib/awbPrintAll.js) skips them the same way.
+    const storesRes = await supabase
+      .from('stores')
+      .select('id, shop_id, shop_name, platform, orders_hidden')
+    const hiddenIds = hiddenStoreIds(storesRes.data)
+
+    // Paged: a large unprinted backlog would otherwise stop at the 1000-row
+    // cap and silently omit AWBs from a print run — the worst place for a
+    // short list, since the operator has no way to tell one is missing.
+    const ordersRes = await selectAllPaged('bulkPrint.orders', (from, to) =>
+      excludeHiddenStores(supabase.from('orders').select('*'), hiddenIds)
+        .in('order_status', PRINTABLE_STATUSES)
+        // This app can only produce a label for these platforms — see
+        // PRINTABLE_PLATFORMS in lib/awb.js for why TikTok and Lazada are
+        // excluded. Filtering here (rather than after the fetch) keeps a
+        // large TikTok/Lazada backlog from eating into the 1000-row page cap.
+        .in('platform', PRINTABLE_PLATFORMS)
+        .not('platform_order_id', 'is', null)
+        // Tolerates legacy rows where the column is null rather than false.
+        .not('awb_printed', 'is', true)
+        .order('order_created_at', { ascending: false })
+        .range(from, to)
+    )
 
     if (ordersRes.error) {
       console.error('[bulk-print] failed to load orders', ordersRes.error)

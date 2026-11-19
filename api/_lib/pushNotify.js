@@ -290,17 +290,36 @@ export async function notifyStore(store, options = {}) {
 
     const storeName = store.shop_name || store.shop_id;
 
+    // Hidden store (stores.orders_hidden): no alerts. Read fresh rather than
+    // from `store`, because callers pass rows of different shapes and the
+    // website store row is cached across warm invocations — a toggle must
+    // take effect on the very next run. Treated exactly like "no devices":
+    // every candidate is still stamped below, so unhiding later doesn't
+    // replay a burst of alerts for orders that arrived while hidden.
+    const { data: visibility, error: visErr } = await supabaseAdmin
+      .from('stores')
+      .select('orders_hidden')
+      .eq('id', store.id)
+      .maybeSingle();
+
+    if (visErr) throw new Error(`load store visibility: ${visErr.message}`);
+
+    const ordersHidden = visibility?.orders_hidden === true;
+
     // The user's devices, each with its own locale. Loaded once per store. If
     // empty, we still stamp every candidate below (no sends) so a later opt-in
     // doesn't replay history.
-    const { data: subscriptions, error: subErr } = await supabaseAdmin
-      .from('push_subscriptions')
-      .select('id, endpoint, p256dh, auth, locale')
-      .eq('user_id', store.user_id);
+    let subs = [];
+    if (!ordersHidden) {
+      const { data: subscriptions, error: subErr } = await supabaseAdmin
+        .from('push_subscriptions')
+        .select('id, endpoint, p256dh, auth, locale')
+        .eq('user_id', store.user_id);
 
-    if (subErr) throw new Error(`load subscriptions: ${subErr.message}`);
+      if (subErr) throw new Error(`load subscriptions: ${subErr.message}`);
 
-    const subs = subscriptions ?? [];
+      subs = subscriptions ?? [];
+    }
 
     // Stable per-run suffix so two DIFFERENT runs' notifications for the same
     // store never collapse onto each other (they cover different orders), while
@@ -373,7 +392,9 @@ export async function notifyStore(store, options = {}) {
     }
 
     const summary =
-      `${summaryParts.join(', ')} to ${subs.length} device(s): ` +
+      `${summaryParts.join(', ')} to ${subs.length} device(s)` +
+      (ordersHidden ? ' (store orders hidden — stamped, not sent)' : '') +
+      ': ' +
       `${deliveredTotal} delivered, ${failedTotal} failed` +
       (goneSubscriptionIds.size ? `, ${goneSubscriptionIds.size} expired removed` : '');
 

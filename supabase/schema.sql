@@ -164,6 +164,12 @@ create index if not exists idx_orders_store_id_tracking_backfill on orders (stor
 -- for a store BEFORE enabling this, so the two don't fight over the slots.
 alter table stores add column if not exists auto_boost_enabled boolean not null default false;
 
+-- Hide orders: per-store. The store keeps syncing, but its orders are left
+-- out of the app (Orders, Dashboard, Sales, Revenue breakdown, Bulk print,
+-- push). Scan still resolves them. Default false. The SQL reporting functions
+-- that honour it are in supabase/store_orders_hidden_migration.sql.
+alter table stores add column if not exists orders_hidden boolean not null default false;
+
 -- boost_rotation: the ordered pool of products a store cycles its 5 boost
 -- slots through. The scheduler re-boosts the least-recently-boosted eligible
 -- product first (last_boosted_at asc nulls first), so a rotation larger than 5

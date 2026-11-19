@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import {
   Check,
   ChevronRight,
+  EyeOff,
   Loader2,
   LogOut,
   Package,
@@ -39,6 +40,8 @@ import { apiUrl, describeRequestError } from '@/lib/apiBase'
 import { formatDateTime } from '@/lib/i18n/datetime'
 import { useLazadaTokenHealth } from '@/lib/lazadaTokenHealth'
 import LazadaTokenBanner from '@/components/LazadaTokenBanner'
+import { queryClient } from '@/lib/queryClient'
+import { isStoreHidden } from '@/lib/storeVisibility'
 
 const PLATFORMS = [
   {
@@ -98,6 +101,7 @@ export default function Settings() {
   const [editingName, setEditingName] = useState('')
   const [savingStoreId, setSavingStoreId] = useState(null)
   const [togglingAutoPackId, setTogglingAutoPackId] = useState(null)
+  const [togglingHiddenId, setTogglingHiddenId] = useState(null)
   const [togglingShippingPrefId, setTogglingShippingPrefId] = useState(null)
   const [autoSyncEnabled, setAutoSyncEnabledState] = useState(() => getAutoSyncOrdersEnabled())
   // Push: source of truth is whether THIS browser currently holds a
@@ -413,6 +417,45 @@ export default function Settings() {
     }
   }
 
+  // "Show orders" — stores.orders_hidden, inverted for the UI (Switch ON =
+  // shown). Hiding only changes what the app DISPLAYS: the store stays
+  // connected and keeps syncing, so unhiding needs no resync. Lives in
+  // Supabase rather than localStorage because the SQL report functions and
+  // the push cron read it too. See src/lib/storeVisibility.js.
+  async function handleToggleShowOrders(store, show) {
+    const nextHidden = !show
+    setTogglingHiddenId(store.id)
+    try {
+      const { error } = await supabase
+        .from('stores')
+        .update({ orders_hidden: nextHidden })
+        .eq('id', store.id)
+
+      if (error) {
+        toast.error(t('settings.connectedStores.showOrders.errorToast'))
+        return
+      }
+
+      setStores((prev) =>
+        prev.map((s) => (s.id === store.id ? { ...s, orders_hidden: nextHidden } : s))
+      )
+      // Drop cached order lists/reports outright (not just invalidate) so the
+      // next visit can't flash the previous visibility before refetching.
+      queryClient.removeQueries({ queryKey: ['orders'] })
+      queryClient.removeQueries({ queryKey: ['revenue-breakdown'] })
+      queryClient.removeQueries({ queryKey: ['revenue-breakdown-stores'] })
+      toast.success(
+        nextHidden
+          ? t('settings.connectedStores.showOrders.hiddenToast')
+          : t('settings.connectedStores.showOrders.shownToast')
+      )
+    } catch {
+      toast.error(t('settings.connectedStores.showOrders.errorToast'))
+    } finally {
+      setTogglingHiddenId(null)
+    }
+  }
+
   // Read by BOTH auto-pack and the manual Pack button (see selectShippingMethod
   // in api/_lib/shopeeShip.js) — it decides WHICH method gets picked when an
   // order's info_needed offers a choice, independent of auto-pack's on/off
@@ -573,8 +616,15 @@ export default function Settings() {
               const lazadaHealth = store.platform === 'lazada' ? lazadaHealthByStoreId.get(store.id) : null
               const isEditing = editingStoreId === store.id
               const isSaving = savingStoreId === store.id
+              const ordersHidden = isStoreHidden(store)
               return (
-                <div key={store.id} className="rounded-xl bg-white border border-[#ECECEC] shadow-sm p-3">
+                <div
+                  key={store.id}
+                  className={cn(
+                    'rounded-xl border shadow-sm p-3',
+                    ordersHidden ? 'border-amber-300 bg-amber-50/60' : 'border-[#ECECEC] bg-white'
+                  )}
+                >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex min-w-0 flex-1 items-center gap-2">
                       <span
@@ -634,6 +684,12 @@ export default function Settings() {
                           >
                             <Pencil className="h-3.5 w-3.5" />
                           </button>
+                          {ordersHidden && (
+                            <span className="flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                              <EyeOff className="h-3 w-3" />
+                              {t('settings.connectedStores.showOrders.hiddenBadge')}
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
@@ -666,14 +722,46 @@ export default function Settings() {
                       })}
                     </p>
                   )}
+                  {/* Every platform, unlike the Shopee-only rows below: hiding
+                      is a display filter, not a marketplace call. */}
+                  <div
+                    className={cn(
+                      'mt-3 flex items-center justify-between gap-3 rounded-lg px-3 py-2',
+                      ordersHidden ? 'bg-amber-100/70' : 'bg-[#F9FAFB]'
+                    )}
+                  >
+                    <div>
+                      <p className="text-xs font-medium text-[#1F2937]">
+                        {t('settings.connectedStores.showOrders.title')}
+                      </p>
+                      <p className={cn('text-[11px]', ordersHidden ? 'text-amber-800' : 'text-[#6B7280]')}>
+                        {ordersHidden
+                          ? t('settings.connectedStores.showOrders.hiddenDescription')
+                          : t('settings.connectedStores.showOrders.description')}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={!ordersHidden}
+                      disabled={togglingHiddenId === store.id}
+                      onCheckedChange={(show) => handleToggleShowOrders(store, show)}
+                      aria-label={t('settings.connectedStores.showOrders.toggleAria', {
+                        name: store.shop_name || store.shop_id,
+                      })}
+                    />
+                  </div>
                   {isShopee && (
-                    <div className="mt-3 flex items-center justify-between rounded-lg bg-[#F9FAFB] px-3 py-2">
+                    <div className="mt-2 flex items-center justify-between rounded-lg bg-[#F9FAFB] px-3 py-2">
                       <div>
                         <p className="text-xs font-medium text-[#1F2937]">
                           {t('settings.connectedStores.autoPack.title')}
                         </p>
-                        <p className="text-[11px] text-[#6B7280]">
-                          {t('settings.connectedStores.autoPack.description')}
+                        <p className={cn('text-[11px]', ordersHidden && store.auto_pack_enabled ? 'text-amber-800' : 'text-[#6B7280]')}>
+                          {/* The cron skips auto-pack while orders are hidden
+                              (api/cron/sync-all.js); the switch keeps its own
+                              value so unhiding resumes it. */}
+                          {ordersHidden && store.auto_pack_enabled
+                            ? t('settings.connectedStores.autoPack.pausedHidden')
+                            : t('settings.connectedStores.autoPack.description')}
                         </p>
                       </div>
                       <Switch

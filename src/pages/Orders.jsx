@@ -32,6 +32,7 @@ import {
 } from '@/lib/multiQty'
 import { getAutoSyncOrdersEnabled } from '@/lib/preferences'
 import { apiUrl, describeRequestError } from '@/lib/apiBase'
+import { excludeHiddenStores, hiddenStoreIds } from '@/lib/storeVisibility'
 import { useForegroundRefresh } from '@/hooks/useForegroundRefresh'
 import {
   deliverPdf,
@@ -1036,19 +1037,26 @@ const ORDERS_QUERY_KEY = ['orders', 'list']
 // needs (including hasShopeeStore, previously a ref side effect) rather than
 // calling any setState itself.
 async function fetchOrdersQuery() {
-  const [ordersRes, storesRes] = await Promise.all([
-    selectAllPaged(
-      'orders.list',
-      (from, to) =>
-        supabase
-          .from('orders')
-          .select('*, order_items(*)')
-          .order('order_created_at', { ascending: false })
-          .range(from, to),
-      { maxRows: ORDERS_CEILING }
-    ),
-    supabase.from('stores').select('id, shop_id, shop_name, platform'),
-  ])
+  // Stores first: hidden stores (stores.orders_hidden) are excluded IN the
+  // orders query, so every tab, tab count, search result and bulk selection
+  // below is built from visible orders only — and a hidden store's backlog
+  // can't eat into ORDERS_CEILING. See src/lib/storeVisibility.js.
+  const storesRes = await supabase
+    .from('stores')
+    .select('id, shop_id, shop_name, platform, orders_hidden')
+  const hiddenIds = hiddenStoreIds(storesRes.data)
+
+  const ordersRes = await selectAllPaged(
+    'orders.list',
+    (from, to) =>
+      excludeHiddenStores(
+        supabase.from('orders').select('*, order_items(*)'),
+        hiddenIds
+      )
+        .order('order_created_at', { ascending: false })
+        .range(from, to),
+    { maxRows: ORDERS_CEILING }
+  )
 
   const hasShopeeStore = (storesRes.data ?? []).some((store) => store.platform === 'shopee')
 

@@ -1,0 +1,2 @@
+# Never upload local env files on CLI deploys; Vercel project env is the source of truth.
+.env*
