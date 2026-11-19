@@ -124,6 +124,11 @@ export default {
     // statuses. Call sites use t('status.<key>').
   },
   // Shared by Settings and Dashboard — see src/components/LazadaTokenBanner.jsx.
+  // Pink multi-qty badge when the variant names a piece count — see
+  // src/lib/multiQty.js. {{prefix}} is "x" (Orders) or "×" (Scan).
+  multiQty: {
+    pieces: '{{prefix}}{{count}} pcs',
+  },
   lazadaTokenBanner: {
     expiringTitle: 'Lazada needs reconnecting soon',
     disconnectedTitle: 'Lazada disconnected — orders have stopped syncing',
