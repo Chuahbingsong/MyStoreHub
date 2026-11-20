@@ -4,8 +4,10 @@
 //
 // Purely presentational: nothing here touches data — it only reads the
 // quantity and variant name a page already has. A line is "multi" when its
-// quantity is 2+ OR its variant name says 2+ pieces ("2pcs", "Set of 2"); the
-// badge then shows the real pieces to pack (qty × pieces per unit).
+// quantity is 2+ OR its variant name says 2+ pieces ("2pcs", "Set of 2"). When
+// the variant names a piece count the labels spell the sum out — "x2 sets"
+// then "= 4 pcs total" — never a bare "x4 pcs" beside "2pcs", which packers
+// read as 4 of the 2pcs variant and multiplied again. See multiQtyLabels().
 //
 // Pink because every other hue on an order is already spoken for: red = New
 // Orders count / cancel requests / failures, orange = Shopee / retry, amber =
@@ -34,7 +36,8 @@ export const MULTI_QTY_ROW_BLEED_CLS = 'ring-[6px] ring-[#FBEAF0]'
 // sits, so it slots into the existing text without resizing it.
 export const MULTI_QTY_BADGE_CLS = 'inline-block rounded-md bg-[#993556] px-1.5 leading-tight text-white'
 
-// Small "xN" overlaid on the bottom-right corner of an Orders-card photo.
+// Small badge ("x2", or the total "4 pcs") overlaid on the bottom-right
+// corner of an Orders-card photo.
 // Sits inside the photo's bounds (the photo row scrolls, so anything hanging
 // outside would be clipped) and its corner radius matches the photo's.
 export const MULTI_QTY_THUMB_BADGE_CLS =
@@ -87,6 +90,29 @@ export function piecesInVariant(variant) {
 /** Pieces to actually pack: quantity × pieces per unit (1 when unstated). */
 export function piecesToPack(qty, variant) {
   return (Number(qty) || 0) * (piecesInVariant(variant) ?? 1)
+}
+
+/**
+ * Every multi-qty label for one line, so the Orders card, summary line,
+ * detail sheet and Scan can't disagree. `t` is the app's translator (passed
+ * in so this file stays import-free and runnable under `npm test`).
+ *
+ * - Variant names a piece count (N >= 2): qty "x2 sets", total "= 4 pcs
+ *   total", thumb "4 pcs" (the small photo badge has no room for the sum).
+ * - Otherwise: qty "x2", no total, thumb "x2" — as before.
+ */
+export function multiQtyLabels(qty, variant, t, prefix = 'x') {
+  if (piecesInVariant(variant) === null) {
+    const plain = `${prefix}${qty}`
+    return { qty: plain, total: null, thumb: plain }
+  }
+  const count = Number(qty) || 0
+  const pieces = piecesToPack(qty, variant)
+  return {
+    qty: t('multiQty.sets', { prefix, count }),
+    total: t('multiQty.total', { count: pieces }),
+    thumb: t('multiQty.thumb', { count: pieces }),
+  }
 }
 
 /** Pink when the line holds 2+ pieces — by quantity OR by the variant name. */
