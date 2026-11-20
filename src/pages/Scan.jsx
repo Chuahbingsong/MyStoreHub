@@ -521,7 +521,7 @@ export default function Scan() {
                     </div>
                     <div className="shrink-0 text-right">
                       <p className="text-lg font-extrabold tabular-nums text-[#1F2937]">
-                        <QtyMark qty={qty} variant={item.variant_name} prefix="×" />
+                        <QtyMark qty={qty} variant={item.variant_name} prefix="×" stacked />
                       </p>
                       <p className="mt-1 text-sm font-semibold tabular-nums text-[#4B5563]">
                         RM {unitPrice.toFixed(2)}

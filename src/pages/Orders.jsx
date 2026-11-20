@@ -20,7 +20,7 @@ import PrintAwbConfirmDialog from '@/components/PrintAwbConfirmDialog'
 import PrintAwbMarkPrintedDialog from '@/components/PrintAwbMarkPrintedDialog'
 import PullToRefresh from '@/components/PullToRefresh'
 import { QtyMark } from '@/components/MultiQty'
-import { useQtyLabel } from '@/hooks/useQtyLabel'
+import { useQtyLabels } from '@/hooks/useQtyLabels'
 import { supabase } from '@/lib/supabase'
 import { selectAllPaged } from '@/lib/supabaseSelect'
 import { cn } from '@/lib/utils'
@@ -834,7 +834,7 @@ function OrderCard({
 }) {
   const { t } = useTranslation()
   const { formatDateTime, formatRelativeToNow } = useDateTime()
-  const qtyLabel = useQtyLabel()
+  const qtyLabels = useQtyLabels()
   const meta = PLATFORM_META[order.platform]
   const actions = !selectionMode
     ? renderActions(t, order, { fullWidth: true, onPrintAWB, printingId, onPack, onCancel, onBuyerCancel, actingId })
@@ -960,7 +960,7 @@ function OrderCard({
                   className="h-10 w-10"
                 />
                 <span className={MULTI_QTY_THUMB_BADGE_CLS} aria-hidden="true">
-                  {qtyLabel(item.qty, item.variant)}
+                  {qtyLabels(item.qty, item.variant).thumb}
                 </span>
               </div>
             ) : (
@@ -2427,7 +2427,7 @@ export default function Orders() {
                             className="text-lg font-extrabold tabular-nums text-[#1F2937]"
                             aria-label={`${t('orders.fields.qty')} ${item.qty}`}
                           >
-                            <QtyMark qty={item.qty} variant={item.variant} />
+                            <QtyMark qty={item.qty} variant={item.variant} stacked />
                           </p>
                           <p className="mt-1 text-sm font-semibold tabular-nums text-[#4B5563]">
                             RM {item.price.toFixed(2)}

@@ -107,7 +107,10 @@ export default {
     // dashboard.status.* 已移至顶层 `status:` 命名空间 —— 见 en.js。
   },
   multiQty: {
-    pieces: '{{prefix}}{{count}} 件',
+    sets_one: '{{prefix}}{{count}} 套',
+    sets_other: '{{prefix}}{{count}} 套',
+    total: '= 共 {{count}} 件',
+    thumb: '{{count}} 件',
   },
   lazadaTokenBanner: {
     expiringTitle: 'Lazada 即将需要重新连接',

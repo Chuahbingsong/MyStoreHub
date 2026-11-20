@@ -1,11 +1,25 @@
-// Cases for piecesInVariant() / isMultiQty() / piecesToPack() in multiQty.js.
+// Cases for piecesInVariant() / isMultiQty() / piecesToPack() /
+// multiQtyLabels() in multiQty.js.
 // Run: npm test   (plain `node --test`, no dependencies)
 //
 // Each row: [variant name, pieces per unit it should report (null = none)].
 // Add a row whenever a real variant name is highlighted wrongly.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isMultiQty, piecesInVariant, piecesToPack } from './multiQty.js'
+import { isMultiQty, multiQtyLabels, piecesInVariant, piecesToPack } from './multiQty.js'
+import en from './i18n/translations/en.js'
+import zhCN from './i18n/translations/zh-CN.js'
+
+// Same lookup as I18nProvider's t(): exact key, else _one/_other on `count`,
+// then {{var}} interpolation — so these tests check the real dictionary text.
+function translator(dict) {
+  const resolve = (key) => key.split('.').reduce((acc, part) => acc?.[part], dict)
+  return (key, vars) => {
+    let value = resolve(key)
+    if (typeof value !== 'string') value = resolve(`${key}_${vars.count === 1 ? 'one' : 'other'}`)
+    return value.replace(/\{\{(\w+)\}\}/g, (m, name) => (vars[name] !== undefined ? String(vars[name]) : m))
+  }
+}
 
 export const PIECE_CASES = [
   // --- should trigger (2+ pieces) ---
@@ -72,4 +86,35 @@ test('piecesToPack = qty × pieces in variant', () => {
   assert.equal(piecesToPack(1, '2pcs'), 2)
   assert.equal(piecesToPack(2, '3pcs'), 6)
   assert.equal(piecesToPack(3, 'Red'), 3)
+})
+
+test('labels: variant with a piece count spells the sum out (en)', () => {
+  const t = translator(en)
+  // The case that was packed as 8: qty 2 of "2pcs" is 4 pieces, not "x4 pcs".
+  assert.deepEqual(multiQtyLabels(2, '2pcs', t), { qty: 'x2 sets', total: '= 4 pcs total', thumb: '4 pcs' })
+  assert.deepEqual(multiQtyLabels(1, '2pcs', t), { qty: 'x1 set', total: '= 2 pcs total', thumb: '2 pcs' })
+  assert.deepEqual(multiQtyLabels(2, '3pcs', t, '×'), { qty: '×2 sets', total: '= 6 pcs total', thumb: '6 pcs' })
+})
+
+test('labels: variant with a piece count (zh-CN)', () => {
+  const t = translator(zhCN)
+  assert.deepEqual(multiQtyLabels(2, '2pcs', t), { qty: 'x2 套', total: '= 共 4 件', thumb: '4 件' })
+  assert.deepEqual(multiQtyLabels(1, '2件', t, '×'), { qty: '×1 套', total: '= 共 2 件', thumb: '2 件' })
+})
+
+test('labels: no piece count keeps the plain "x2" with no total', () => {
+  for (const dict of [en, zhCN]) {
+    const t = translator(dict)
+    assert.deepEqual(multiQtyLabels(2, 'Red', t), { qty: 'x2', total: null, thumb: 'x2' })
+    assert.deepEqual(multiQtyLabels(3, undefined, t, '×'), { qty: '×3', total: null, thumb: '×3' })
+    // Multipacks sold as one item aren't a piece count either.
+    assert.deepEqual(multiQtyLabels(2, '100pcs stickers', t), { qty: 'x2', total: null, thumb: 'x2' })
+  }
+})
+
+test('labels: no bare "x<total> pcs" anywhere', () => {
+  for (const dict of [en, zhCN]) {
+    const { qty, total, thumb } = multiQtyLabels(2, '2pcs', translator(dict))
+    for (const label of [qty, total, thumb]) assert.doesNotMatch(label, /^x4/)
+  }
 })

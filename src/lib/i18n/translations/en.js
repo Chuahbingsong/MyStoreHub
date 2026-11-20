@@ -124,10 +124,16 @@ export default {
     // statuses. Call sites use t('status.<key>').
   },
   // Shared by Settings and Dashboard — see src/components/LazadaTokenBanner.jsx.
-  // Pink multi-qty badge when the variant names a piece count — see
-  // src/lib/multiQty.js. {{prefix}} is "x" (Orders) or "×" (Scan).
+  // Pink multi-qty labels when the variant names a piece count — see
+  // multiQtyLabels() in src/lib/multiQty.js. {{prefix}} is "x" (Orders) or
+  // "×" (Scan). The quantity says "sets" and the total is spelled out as a
+  // sum, so nobody multiplies the variant's piece count a second time.
   multiQty: {
-    pieces: '{{prefix}}{{count}} pcs',
+    sets_one: '{{prefix}}{{count}} set',
+    sets_other: '{{prefix}}{{count}} sets',
+    total: '= {{count}} pcs total',
+    // Orders-card photo badge: no room for the sum, just the total.
+    thumb: '{{count}} pcs',
   },
   lazadaTokenBanner: {
     expiringTitle: 'Lazada needs reconnecting soon',
